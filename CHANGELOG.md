@@ -5,6 +5,42 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.0] -- 2026-08-22
+
+### Adicionado -- do "de quem é" para o "o que eu faço"
+
+- **Plano de trabalho: origem cruzada com "existe correção?".** Dizer que 41
+  vulnerabilidades vêm da base ainda não diz se **atualizar** a base adianta --
+  e a resposta muda tudo: se nenhuma tem correção publicada upstream,
+  atualizar é trabalho perdido e trocar a base é o único caminho. `--attribute`
+  passa a imprimir os quatro grupos (herdada/sua × com/sem correção), cada um
+  com a ação correspondente e os CVEs mais graves de amostra.
+- **Os grupos são ordenados por CRITICAL, não por total.** É onde a primeira
+  hora de trabalho rende mais; ordenar por total faria um monte de LOW passar à
+  frente de dois CRITICAL sem correção.
+- **A linha do portão carrega a origem.** Quando a atribuição rodou,
+  `Vulnerabilities exceed threshold` passa a dizer quantas vieram da base,
+  quantas dessas têm correção publicada, e quantas são das suas camadas. Quem
+  lê o log do CI está decidindo naquele segundo se mexe no Dockerfile ou na
+  base. A base é escaneada **uma vez só** nesse caminho.
+
+### Corrigido
+
+- **Uma imagem limpa cujo build removeu CVEs da base dizia "nenhuma
+  vulnerabilidade a atribuir"**, escondendo o melhor resultado possível. Agora
+  diz que a imagem está limpa *e* que as da base não sobreviveram ao build.
+- **Concordância verbal na atribuição:** "1 vêm da base" virou "1 vem".
+
+### Notas
+
+- O grupo "da base, com correção" diz **"pode resolver"**, não "resolve": uma
+  correção existir upstream não significa que quem publica a base já
+  reconstruiu com ela. Prometer o contrário é como uma ferramenta perde a
+  confiança de quem seguiu o conselho e não viu o número cair.
+- Quando a atribuição não rodou ou não fechou, o portão fica calado sobre
+  origem. Um portão que insinua uma origem que não mediu é pior do que um
+  portão calado.
+
 ## [2.9.1] -- 2026-08-22
 
 ### Corrigido -- duas mensagens que se contradiziam na mesma tela

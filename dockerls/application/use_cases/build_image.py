@@ -391,16 +391,20 @@ class BuildImageUseCase:
                         exit_code=EXIT_ERROR,
                     )
                 if self._should_fail(scan_result, threshold):
+                    # A atribuição é calculada aqui e reaproveitada na
+                    # mensagem: escanear a base duas vezes para dizer a mesma
+                    # coisa duas vezes seria pagar minutos por nada.
+                    gate_inheritance = self._attribute_findings(
+                        request, validation_result, scan_result
+                    )
                     return BuildImageResponse(
                         success=False,
                         image_tag=request.tag,
                         image_sha256=build_result.image_sha256,
                         validation=validation,
                         analysis=validation_result.analysis,
-                        error=self._gate_failure_summary(scan_result, threshold),
-                        inheritance=self._attribute_findings(
-                            request, validation_result, scan_result
-                        ),
+                        error=self._gate_failure_summary(scan_result, threshold, gate_inheritance),
+                        inheritance=gate_inheritance,
                         exit_code=EXIT_POLICY,
                     )
 
@@ -1128,12 +1132,22 @@ class BuildImageUseCase:
     #: Cada um reprova também tudo que for pior que ele.
     FAIL_ON_THRESHOLDS = ("critical", "high", "medium", "low")
 
-    def _gate_failure_summary(self, scan_result: ScanResult, threshold: str) -> str:
+    def _gate_failure_summary(
+        self,
+        scan_result: ScanResult,
+        threshold: str,
+        inheritance: InheritanceReport | None = None,
+    ) -> str:
         """Nomeia os CVEs que dispararam o portão.
 
         "Vulnerabilities exceed threshold (critical)" obriga quem lê o log do
         CI a reabrir o relatório para descobrir *o quê*. O portão passa a
         dizer qual achado o disparou, com pacote e versão de correção.
+
+        Quando a atribuição rodou, a linha do portão também diz **de onde** os
+        achados vieram. É a informação mais cara de obter e a mais barata de
+        mostrar aqui: quem lê o log do CI está decidindo, naquele segundo, se
+        mexe no Dockerfile ou na base -- e sem isso a decisão é um palpite.
         """
         cutoff = self.FAIL_ON_THRESHOLDS.index(threshold.strip().lower())
         levels = self.FAIL_ON_THRESHOLDS[: cutoff + 1]
@@ -1163,7 +1177,8 @@ class BuildImageUseCase:
             return (
                 header
                 if total == 0
-                else f"{header} (não retidos na amostra do relatório; rode o scanner para a lista)"
+                else f"{header}{_origin_hint(inheritance)} "
+                "(não retidos na amostra do relatório; rode o scanner para a lista)"
             )
         listed = "; ".join(
             f"{v.get('cve_id') or '?'} ({v.get('severity')}) in "
@@ -1172,7 +1187,7 @@ class BuildImageUseCase:
             for v in offenders[:10]
         )
         more = f"; ... and {len(offenders) - 10} more" if len(offenders) > 10 else ""
-        return f"{header} -- {listed}{more}"
+        return f"{header}{_origin_hint(inheritance)} -- {listed}{more}"
 
     def _should_fail(self, scan_result: ScanResult, threshold: str) -> bool:
         """Verifica se deve falhar o build baseado no threshold.
@@ -1629,3 +1644,22 @@ def _as_vulnerabilities(raw: list[dict[str, Any]]) -> list[Vulnerability]:
             )
         )
     return findings
+
+
+def _origin_hint(inheritance: InheritanceReport | None) -> str:
+    """Uma frase curta sobre de onde vieram os achados, quando se sabe.
+
+    Fica vazia quando ninguém pediu `--attribute` ou quando a atribuição não
+    fechou: um portão que insinua uma origem que não mediu é pior do que um
+    portão calado.
+    """
+    if inheritance is None or not inheritance.available:
+        return ""
+    herdadas, suas = len(inheritance.inherited), len(inheritance.introduced)
+    if not herdadas and not suas:
+        return ""
+    corrigiveis = inheritance.fixable_inherited
+    return (
+        f" [{herdadas} da base {inheritance.base_reference}"
+        f" ({corrigiveis} com correção publicada), {suas} das suas camadas]"
+    )

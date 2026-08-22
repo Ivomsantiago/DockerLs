@@ -1380,6 +1380,66 @@ relatório sai `UNAVAILABLE` com o motivo — nunca "tudo é seu" nem "tudo é
 herdado", que seriam as duas maneiras de transformar ausência de medição em
 acusação.
 
+#### O plano de trabalho: origem × existe correção?
+
+"41 vêm da base" ainda não diz se **atualizar** a base adianta. Se nenhuma das
+41 tem correção publicada upstream, atualizar é trabalho perdido e trocar a
+base é o único caminho. `--attribute` cruza as duas dimensões e imprime os
+quatro grupos, do que tem mais CRITICAL para o que tem menos:
+
+```console
+Plano de trabalho
+     2  da base, com correção, 1 CRITICAL
+        há correção publicada upstream: atualizar a base pode resolver -- pode,
+porque a correção existir não significa que quem publica a base já reconstruiu
+com ela. `dockerls base` confere se a tag moveu
+        CVE-2026-0001 (openssl), CVE-2026-0002 (zlib)
+     2  da base, sem correção, 1 CRITICAL
+        não há correção publicada: atualizar a base não resolve nada aqui. Trocar
+de base é o único caminho -- `dockerls base --alternatives` mede as candidatas
+        CVE-2026-0003 (perl-base), CVE-2026-0004 (libexpat1)
+     1  suas, sem correção, 1 CRITICAL
+        não há correção publicada e o pacote é seu: avalie remover, substituir ou
+isolar. É o grupo em que uma isenção documentada em `.dockerls-ignore.yaml` faz
+sentido -- com prazo
+        CVE-2026-0101 (urllib3)
+     1  suas, com correção
+        há correção publicada: suba a versão da dependência no seu manifesto e
+reconstrua
+        CVE-2026-0100 (requests)
+```
+
+*(Bloco gerado com achados sintéticos, pelo mesmo motivo da nota acima; o
+formato é o real.)*
+
+Repare no hedge do primeiro grupo: **"pode resolver"**, não "resolve". Uma
+correção existir upstream não significa que quem publica a base já reconstruiu
+com ela — e prometer o contrário é como uma ferramenta perde a confiança de
+quem seguiu o conselho e não viu o número cair. O `dockerls base` é quem
+confere se a tag efetivamente moveu.
+
+Os quatro grupos são ordenados pelo número de CRITICAL, não pelo total: é onde
+a primeira hora de trabalho rende mais, e ordenar por total faria um monte de
+LOW passar à frente de dois CRITICAL sem correção. `REMOVED` fica fora do plano
+— um plano que lista o que já não existe faz a lista parecer maior do que o
+trabalho é.
+
+#### O portão também diz de onde veio
+
+Quando `--attribute` rodou, a linha que reprova o build carrega a origem:
+
+```
+Vulnerabilities exceed threshold (critical): 3 finding(s) at or above CRITICAL
+[2 da base node:22-alpine (1 com correção publicada), 1 das suas camadas]
+-- CVE-2026-0001 (CRITICAL) in openssl 3.0.14-r0 -> 3.0.15-r0; ...
+```
+
+É a informação mais cara de obter e a mais barata de mostrar ali: quem lê o log
+do CI está decidindo, naquele segundo, se mexe no Dockerfile ou na base. Sem
+isso a decisão é um palpite. Quando a atribuição **não** rodou ou não fechou, a
+linha fica calada sobre origem — um portão que insinua uma origem que não mediu
+é pior do que um portão calado.
+
 #### Exemplos práticos, com a saída real
 
 **1. Validar sem construir** — é o modo indicado para portão de CI. Contra um

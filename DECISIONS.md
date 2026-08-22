@@ -738,3 +738,41 @@ continua sobre os caminhos completos.
 daemon, 0,84 s viraram 0,013 s — e o digest é byte a byte o mesmo, o que é o
 que torna a mudança segura: documentos de procedência antigos continuam
 comparáveis com novos.
+
+## D-039 — Origem sem "tem correção?" ainda não é um plano
+
+**Contexto.** A atribuição divide os achados entre os que vieram da base e os
+que vieram das suas camadas. Parecia resposta suficiente.
+
+**Decisão.** Não é. O plano cruza origem com a existência de correção
+publicada, produzindo quatro grupos com quatro ações distintas.
+
+**Consequência.** "41 vêm da base" leva a "atualize a base" — que é trabalho
+perdido se nenhuma das 41 tiver correção publicada. Só a segunda dimensão
+separa "atualizar" de "trocar", e são semanas de trabalho diferentes.
+
+## D-040 — "Pode resolver", nunca "resolve"
+
+**Contexto.** Um achado herdado com `fixed_version` preenchido convida a dizer
+que atualizar a base o elimina.
+
+**Decisão.** O texto diz que atualizar **pode** resolver, e explica por quê: a
+correção existir upstream não significa que quem publica a base já reconstruiu
+com ela.
+
+**Consequência.** O conselho fica menos vendável e continua verdadeiro. É como
+uma ferramenta perde a confiança de quem seguiu a recomendação, reconstruiu, e
+viu o mesmo número — uma vez basta para ninguém mais ler a seção.
+
+## D-041 — O portão só fala de origem quando mediu origem
+
+**Contexto.** A linha que reprova o build é o texto mais lido de toda a
+ferramenta, e enriquecê-la com a origem dos achados é tentador mesmo sem
+`--attribute`.
+
+**Decisão.** Sem atribuição disponível, a linha não menciona origem.
+
+**Consequência.** Quem não pediu `--attribute` vê a mensagem antiga. Em troca,
+a frase sobre origem, quando aparece, é sempre medida — um portão que insinua
+uma origem que não mediu é pior do que um portão calado, porque manda alguém
+mexer no lugar errado com a autoridade de quem mediu.

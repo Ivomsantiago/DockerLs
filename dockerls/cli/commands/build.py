@@ -423,12 +423,42 @@ def _print_inheritance(report: InheritanceReport | None) -> None:
         console.print(f"  [{cor}]{quantidade:>4}[/{cor}]  {rotulo}")
         console.print(f"        [dim]{safe(ACTIONS[origem])}[/dim]")
 
+    _print_plan(report)
+
     if report.inherited_share >= 0.5 and report.inherited:
         console.print(
             f"\n[yellow]{report.inherited_share:.0%} das vulnerabilidades desta imagem "
             "vieram da base.[/yellow]\n[dim]Mexer no seu Dockerfile não resolve essa "
             "parte: rode `dockerls base --alternatives` para medir outra base.[/dim]"
         )
+
+
+def _print_plan(report: InheritanceReport) -> None:
+    """O plano de trabalho: origem cruzada com "existe correção?".
+
+    Origem sozinha diz de quem é o problema; correção diz se ele tem solução.
+    Só as duas juntas dizem o que fazer na segunda-feira -- e a diferença é
+    grande: se nenhuma das herdadas tem correção publicada, atualizar a base é
+    trabalho perdido.
+    """
+    plano = report.plan()
+    if not plano:
+        return
+
+    console.print("\n[bold]Plano de trabalho[/bold]")
+    for bucket in plano:
+        de_onde = "da base" if bucket.origin is FindingOrigin.INHERITED else "suas"
+        com_correcao = "com correção" if bucket.fixable else "sem correção"
+        criticas = f", {bucket.critical} CRITICAL" if bucket.critical else ""
+        cor = "red" if bucket.critical else "yellow"
+        console.print(f"  [{cor}]{bucket.count:>4}[/{cor}]  {de_onde}, {com_correcao}{criticas}")
+        console.print(f"        [dim]{safe(bucket.action())}[/dim]")
+        # Os três primeiros por severidade: uma lista completa aqui viraria
+        # rolagem, e quem quer todos usa --format json.
+        amostra = ", ".join(f"{f.cve_id} ({f.package_name})" for f in bucket.findings[:3])
+        if amostra:
+            resto = f" e mais {bucket.count - 3}" if bucket.count > 3 else ""
+            console.print(f"        [dim]{safe(amostra)}{resto}[/dim]")
 
 
 def _digest_reference(reference: str, digest: str) -> str:

@@ -1371,3 +1371,119 @@ class TestPreflight:
         )
 
         assert not response.policy_violations
+
+
+class TestGateOriginHint:
+    """A linha do portão diz de onde vieram os achados, quando se sabe.
+
+    Quem lê o log do CI está decidindo, naquele segundo, se mexe no Dockerfile
+    ou na base -- e sem isso a decisão é um palpite.
+    """
+
+    @pytest.fixture
+    def context(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM node:22-alpine\nUSER node\n")
+        return tmp_path
+
+    @pytest.fixture
+    def use_case(self):
+        validation = _validation()
+        validator = MagicMock(spec=DockerfileValidatorInterface)
+        validator.validate.return_value = validation
+        analysis = _analysis(validation)
+        analysis.info.final_base_image = "node:22-alpine"
+        validator.analyze.return_value = analysis
+        return BuildImageUseCase(validator, MagicMock())
+
+    @staticmethod
+    def _scan(*findings, critical=0):
+        return ScanResult(
+            critical=critical,
+            total_vulnerabilities=len(findings),
+            vulnerabilities=[
+                {
+                    "cve_id": c,
+                    "package": p,
+                    "severity": "CRITICAL",
+                    "fixed_version": fix,
+                }
+                for c, p, fix in findings
+            ],
+        )
+
+    def _run(self, use_case, context, built, base, *, attribute=True):
+        scans = {"test:latest": built, "node:22-alpine": base}
+        with (
+            patch.object(use_case, "_build_image") as mock_build,
+            patch.object(use_case, "_scan_image", side_effect=lambda tag: scans.get(tag)),
+        ):
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            return use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=True,
+                    fail_on="critical",
+                    attribute_findings=attribute,
+                )
+            )
+
+    def test_o_portao_diz_quantas_vieram_da_base(self, use_case, context):
+        built = self._scan(("CVE-1", "openssl", "3.0.15"), ("CVE-2", "requests", ""), critical=2)
+        base = self._scan(("CVE-1", "openssl", "3.0.15"), critical=1)
+
+        response = self._run(use_case, context, built, base)
+
+        assert response.exit_code == EXIT_POLICY
+        assert "1 da base node:22-alpine (1 com correção publicada)" in response.error
+        assert "1 das suas camadas" in response.error
+
+    def test_sem_atribuicao_o_portao_nao_insinua_origem(self, use_case, context):
+        """Um portão que insinua uma origem que não mediu é pior do que um
+        portão calado."""
+        built = self._scan(("CVE-1", "openssl", ""), critical=1)
+
+        response = self._run(use_case, context, built, None, attribute=False)
+
+        assert response.exit_code == EXIT_POLICY
+        assert "da base" not in response.error
+
+    def test_atribuicao_que_nao_fechou_tambem_nao_insinua(self, use_case, context):
+        built = self._scan(("CVE-1", "openssl", ""), critical=1)
+
+        response = self._run(use_case, context, built, None, attribute=True)
+
+        assert response.inheritance is not None
+        assert not response.inheritance.available
+        assert "da base" not in response.error
+
+    def test_a_base_e_escaneada_uma_vez_so_na_reprovacao(self, use_case, context):
+        """Escanear a base duas vezes para dizer a mesma coisa duas vezes
+        seria pagar minutos por nada."""
+        built = self._scan(("CVE-1", "openssl", ""), critical=1)
+        base = self._scan(("CVE-1", "openssl", ""), critical=1)
+        scans = {"test:latest": built, "node:22-alpine": base}
+
+        with (
+            patch.object(use_case, "_build_image") as mock_build,
+            patch.object(
+                use_case, "_scan_image", side_effect=lambda tag: scans.get(tag)
+            ) as mock_scan,
+        ):
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=True,
+                    fail_on="critical",
+                    attribute_findings=True,
+                )
+            )
+
+        base_scans = [c for c in mock_scan.call_args_list if c.args[0] == "node:22-alpine"]
+        assert len(base_scans) == 1

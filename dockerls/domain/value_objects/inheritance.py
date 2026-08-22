@@ -77,13 +77,85 @@ class AttributedFinding:
     package_name: str
     severity: str
     origin: FindingOrigin
+    #: Versão em que o upstream publicou a correção, quando publicou. Vazio é
+    #: "não há correção", e essa distinção é metade do plano de trabalho:
+    #: atualizar não resolve o que ninguém corrigiu.
+    fixed_version: str = ""
 
-    def to_dict(self) -> dict[str, str]:
+    @property
+    def fixable(self) -> bool:
+        return bool(self.fixed_version.strip())
+
+    def to_dict(self) -> dict[str, object]:
         return {
             "cve": self.cve_id,
             "package": self.package_name,
             "severity": self.severity,
             "origin": str(self.origin),
+            "fixed_version": self.fixed_version,
+            "fixable": self.fixable,
+        }
+
+
+#: Severidades da mais grave para a menos, para o plano abrir pelo que importa.
+_SEVERITY_RANK = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
+
+
+@dataclass(frozen=True)
+class RemediationBucket:
+    """Um grupo do plano de trabalho: mesma origem, mesma situação de correção.
+
+    Existe porque origem sozinha não é plano. "41 vêm da base" ainda não diz se
+    atualizar a base adianta -- e a resposta muda tudo: se nenhuma delas tem
+    correção publicada, atualizar é trabalho perdido e trocar a base é o único
+    caminho.
+    """
+
+    origin: FindingOrigin
+    fixable: bool
+    findings: tuple[AttributedFinding, ...]
+
+    @property
+    def count(self) -> int:
+        return len(self.findings)
+
+    @property
+    def critical(self) -> int:
+        return sum(1 for f in self.findings if f.severity.upper() == "CRITICAL")
+
+    def action(self) -> str:
+        """O que fazer com este grupo, e o que essa ação não garante."""
+        if self.origin is FindingOrigin.INHERITED:
+            if self.fixable:
+                return (
+                    "há correção publicada upstream: atualizar a base pode "
+                    "resolver -- pode, porque a correção existir não significa que "
+                    "quem publica a base já reconstruiu com ela. `dockerls base` "
+                    "confere se a tag moveu"
+                )
+            return (
+                "não há correção publicada: atualizar a base não resolve nada aqui. "
+                "Trocar de base é o único caminho -- `dockerls base --alternatives` "
+                "mede as candidatas"
+            )
+        if self.fixable:
+            return (
+                "há correção publicada: suba a versão da dependência no seu manifesto e reconstrua"
+            )
+        return (
+            "não há correção publicada e o pacote é seu: avalie remover, substituir "
+            "ou isolar. É o grupo em que uma isenção documentada em "
+            "`.dockerls-ignore.yaml` faz sentido -- com prazo"
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "origin": str(self.origin),
+            "fixable": self.fixable,
+            "count": self.count,
+            "critical": self.critical,
+            "action": self.action(),
+            "findings": [f.to_dict() for f in self.findings],
         }
 
 
@@ -127,6 +199,37 @@ class InheritanceReport:
         presentes = len(self.inherited) + len(self.introduced)
         return len(self.inherited) / presentes if presentes else 0.0
 
+    def plan(self) -> tuple[RemediationBucket, ...]:
+        """O plano de trabalho: origem cruzada com "existe correção?".
+
+        Origem sozinha diz de quem é o problema; correção diz se ele tem
+        solução. Só as duas juntas dizem o que fazer na segunda-feira.
+
+        `REMOVED` fica de fora: não está na imagem, e um plano que lista o que
+        já não existe faz a lista parecer maior do que o trabalho é.
+        """
+        buckets: list[RemediationBucket] = []
+        for origin in (FindingOrigin.INHERITED, FindingOrigin.INTRODUCED):
+            for fixable in (True, False):
+                achados = tuple(
+                    sorted(
+                        (f for f in self.of(origin) if f.fixable is fixable),
+                        key=_by_severity,
+                    )
+                )
+                if achados:
+                    buckets.append(
+                        RemediationBucket(origin=origin, fixable=fixable, findings=achados)
+                    )
+        # O grupo com mais CRITICAL abre a lista: é onde a primeira hora de
+        # trabalho rende mais, e ordenar por total faria um monte de LOW passar
+        # à frente de dois CRITICAL sem correção.
+        return tuple(sorted(buckets, key=lambda b: (-b.critical, -b.count)))
+
+    @property
+    def fixable_inherited(self) -> int:
+        return sum(1 for f in self.inherited if f.fixable)
+
     def explain(self) -> str:
         """A frase que responde "consertar o quê?"."""
         if not self.available:
@@ -136,13 +239,36 @@ class InheritanceReport:
             )
         herdadas, suas = len(self.inherited), len(self.introduced)
         if not herdadas and not suas:
+            if self.removed:
+                # É o melhor resultado possível, e a versão anterior o
+                # escondia atrás de "nada a atribuir": a imagem está limpa
+                # *e* o build tirou coisa da base. Vale dizer.
+                quantas = len(self.removed)
+                if quantas == 1:
+                    return (
+                        "nenhuma vulnerabilidade nesta imagem, e a 1 que a base tinha "
+                        "não sobreviveu ao build"
+                    )
+                return (
+                    f"nenhuma vulnerabilidade nesta imagem, e as {quantas} que a base "
+                    "tinha não sobreviveram ao build"
+                )
             return "nenhuma vulnerabilidade a atribuir nesta imagem"
         partes = [
-            f"{herdadas} de {herdadas + suas} vêm da base {self.base_reference}",
-            f"{suas} vêm das camadas deste Dockerfile",
+            f"{herdadas} de {herdadas + suas} {_vir(herdadas)} da base {self.base_reference}",
+            f"{suas} {_vir(suas)} das camadas deste Dockerfile",
         ]
         if self.removed:
-            partes.append(f"{len(self.removed)} que a base tinha foram removidas no build")
+            quantas = len(self.removed)
+            verbo = "foi removida" if quantas == 1 else "foram removidas"
+            partes.append(f"{quantas} que a base tinha {verbo} no build")
+        if herdadas:
+            # A pergunta imediatamente seguinte a "41 vêm da base" é "e
+            # atualizar a base resolve?". Responder junto poupa a viagem.
+            corrigiveis = self.fixable_inherited
+            partes.append(
+                f"{corrigiveis} das herdadas {_ter(corrigiveis)} correção publicada upstream"
+            )
         return "; ".join(partes)
 
     def to_dict(self) -> dict[str, object]:
@@ -158,6 +284,7 @@ class InheritanceReport:
             },
             "inherited_share": round(self.inherited_share, 3),
             "actions": {str(origin): action for origin, action in ACTIONS.items()},
+            "plan": [b.to_dict() for b in self.plan()],
             "findings": [f.to_dict() for f in self.findings],
         }
 
@@ -206,4 +333,20 @@ def _attributed(identity: str, vuln: Vulnerability, origin: FindingOrigin) -> At
         package_name=vuln.package_name,
         severity=str(vuln.severity),
         origin=origin,
+        fixed_version=vuln.fixed_version,
     )
+
+
+def _vir(quantidade: int) -> str:
+    return "vem" if quantidade == 1 else "vêm"
+
+
+def _ter(quantidade: int) -> str:
+    return "tem" if quantidade == 1 else "têm"
+
+
+def _by_severity(finding: AttributedFinding) -> tuple[int, str]:
+    """Mais grave primeiro; CVE desempata para a ordem ser estável."""
+    severity = finding.severity.upper()
+    rank = _SEVERITY_RANK.index(severity) if severity in _SEVERITY_RANK else len(_SEVERITY_RANK)
+    return rank, finding.cve_id
