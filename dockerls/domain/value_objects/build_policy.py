@@ -32,9 +32,22 @@ from enum import StrEnum
 
 from dockerls.domain.value_objects.tristate import Tristate
 
-#: Severidades ordenadas da mais grave para a menos. A ordem é o que permite
-#: dizer "critical implica também high" sem repetir a lista em cada regra.
+#: Severidades que uma contagem pode nomear. `unknown` entra: um scanner que
+#: reporta um achado sem severidade ainda reportou um achado, e um teto sobre
+#: ele é legítimo.
 SEVERITY_ORDER: tuple[str, ...] = ("critical", "high", "medium", "low", "unknown")
+
+#: Limiares que o portão aceita, do mais brando para o mais estrito -- e a
+#: ordem é essa mesmo. `--fail-on low` reprova em LOW *e em tudo acima dele*,
+#: então é o limiar mais exigente que existe; `--fail-on critical` é o mais
+#: permissivo. Confundir os dois foi um bug real aqui: `effective_fail_on`
+#: escolhia por "gravidade da palavra" e devolvia `critical` quando um lado
+#: pedia `high`, afrouxando em silêncio um portão que alguém tinha apertado.
+#:
+#: `unknown` fica de fora porque o portão não sabe avaliá-lo: aceitá-lo na
+#: política produziria um build que morre com erro técnico no meio do
+#: caminho, em vez de uma política recusada na leitura do arquivo.
+GATE_THRESHOLDS: tuple[str, ...] = ("critical", "high", "medium", "low")
 
 
 class PolicyRule(StrEnum):
@@ -125,14 +138,78 @@ class BuildPolicy:
     def effective_fail_on(self, requested: str) -> str:
         """O limiar que vale, entre o da política e o da linha de comando.
 
-        Vence o mais estrito. Um arquivo no repositório não pode desligar um
-        portão que o pipeline pediu -- senão bastaria commitar um YAML para
-        publicar o que não passaria.
+        Vence o mais estrito, nos dois sentidos: um arquivo no repositório não
+        desliga um portão que o pipeline pediu, e uma flag não afrouxa a
+        política da organização.
+
+        "Mais estrito" é o limiar **mais baixo na escala de severidade**, e não
+        a palavra mais assustadora: `--fail-on low` reprova em LOW e em tudo
+        acima, enquanto `--fail-on critical` só olha para CRITICAL. Entre
+        `high` e `critical` vence `high`.
         """
-        candidates = [s for s in (self.fail_on, requested) if s in SEVERITY_ORDER]
+        candidates = [s for s in (self.fail_on, requested) if s in GATE_THRESHOLDS]
         if not candidates:
             return requested or self.fail_on
-        return min(candidates, key=SEVERITY_ORDER.index)
+        return max(candidates, key=GATE_THRESHOLDS.index)
+
+    @staticmethod
+    def production() -> BuildPolicy:
+        """O perfil de produção: o conjunto que uma imagem publicada precisa.
+
+        Existe porque a alternativa é uma lista de sete flags que cada pipeline
+        digita de novo, esquecendo uma diferente por vez. Nomear o conjunto faz
+        a omissão virar uma decisão visível (`--no-policy`, `--fail-on low`) em
+        vez de um esquecimento invisível.
+
+        `fail_on` fica em `critical` e não em `high` de propósito. Um perfil que
+        ninguém consegue cumprir é um perfil que as pessoas desligam inteiro, e
+        `high` reprova praticamente toda base Debian num dia qualquer. O teto de
+        `high` fica declarado à parte, onde se enxerga e se discute.
+        """
+        return BuildPolicy(
+            fail_on="critical",
+            require_scan=True,
+            require_pinned_bases=True,
+            require_nonroot=True,
+            require_provenance=True,
+            required_labels=(
+                "org.opencontainers.image.source",
+                "org.opencontainers.image.vendor",
+                "security.contact",
+            ),
+        )
+
+    def merged_with(self, other: BuildPolicy | None) -> BuildPolicy:
+        """Este perfil somado a outro, sempre pelo lado mais estrito.
+
+        Serve para `--production` conviver com um `.dockerls-policy.yaml`: o
+        arquivo do repositório pode **apertar** o perfil (exigir um rótulo a
+        mais, um registry específico), e não pode afrouxá-lo. Uma exigência
+        declarada em qualquer um dos dois vale nos dois.
+        """
+        if other is None:
+            return self
+        tetos = {**other.max_vulnerabilities}
+        for severity, limit in self.max_vulnerabilities.items():
+            tetos[severity] = min(limit, tetos.get(severity, limit))
+        return BuildPolicy(
+            fail_on=self.effective_fail_on(other.fail_on),
+            max_vulnerabilities=tetos,
+            require_scan=self.require_scan or other.require_scan,
+            require_pinned_bases=self.require_pinned_bases or other.require_pinned_bases,
+            require_nonroot=self.require_nonroot or other.require_nonroot,
+            require_provenance=self.require_provenance or other.require_provenance,
+            required_labels=tuple(dict.fromkeys((*self.required_labels, *other.required_labels))),
+            allowed_base_registries=(
+                # Interseção não: duas listas disjuntas produziriam um conjunto
+                # vazio, que significa "não restringe" -- exatamente o oposto do
+                # que as duas pediram. A união mantém as duas restrições
+                # satisfazíveis e cada base ainda precisa estar em alguma delas.
+                tuple(
+                    dict.fromkeys((*self.allowed_base_registries, *other.allowed_base_registries))
+                )
+            ),
+        )
 
     def static_subset(self) -> BuildPolicy:
         """A política reduzida ao que se decide sem construir nem escanear.

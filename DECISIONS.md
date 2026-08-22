@@ -678,3 +678,63 @@ como alerta nem afeta o exit code.
 estado errado de um artefato interno. A diferença é a intenção de quem
 publicou, e essa esta ferramenta não tem como medir. Alertar seria afirmar uma
 intenção; relatar entrega o fato a quem sabe qual era.
+
+## D-035 — "Mais estrito" é o limiar mais baixo, não a palavra mais grave
+
+**Contexto.** D-025 decidiu que, entre o `fail_on` da política e o da linha de
+comando, vence o mais estrito. A implementação ordenava as severidades por
+gravidade e escolhia o mínimo — devolvendo `critical` quando um dos lados
+pedia `high`.
+
+**Decisão.** A ordenação do portão é a que vale: `--fail-on low` reprova em LOW
+e em tudo acima, então `low` é o limiar mais exigente e `critical` o mais
+brando. A escolha passa a ser o índice máximo em `GATE_THRESHOLDS`.
+
+**Consequência.** Uma política `fail_on: high` deixa de ser silenciosamente
+relaxada por um pipeline que passa `--fail-on critical`. Era o caso exato que
+D-025 existia para impedir, invertido — e nada na saída acusava, porque o
+build passava.
+
+## D-036 — Sem os dois scans não há atribuição
+
+**Contexto.** `--attribute` divide os achados entre os que vieram da base e os
+que vieram das suas camadas. Se a base não escaneia, seria fácil listar tudo
+como "seu".
+
+**Decisão.** O relatório fica `UNAVAILABLE` com o motivo, e nenhuma contagem é
+apresentada.
+
+**Consequência.** Quem quer a divisão precisa de uma base escaneável. Em troca,
+o relatório nunca acusa o Dockerfile de alguém por causa de um scanner que não
+rodou — nem, na direção oposta, absolve o build atribuindo tudo à base.
+
+## D-037 — O perfil de produção tem nome, e diz o que ligou
+
+**Contexto.** Uma imagem publicada precisa de sete coisas ao mesmo tempo. A
+alternativa a nomeá-las é uma lista de flags que cada pipeline redigita.
+
+**Decisão.** `--production` liga o conjunto e **imprime cada regra que ligou**;
+um `.dockerls-policy.yaml` do contexto é somado, sempre pelo lado mais estrito.
+
+**Consequência.** A omissão vira uma decisão visível (`--no-policy`,
+`--fail-on` explícito) em vez de um esquecimento invisível. E um perfil que
+muda o comportamento em silêncio seria descoberto pelo build reprovando — cuja
+primeira reação é desligar o portão.
+
+**Alternativa recusada.** `fail_on: high` no perfil. Um perfil que ninguém
+consegue cumprir é um perfil que as pessoas desligam inteiro, e `high` reprova
+praticamente toda base Debian num dia qualquer. O teto de HIGH fica declarado à
+parte, onde se enxerga e se discute.
+
+## D-038 — A poda do contexto acontece na descida
+
+**Contexto.** `hash_context` percorria a árvore com `rglob("*")` e descartava
+depois o que o `.dockerignore` excluía.
+
+**Decisão.** Diretórios ignorados não são percorridos; a ordenação final
+continua sobre os caminhos completos.
+
+**Consequência.** Num contexto de 52.400 arquivos em que 401 são enviados ao
+daemon, 0,84 s viraram 0,013 s — e o digest é byte a byte o mesmo, o que é o
+que torna a mudança segura: documentos de procedência antigos continuam
+comparáveis com novos.

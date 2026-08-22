@@ -17,6 +17,7 @@ from sqlalchemy.exc import OperationalError
 from typer.testing import CliRunner
 
 from dockerls.application.dto.analysis import AnalysisResult
+from dockerls.cache.sqlite_cache import SQLiteCache
 from dockerls.cli import dependencies
 from dockerls.cli.app import app
 
@@ -143,7 +144,7 @@ class TestCacheCommands:
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
         broken = OperationalError("SELECT 1", {}, Exception("database disk image is malformed"))
 
-        with patch.object(dependencies.SQLiteCache, "clear", AsyncMock(side_effect=broken)):
+        with patch.object(SQLiteCache, "clear", AsyncMock(side_effect=broken)):
             result = runner.invoke(app, ["cache", "clear"])
 
         assert result.exit_code == 1
@@ -153,7 +154,7 @@ class TestCacheCommands:
     def test_cleanup_survives_a_storage_error(self, tmp_path, monkeypatch):
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
         with patch.object(
-            dependencies.SQLiteCache, "cleanup_expired", AsyncMock(side_effect=OSError("disk full"))
+            SQLiteCache, "cleanup_expired", AsyncMock(side_effect=OSError("disk full"))
         ):
             result = runner.invoke(app, ["cache", "cleanup"])
 

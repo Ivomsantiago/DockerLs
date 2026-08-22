@@ -22,6 +22,8 @@ from dockerls.domain.entities.dockerfile_analysis import (
     HardeningRule,
     ValidationStatus,
 )
+from dockerls.domain.entities.vulnerability import Severity, Vulnerability
+from dockerls.domain.value_objects.base_upgrade import parse_bases
 from dockerls.domain.value_objects.build_policy import (
     BaseFact,
     BuildPolicy,
@@ -30,6 +32,11 @@ from dockerls.domain.value_objects.build_policy import (
     evaluate,
 )
 from dockerls.domain.value_objects.image_reference import registry_host_of
+from dockerls.domain.value_objects.inheritance import (
+    InheritanceReport,
+    attribute,
+    unavailable,
+)
 from dockerls.domain.value_objects.provenance import (
     ArtifactDigests,
     BuildProvenance,
@@ -153,6 +160,9 @@ class BuildImageRequest:
     #: A política declarada em `.dockerls-policy.yaml`, já carregada pela
     #: camada CLI. O caso de uso confere; ler o arquivo é trabalho da borda.
     policy: BuildPolicy | None = None
+    #: Escanear também a base declarada, para dizer de quem é cada CVE. Custa
+    #: um segundo scan, e por isso é escolha e não padrão.
+    attribute_findings: bool = False
 
 
 @dataclass
@@ -176,6 +186,8 @@ class BuildImageResponse:
     provenance: BuildProvenance | None = None
     #: Regras de `.dockerls-policy.yaml` que este build não cumpriu.
     policy_violations: list[PolicyViolation] = field(default_factory=list)
+    #: De quem é cada vulnerabilidade: da base declarada ou das suas camadas.
+    inheritance: InheritanceReport | None = None
     error: str | None = None
     exit_code: int = EXIT_OK
 
@@ -207,9 +219,24 @@ class BuildImageUseCase:
                     exit_code=EXIT_ERROR,
                 )
 
-            # 2. Modo validate-only
+            # 2. Modo validate-only. A política entra aqui pelo subconjunto
+            #    estático: sem build não há scan, procedência nem imagem, e
+            #    aplicar as regras que dependem deles produziria uma violação
+            #    por execução dizendo sempre a mesma coisa. O que dá para
+            #    conferir só lendo o Dockerfile é conferido -- e é justamente
+            #    o que evita descobrir um rótulo faltando depois de dez
+            #    minutos de build.
             if request.validate_only:
-                return self._format_validation_response(validation_result)
+                response = self._format_validation_response(validation_result)
+                response.policy_violations = self._preflight(request, validation_result)
+                if response.policy_violations and response.exit_code == EXIT_OK:
+                    response.success = False
+                    response.error = (
+                        f"{len(response.policy_violations)} regra(s) de política não "
+                        "cumprida(s) no que dá para conferir sem construir"
+                    )
+                    response.exit_code = EXIT_POLICY
+                return response
 
             # 3. Modo suggest-only
             if request.suggest_only:
@@ -371,8 +398,17 @@ class BuildImageUseCase:
                         validation=validation,
                         analysis=validation_result.analysis,
                         error=self._gate_failure_summary(scan_result, threshold),
+                        inheritance=self._attribute_findings(
+                            request, validation_result, scan_result
+                        ),
                         exit_code=EXIT_POLICY,
                     )
+
+            # 7a. Cruzar os achados com os da base: a contagem sozinha diz
+            #     "conserte", e não diz o quê. Roda antes dos portões porque
+            #     precisa aparecer no relatório mesmo quando o build reprova --
+            #     é justamente aí que a pergunta "de quem é isso?" é feita.
+            inheritance = self._attribute_findings(request, validation_result, scan_result)
 
             # 7b. Conferir a política declarada. Antes do push, pelo mesmo
             #     motivo do portão de scan: uma imagem que viola a política da
@@ -397,6 +433,7 @@ class BuildImageUseCase:
                         validation=validation,
                         analysis=validation_result.analysis,
                         policy_violations=violations,
+                        inheritance=inheritance,
                         error=(
                             f"{len(violations)} regra(s) de .dockerls-policy.yaml não cumprida(s)"
                         ),
@@ -467,6 +504,7 @@ class BuildImageUseCase:
                 image_tag=request.tag,
                 image_sha256=build_result.image_sha256,
                 provenance=provenance,
+                inheritance=inheritance,
                 report=report,
                 validation=validation,
                 analysis=validation_result.analysis,
@@ -1159,6 +1197,95 @@ class BuildImageUseCase:
         cutoff = self.FAIL_ON_THRESHOLDS.index(normalized)
         return any(counts[level] > 0 for level in self.FAIL_ON_THRESHOLDS[: cutoff + 1])
 
+    def _preflight(
+        self, request: BuildImageRequest, validation: AnalyzeDockerfileResponse
+    ) -> list[PolicyViolation]:
+        """As regras que já dá para reprovar sem construir nada.
+
+        Descobrir um rótulo obrigatório faltando depois de dez minutos de build
+        e um scan é o tipo de atrito que faz as pessoas pararem de rodar o
+        portão. As regras que dependem de medição continuam para depois: elas
+        não são consideradas cumpridas aqui, apenas não são conferíveis.
+        """
+        if request.policy is None:
+            return []
+        return evaluate(
+            request.policy.static_subset(),
+            PolicyFacts(
+                bases=self._base_facts(request),
+                labels=dict(request.labels or {}),
+                nonroot=self._nonroot_state(validation.analysis),
+            ),
+        )
+
+    def _base_facts(self, request: BuildImageRequest) -> tuple[BaseFact, ...]:
+        """As bases declaradas, lidas do arquivo com expansão de `ARG`."""
+        path = Path(request.context_path) / request.dockerfile_path
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            logger.debug(f"Não foi possível reler {path}: {e}")
+            return ()
+        return tuple(
+            BaseFact(
+                reference=base.reference,
+                registry=registry_host_of(base.name),
+                pinned=base.is_pinned,
+            )
+            for base in parse_bases(content)
+        )
+
+    def _attribute_findings(
+        self,
+        request: BuildImageRequest,
+        validation: AnalyzeDockerfileResponse,
+        scan_result: ScanResult | None,
+    ) -> InheritanceReport | None:
+        """De quem é cada CVE: da base declarada, ou das camadas deste build.
+
+        Um relatório que diz "47 vulnerabilidades" manda consertar sem dizer o
+        quê. A resposta exige um segundo scan -- o da base -- e por isso é
+        escolha explícita: dobrar o tempo de portão por padrão faria as pessoas
+        desligarem o portão.
+
+        Devolve `None` quando ninguém pediu, e um relatório `UNAVAILABLE` com o
+        motivo quando pediram e não deu. As duas coisas são diferentes de "tudo
+        é seu" e de "tudo é herdado", que seriam as duas formas de transformar
+        ausência de medição em acusação.
+        """
+        if not request.attribute_findings:
+            return None
+        if scan_result is None:
+            return unavailable("", "a imagem construída não pôde ser escaneada")
+
+        analysis = validation.analysis
+        base_reference = (analysis.info.final_base_image or "") if analysis else ""
+        if not base_reference:
+            return unavailable(
+                "",
+                "não foi possível determinar a base do estágio final a partir do Dockerfile",
+            )
+        if base_reference.lower() == "scratch":
+            # `scratch` não é uma imagem: não há o que escanear, e tudo que a
+            # imagem carrega veio das camadas deste build. Dizer isso é
+            # atribuição, não omissão.
+            return attribute(
+                _as_vulnerabilities(scan_result.vulnerabilities), [], base_reference=base_reference
+            )
+
+        logger.info(f"Escaneando a base {base_reference} para atribuir os achados")
+        base_scan = self._scan_image(base_reference)
+        if base_scan is None:
+            return unavailable(
+                base_reference,
+                f"a base {base_reference} não pôde ser escaneada",
+            )
+        return attribute(
+            _as_vulnerabilities(scan_result.vulnerabilities),
+            _as_vulnerabilities(base_scan.vulnerabilities),
+            base_reference=base_reference,
+        )
+
     def _policy_facts(
         self,
         *,
@@ -1473,3 +1600,32 @@ class BuildImageUseCase:
             logger.debug(f"Não foi possível obter {what}: exit {result.returncode}")
             return None
         return result.stdout.strip()
+
+
+def _as_vulnerabilities(raw: list[dict[str, Any]]) -> list[Vulnerability]:
+    """Converte os achados crus do scanner nas entidades do domínio.
+
+    O `ScanResult` deste módulo carrega dicionários porque o relatório de build
+    os serializa direto. A atribuição, porém, é lógica de domínio e trabalha
+    com a entidade -- converter aqui é o que evita duas definições de "o que é
+    um achado" convivendo no mesmo processo.
+
+    Uma severidade que o scanner reporte com um nome que não conhecemos vira
+    `UNKNOWN` em vez de derrubar o build: a atribuição usa CVE e pacote, e a
+    severidade é só o que se mostra ao lado.
+    """
+    findings: list[Vulnerability] = []
+    for item in raw:
+        severity = str(item.get("severity") or "").strip().upper()
+        findings.append(
+            Vulnerability(
+                cve_id=str(item.get("cve_id") or ""),
+                package_name=str(item.get("package") or ""),
+                severity=Severity(severity)
+                if severity in Severity.__members__
+                else Severity.UNKNOWN,
+                installed_version=str(item.get("installed_version") or ""),
+                fixed_version=str(item.get("fixed_version") or ""),
+            )
+        )
+    return findings

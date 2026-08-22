@@ -23,6 +23,8 @@ from dockerls.cli.publish_prompt import resolve_destination, resolve_identity
 from dockerls.cli.rendering import render_validation_report
 from dockerls.cli.text import safe
 from dockerls.domain.value_objects.build_labels import BuildIdentity, MissingBuildMetadataError
+from dockerls.domain.value_objects.build_policy import BuildPolicy
+from dockerls.domain.value_objects.inheritance import ACTIONS, FindingOrigin
 from dockerls.domain.value_objects.provenance import BuildProvenance, ProvenanceStatus
 from dockerls.domain.value_objects.registry_target import InvalidRegistryTargetError
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK
@@ -39,7 +41,8 @@ from dockerls.integrations.signing.cosign import (
 )
 
 if TYPE_CHECKING:
-    from dockerls.domain.value_objects.build_policy import BuildPolicy, PolicyViolation
+    from dockerls.domain.value_objects.build_policy import PolicyViolation
+    from dockerls.domain.value_objects.inheritance import InheritanceReport
 
 console = Console()
 
@@ -118,6 +121,23 @@ def build(
         "--provenance",
         help="Arquiva o registro de supply chain (hashes de entrada e saída) em JSON",
     ),
+    production: bool = typer.Option(
+        False,
+        "--production",
+        help=(
+            "Perfil de produção: liga o portão em critical, exige scan, bases fixadas, "
+            "usuário sem privilégio, procedência verificada, rótulos de "
+            "responsabilidade e atribuição dos achados. Diz na saída o que ligou"
+        ),
+    ),
+    attribute: bool = typer.Option(
+        False,
+        "--attribute",
+        help=(
+            "Escaneia também a base declarada e diz de quem é cada CVE: dela ou das "
+            "camadas deste Dockerfile. Custa um segundo scan"
+        ),
+    ),
     sign: bool = typer.Option(
         False,
         "--sign",
@@ -185,6 +205,9 @@ def build(
             raise typer.Exit(EXIT_ERROR)
 
     declared_policy = _load_policy(path, policy, no_policy=no_policy)
+    if production:
+        declared_policy = _announce_production(declared_policy)
+        attribute = True
 
     # Parsear JSON args
     build_args_dict = _parse_json_option(build_args, "--build-args")
@@ -264,6 +287,7 @@ def build(
         max_remediation_rounds=max_iterations,
         target_zero_vulns=zero_vulns,
         policy=declared_policy,
+        attribute_findings=attribute,
     )
 
     # Executar
@@ -339,6 +363,74 @@ def _sign_if_requested(
     return asyncio.run(CosignClient().sign(alvo))
 
 
+def _announce_production(declared: BuildPolicy | None) -> BuildPolicy:
+    """Liga o perfil de produção e **diz o que ligou**.
+
+    Um perfil que muda o comportamento em silêncio é um perfil que a pessoa
+    descobre pelo build reprovando, e a primeira reação a um portão que
+    reprova sem explicar é desligá-lo.
+
+    Um `.dockerls-policy.yaml` no contexto continua valendo, e só pode
+    apertar: `--production` é um piso, não um teto.
+    """
+    perfil = BuildPolicy.production().merged_with(declared)
+    console.print("\n[bold]Perfil de produção[/bold]")
+    for regra, valor in perfil.to_dict().items():
+        if valor:
+            console.print(f"  [cyan]{regra}[/cyan]  [dim]{safe(_describe_rule(valor))}[/dim]")
+    if declared is not None:
+        console.print(
+            "  [dim]somado ao .dockerls-policy.yaml do contexto, sempre pelo lado "
+            "mais estrito[/dim]"
+        )
+    console.print()
+    return perfil
+
+
+def _describe_rule(value: object) -> str:
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {v}" for k, v in value.items())
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    return str(value)
+
+
+def _print_inheritance(report: InheritanceReport | None) -> None:
+    """De quem é cada CVE -- a resposta para "consertar o quê?".
+
+    Uma contagem sozinha manda consertar sem dizer o quê, e quem lê passa a
+    tarde descobrindo que nada no Dockerfile dela resolve o problema.
+    """
+    if report is None:
+        return
+    if not report.available:
+        console.print(
+            f"\n[yellow]Atribuição indisponível:[/yellow] [dim]{safe(report.explain())}[/dim]"
+        )
+        return
+
+    console.print("\n[bold]De onde vêm as vulnerabilidades[/bold]")
+    console.print(f"[dim]{safe(report.explain())}[/dim]\n")
+
+    linhas = (
+        ("herdadas da base", len(report.inherited), FindingOrigin.INHERITED, "yellow"),
+        ("das suas camadas", len(report.introduced), FindingOrigin.INTRODUCED, "red"),
+        ("removidas no build", len(report.removed), FindingOrigin.REMOVED, "green"),
+    )
+    for rotulo, quantidade, origem, cor in linhas:
+        if not quantidade:
+            continue
+        console.print(f"  [{cor}]{quantidade:>4}[/{cor}]  {rotulo}")
+        console.print(f"        [dim]{safe(ACTIONS[origem])}[/dim]")
+
+    if report.inherited_share >= 0.5 and report.inherited:
+        console.print(
+            f"\n[yellow]{report.inherited_share:.0%} das vulnerabilidades desta imagem "
+            "vieram da base.[/yellow]\n[dim]Mexer no seu Dockerfile não resolve essa "
+            "parte: rode `dockerls base --alternatives` para medir outra base.[/dim]"
+        )
+
+
 def _digest_reference(reference: str, digest: str) -> str:
     """`reg.io/app:1.0` + digest -> `reg.io/app@sha256:...`.
 
@@ -401,9 +493,10 @@ def _print_policy_violations(violations: list[PolicyViolation]) -> None:
     for violation in violations:
         console.print(f"  [red]x[/red] [bold]{violation.rule}[/bold]  {safe(violation.message)}")
     console.print(
-        "\n[dim]Estas regras vêm de .dockerls-policy.yaml, versionado junto do "
-        "código. Mudar o arquivo é uma alteração revisável; passar uma flag "
-        "diferente na linha de comando não é.[/dim]"
+        "\n[dim]Estas regras vêm do perfil `--production` e/ou do "
+        ".dockerls-policy.yaml do contexto. O arquivo é versionado junto do código: "
+        "mudá-lo é uma alteração revisável, passar uma flag diferente na linha de "
+        "comando não é.[/dim]"
     )
 
 
@@ -728,6 +821,7 @@ def _print_validation_output(response: BuildImageResponse, report_file: str | No
             )
         )
 
+    _print_policy_violations(response.policy_violations)
     _write_report_file(response.report, report_file)
     console.print()
 
@@ -741,6 +835,7 @@ def _print_build_output(response: BuildImageResponse, report_file: str | None) -
                 expand=False,
             )
         )
+        _print_inheritance(response.inheritance)
         _print_policy_violations(response.policy_violations)
         _write_report_file(response.report, report_file)
         return
@@ -757,6 +852,8 @@ def _print_build_output(response: BuildImageResponse, report_file: str | None) -
     if report is not None:
         _print_report(report)
         _write_report_file(report, report_file)
+
+    _print_inheritance(response.inheritance)
 
     if response.provenance is not None:
         _print_provenance(response.provenance)
@@ -889,6 +986,8 @@ def _print_json_output(
         output_data["provenance"] = response.provenance.to_dict()
     if signature is not None:
         output_data["signature"] = signature.to_dict()
+    if response.inheritance is not None:
+        output_data["inheritance"] = response.inheritance.to_dict()
     if response.policy_violations:
         output_data["policy_violations"] = [v.to_dict() for v in response.policy_violations]
     if response.error:

@@ -5,6 +5,54 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] -- 2026-08-22
+
+### Corrigido -- o portão podia ser afrouxado em silêncio
+
+- **`effective_fail_on` escolhia o limiar mais permissivo, não o mais
+  estrito.** `--fail-on low` reprova em LOW *e em tudo acima*, enquanto
+  `--fail-on critical` só olha para CRITICAL -- ou seja, `low` é o mais
+  exigente que existe e `critical` o mais brando. A função ordenava pela
+  "gravidade da palavra" e devolvia `critical` quando um dos lados pedia
+  `high`, afrouxando um portão que alguém tinha apertado. A decisão D-025
+  ("vence a mais estrita") estava certa; a implementação fazia o contrário.
+- **`fail_on: unknown` era aceito pelo arquivo de política e o portão não sabe
+  avaliá-lo**, então o build morria com erro técnico no meio do caminho em vez
+  de ser recusado na leitura do arquivo. `unknown` segue válido como teto em
+  `max_vulnerabilities`: um achado sem severidade ainda é um achado.
+
+### Adicionado -- de quem é cada CVE
+
+- **`dockerls build --attribute`.** Um relatório que diz "47 vulnerabilidades"
+  manda consertar sem dizer o quê, e quem lê passa a tarde descobrindo que nada
+  no Dockerfile dela resolve o problema. A base declarada passa a ser escaneada
+  junto da imagem, e os achados são divididos em `INHERITED` (da base -- só
+  atualizar ou trocar resolve), `INTRODUCED` (das suas camadas) e `REMOVED` (o
+  que o seu endurecimento comprou). Sem os dois scans não há atribuição: o
+  relatório diz `UNAVAILABLE` e o motivo, nunca "tudo é seu".
+- **`dockerls build --production`.** O conjunto que uma imagem publicada
+  precisa, sob um nome só, em vez de sete flags que cada pipeline digita de
+  novo esquecendo uma diferente por vez. Diz na saída o que ligou. Um
+  `.dockerls-policy.yaml` do contexto continua valendo e só pode apertar.
+- **Preflight de política no `--validate-only`.** O que dá para reprovar sem
+  construir passa a reprovar em segundos. Descobrir um rótulo obrigatório
+  faltando depois de dez minutos de build e um scan é o atrito que faz as
+  pessoas pararem de rodar o portão.
+
+### Desempenho
+
+- **Digestão do contexto de build: 65x mais rápida em contexto real.** A poda
+  do `.dockerignore` acontecia *depois* de percorrer a árvore inteira, então
+  `.git` e `node_modules` eram abertos arquivo por arquivo só para serem
+  descartados. Num contexto de 52.400 arquivos em que 401 são enviados ao
+  daemon: **0,84 s -> 0,013 s**, com o digest byte a byte idêntico (a
+  ordenação final continua sobre os caminhos completos, então um documento de
+  procedência antigo segue comparável com um novo).
+- **Arranque do CLI ~1,5x mais rápido:** mediana de **0,58 s -> 0,39 s** para
+  `dockerls version`. O SQLAlchemy era importado no arranque de toda invocação
+  por causa de dois imports de módulo, e comandos que nunca tocam o cache
+  pagavam por ele.
+
 ## [2.8.0] -- 2026-08-21
 
 ### Adicionado -- `dockerls registry-audit`

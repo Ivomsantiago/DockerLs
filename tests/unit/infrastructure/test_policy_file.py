@@ -140,3 +140,20 @@ class TestRefusals:
         path = _write(tmp_path, "require_scan: !!python/object/apply:os.system ['id']\n")
         with pytest.raises(PolicyFileError):
             load_policy(path)
+
+
+class TestGateThreshold:
+    def test_unknown_e_recusado_como_fail_on(self, tmp_path: Path) -> None:
+        """É severidade válida numa contagem e não é limiar válido: o portão
+        não sabe avaliá-lo."""
+        path = _write(tmp_path, "fail_on: unknown\n")
+
+        with pytest.raises(PolicyFileError, match="fail_on"):
+            load_policy(path)
+
+    def test_unknown_continua_valendo_como_teto(self, tmp_path: Path) -> None:
+        """Um scanner que reporta um achado sem severidade ainda reportou um
+        achado."""
+        path = _write(tmp_path, "max_vulnerabilities:\n  unknown: 0\n")
+
+        assert load_policy(path).max_vulnerabilities == {"unknown": 0}

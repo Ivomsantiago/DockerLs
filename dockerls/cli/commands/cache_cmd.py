@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any
 import typer
 from rich.console import Console
 from rich.table import Table
-from sqlalchemy.exc import SQLAlchemyError
 
 from dockerls.cli.dependencies import build_cache
 from dockerls.exit_codes import EXIT_ERROR
@@ -25,6 +24,11 @@ def _run(coro: Coroutine[Any, Any, None]) -> None:
     it must not exit with a traceback, especially for `clear`, which is
     exactly what a user reaches for when the cache is broken.
     """
+    # Import tardio: `sqlalchemy.exc` arrasta o SQLAlchemy inteiro, e este
+    # módulo é importado no arranque de *toda* invocação do CLI para registrar
+    # o subcomando. Aqui dentro ele só é pago por quem realmente mexe no cache.
+    from sqlalchemy.exc import SQLAlchemyError
+
     try:
         asyncio.run(coro)
     except (OSError, SQLAlchemyError) as e:

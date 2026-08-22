@@ -24,7 +24,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from dockerls.domain.value_objects.build_policy import SEVERITY_ORDER, BuildPolicy
+from dockerls.domain.value_objects.build_policy import (
+    GATE_THRESHOLDS,
+    SEVERITY_ORDER,
+    BuildPolicy,
+)
 from dockerls.utils.safe_yaml import UnsafeYAMLError, safe_load_yaml
 
 if TYPE_CHECKING:
@@ -114,9 +118,12 @@ def _severity(data: dict[str, Any], key: str, path: Path) -> str:
     value = data.get(key, "")
     if not value:
         return ""
-    if not isinstance(value, str) or value.strip().lower() not in SEVERITY_ORDER:
+    # `unknown` é severidade válida numa contagem e não é limiar válido: o
+    # portão não sabe avaliá-lo. Recusar aqui é o que evita um build que morre
+    # com erro técnico no meio do caminho por causa de uma linha de YAML.
+    if not isinstance(value, str) or value.strip().lower() not in GATE_THRESHOLDS:
         raise PolicyFileError(
-            f"{path}: {key} precisa ser uma de {', '.join(SEVERITY_ORDER)}, não {value!r}"
+            f"{path}: {key} precisa ser uma de {', '.join(GATE_THRESHOLDS)}, não {value!r}"
         )
     return value.strip().lower()
 

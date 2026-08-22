@@ -159,9 +159,20 @@ class TestProvenance:
 class TestEffectiveFailOn:
     def test_vence_o_mais_estrito_venha_de_onde_vier(self) -> None:
         """Um arquivo no repositório não pode desligar um portão que o
-        pipeline pediu -- senão bastaria commitar um YAML."""
-        assert BuildPolicy(fail_on="high").effective_fail_on("critical") == "critical"
-        assert BuildPolicy(fail_on="critical").effective_fail_on("high") == "critical"
+        pipeline pediu, e uma flag não pode afrouxar a política.
+
+        "Mais estrito" é o limiar mais baixo na escala, não a palavra mais
+        assustadora: `--fail-on low` reprova em LOW *e em tudo acima*, enquanto
+        `--fail-on critical` só olha para CRITICAL.
+        """
+        assert BuildPolicy(fail_on="high").effective_fail_on("critical") == "high"
+        assert BuildPolicy(fail_on="critical").effective_fail_on("high") == "high"
+        assert BuildPolicy(fail_on="critical").effective_fail_on("low") == "low"
+
+    def test_unknown_nunca_vira_limiar(self) -> None:
+        """O portão não sabe avaliá-lo; aceitá-lo produziria um build que morre
+        com erro técnico no meio do caminho."""
+        assert BuildPolicy(fail_on="critical").effective_fail_on("unknown") == "critical"
 
     def test_politica_sozinha_define_o_limiar(self) -> None:
         assert BuildPolicy(fail_on="high").effective_fail_on("") == "high"
@@ -183,3 +194,72 @@ class TestEmptiness:
 
     def test_politica_vazia_nao_viola_nada_e_tambem_nao_garante_nada(self) -> None:
         assert not evaluate(BuildPolicy(), PolicyFacts())
+
+
+class TestProductionProfile:
+    """O perfil nomeado existe porque a alternativa é uma lista de sete flags
+    que cada pipeline digita de novo, esquecendo uma diferente por vez."""
+
+    def test_o_perfil_exige_o_conjunto_completo(self) -> None:
+        perfil = BuildPolicy.production()
+
+        assert perfil.fail_on == "critical"
+        assert perfil.require_scan
+        assert perfil.require_pinned_bases
+        assert perfil.require_nonroot
+        assert perfil.require_provenance
+        assert "security.contact" in perfil.required_labels
+
+    def test_o_portao_fica_em_critical_e_nao_em_high(self) -> None:
+        """Um perfil que ninguém consegue cumprir é um perfil que as pessoas
+        desligam inteiro, e `high` reprova quase toda base Debian."""
+        assert BuildPolicy.production().fail_on == "critical"
+
+    def test_sem_arquivo_o_perfil_vale_sozinho(self) -> None:
+        assert BuildPolicy.production().merged_with(None) == BuildPolicy.production()
+
+
+class TestMerge:
+    def test_o_arquivo_do_repositorio_pode_apertar(self) -> None:
+        """`high` reprova em HIGH e em CRITICAL; o perfil de produção só olha
+        para CRITICAL. O arquivo aperta, e isso vale."""
+        perfil = BuildPolicy.production().merged_with(BuildPolicy(fail_on="high"))
+        assert perfil.fail_on == "high"
+
+    def test_o_arquivo_pode_apertar_ate_o_limite(self) -> None:
+        perfil = BuildPolicy.production().merged_with(BuildPolicy(fail_on="low"))
+        assert perfil.fail_on == "low"
+
+    def test_o_arquivo_nao_pode_afrouxar(self) -> None:
+        """Senão bastaria commitar um YAML para publicar o que não passaria."""
+        perfil = BuildPolicy(fail_on="low").merged_with(BuildPolicy(fail_on="critical"))
+        assert perfil.fail_on == "low"
+
+    def test_exigencias_de_qualquer_lado_valem_nos_dois(self) -> None:
+        perfil = BuildPolicy(require_nonroot=True).merged_with(BuildPolicy(require_scan=True))
+
+        assert perfil.require_nonroot
+        assert perfil.require_scan
+
+    def test_rotulos_se_somam_sem_repetir(self) -> None:
+        perfil = BuildPolicy(required_labels=("a", "b")).merged_with(
+            BuildPolicy(required_labels=("b", "c"))
+        )
+
+        assert perfil.required_labels == ("a", "b", "c")
+
+    def test_o_teto_mais_baixo_vence(self) -> None:
+        perfil = BuildPolicy(max_vulnerabilities={"high": 2}).merged_with(
+            BuildPolicy(max_vulnerabilities={"high": 9, "low": 5})
+        )
+
+        assert perfil.max_vulnerabilities == {"high": 2, "low": 5}
+
+    def test_registries_se_somam_em_vez_de_intersectar(self) -> None:
+        """Duas listas disjuntas produziriam um conjunto vazio, que significa
+        "não restringe" -- exatamente o oposto do que as duas pediram."""
+        perfil = BuildPolicy(allowed_base_registries=("cgr.dev",)).merged_with(
+            BuildPolicy(allowed_base_registries=("docker.io",))
+        )
+
+        assert set(perfil.allowed_base_registries) == {"cgr.dev", "docker.io"}

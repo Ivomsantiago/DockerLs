@@ -6,12 +6,11 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from dockerls.domain.entities.vulnerability import Severity
+from dockerls.domain.entities.vulnerability import Severity, finding_identity
 
 if TYPE_CHECKING:
     from dockerls.application.dto.analysis import ImageAnalysis
     from dockerls.domain.entities.scan_result import ScanResult
-    from dockerls.domain.entities.vulnerability import Vulnerability
     from dockerls.domain.interfaces.scanner import ScannerInterface
 
 # A second scanner never reproduces the first one's findings exactly -- the
@@ -43,19 +42,6 @@ class CrossValidationOutcome(StrEnum):
 #: as a matter of course, and comparing them would make every image look
 #: disputed.
 _COMPARED_SEVERITIES = (Severity.CRITICAL, Severity.HIGH)
-
-
-def finding_identity(vuln: Vulnerability) -> str:
-    """A stable identity for one finding, for comparison across scanners.
-
-    Vulnerability id *and* package, because the same CVE affecting two
-    packages in one image is two findings to fix, and the same package
-    carrying two CVEs is likewise two. Version is deliberately excluded:
-    the scanners frequently report the same installed package with
-    differently normalised version strings, and keying on that would
-    manufacture disagreement out of formatting.
-    """
-    return f"{vuln.cve_id.strip().upper()}|{vuln.package_name.strip().lower()}"
 
 
 # Validations are independent of each other, so they run concurrently. The
