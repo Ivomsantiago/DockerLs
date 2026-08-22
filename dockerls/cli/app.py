@@ -14,11 +14,16 @@ from dockerls.cli.commands.compare import compare
 from dockerls.cli.commands.controls import controls
 from dockerls.cli.commands.doctor import doctor
 from dockerls.cli.commands.export import export
+from dockerls.cli.commands.fleet import fleet
 from dockerls.cli.commands.health import health
 from dockerls.cli.commands.login import login, logout
+from dockerls.cli.commands.policy_cmd import policy
+from dockerls.cli.commands.provenance_cmd import provenance
 from dockerls.cli.commands.recommend import recommend
+from dockerls.cli.commands.registry_audit_cmd import registry_audit
 from dockerls.cli.commands.sbom import sbom
 from dockerls.cli.commands.search import search
+from dockerls.cli.commands.verify import verify
 from dockerls.cli.commands.version import version
 from dockerls.cli.dependencies import configure_logging
 
@@ -49,6 +54,11 @@ app.command(name="base-image")(base_image)
 app.command()(build)
 app.command()(compare)
 app.command()(controls)
+app.command()(fleet)
+app.command()(policy)
+app.command()(provenance)
+app.command(name="registry-audit")(registry_audit)
+app.command()(verify)
 app.command()(export)
 app.command()(login)
 app.command()(logout)

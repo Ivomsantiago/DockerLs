@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from html import escape as html_escape
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
@@ -22,10 +23,26 @@ from dockerls.cli.publish_prompt import resolve_destination, resolve_identity
 from dockerls.cli.rendering import render_validation_report
 from dockerls.cli.text import safe
 from dockerls.domain.value_objects.build_labels import BuildIdentity, MissingBuildMetadataError
+from dockerls.domain.value_objects.build_policy import BuildPolicy
+from dockerls.domain.value_objects.inheritance import ACTIONS, FindingOrigin
 from dockerls.domain.value_objects.provenance import BuildProvenance, ProvenanceStatus
 from dockerls.domain.value_objects.registry_target import InvalidRegistryTargetError
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK
+from dockerls.infrastructure.config.policy_file import (
+    PolicyFileError,
+    find_policy_file,
+    load_policy,
+)
 from dockerls.infrastructure.dockerfile_validator import DockerfileValidator, HardeningTemplates
+from dockerls.integrations.signing.cosign import (
+    CosignClient,
+    SignatureResult,
+    SignatureStatus,
+)
+
+if TYPE_CHECKING:
+    from dockerls.domain.value_objects.build_policy import PolicyViolation
+    from dockerls.domain.value_objects.inheritance import InheritanceReport
 
 console = Console()
 
@@ -104,6 +121,44 @@ def build(
         "--provenance",
         help="Arquiva o registro de supply chain (hashes de entrada e saída) em JSON",
     ),
+    production: bool = typer.Option(
+        False,
+        "--production",
+        help=(
+            "Perfil de produção: liga o portão em critical, exige scan, bases fixadas, "
+            "usuário sem privilégio, procedência verificada, rótulos de "
+            "responsabilidade e atribuição dos achados. Diz na saída o que ligou"
+        ),
+    ),
+    attribute: bool = typer.Option(
+        False,
+        "--attribute",
+        help=(
+            "Escaneia também a base declarada e diz de quem é cada CVE: dela ou das "
+            "camadas deste Dockerfile. Custa um segundo scan"
+        ),
+    ),
+    sign: bool = typer.Option(
+        False,
+        "--sign",
+        help=(
+            "Assina a imagem publicada com cosign (keyless/OIDC). Exige --push e "
+            "procedência verificada"
+        ),
+    ),
+    policy: str | None = typer.Option(
+        None,
+        "--policy",
+        help=(
+            "Arquivo de política a conferir (padrão: .dockerls-policy.yaml no "
+            "contexto, quando existir)"
+        ),
+    ),
+    no_policy: bool = typer.Option(
+        False,
+        "--no-policy",
+        help="Ignora o .dockerls-policy.yaml do contexto. Fica registrado na saída",
+    ),
     non_interactive: bool = typer.Option(
         False,
         "--non-interactive",
@@ -148,6 +203,11 @@ def build(
                 f"[dim]Disponíveis: {', '.join(known)}[/dim]"
             )
             raise typer.Exit(EXIT_ERROR)
+
+    declared_policy = _load_policy(path, policy, no_policy=no_policy)
+    if production:
+        declared_policy = _announce_production(declared_policy)
+        attribute = True
 
     # Parsear JSON args
     build_args_dict = _parse_json_option(build_args, "--build-args")
@@ -226,18 +286,248 @@ def build(
         auto_remediate=auto_remediate or zero_vulns,
         max_remediation_rounds=max_iterations,
         target_zero_vulns=zero_vulns,
+        policy=declared_policy,
+        attribute_findings=attribute,
     )
 
     # Executar
     response = _run_interactive_wizard(use_case, path) if interactive else use_case.execute(request)
 
+    signature = _sign_if_requested(response, sign=sign, publishing=publishing)
+
     # Output
     if ci_mode or output:
-        _print_json_output(response, output)
+        _print_json_output(response, output, signature=signature)
     else:
         _print_table_output(response, report)
+        if signature is not None:
+            _print_signature(signature)
 
+    # Assinar e falhar deixaria o pipeline verde com uma imagem publicada que
+    # ninguém atestou -- e o próximo `dockerls verify` seria a primeira notícia
+    # disso, tarde demais.
+    if signature is not None and not signature.trustworthy:
+        raise typer.Exit(EXIT_ERROR)
     raise typer.Exit(response.exit_code)
+
+
+def _sign_if_requested(
+    response: BuildImageResponse, *, sign: bool, publishing: bool
+) -> SignatureResult | None:
+    """Assina a imagem publicada, quando pedido e quando é legítimo assinar.
+
+    Duas recusas moram aqui, e as duas são sobre o mesmo erro: uma assinatura
+    aponta para bytes específicos e diz "eu publiquei isto". Emiti-la sobre um
+    artefato que não se sabe de onde veio transforma a assinatura em carimbo.
+    """
+    if not sign:
+        return None
+    if not publishing or not response.success:
+        console.print(
+            "[yellow]--sign ignorado: só se assina o que foi publicado, e este build "
+            "não chegou a publicar.[/yellow]"
+        )
+        return None
+
+    record = response.provenance
+    if record is None or not record.is_verified:
+        motivo = record.explain() if record else "não houve registro de procedência"
+        console.print(
+            f"[red]Assinatura recusada:[/red] {safe(motivo)}.\n"
+            "[dim]Assinar é afirmar que você publicou estes bytes; fazê-lo sobre um "
+            "artefato cuja entrada não fecha seria carimbar o desconhecido.[/dim]"
+        )
+        return SignatureResult(
+            reference=response.image_tag or "",
+            status=SignatureStatus.FAILED,
+            detail="procedência não verificada",
+        )
+
+    digest = record.artifact.repo_digest
+    reference = record.artifact.published_reference or response.image_tag or ""
+    if not digest:
+        console.print(
+            "[red]Assinatura recusada:[/red] o registry não devolveu o digest do "
+            "manifesto.\n[dim]Assinar a tag assinaria o que ela aponta agora, e ela "
+            "pode mover no instante seguinte -- a assinatura seguiria válida cobrindo "
+            "outros bytes.[/dim]"
+        )
+        return SignatureResult(
+            reference=reference,
+            status=SignatureStatus.FAILED,
+            detail="sem digest do manifesto",
+        )
+
+    alvo = _digest_reference(reference, digest)
+    console.print(f"[dim]Assinando {safe(alvo)} com cosign (keyless).[/dim]")
+    return asyncio.run(CosignClient().sign(alvo))
+
+
+def _announce_production(declared: BuildPolicy | None) -> BuildPolicy:
+    """Liga o perfil de produção e **diz o que ligou**.
+
+    Um perfil que muda o comportamento em silêncio é um perfil que a pessoa
+    descobre pelo build reprovando, e a primeira reação a um portão que
+    reprova sem explicar é desligá-lo.
+
+    Um `.dockerls-policy.yaml` no contexto continua valendo, e só pode
+    apertar: `--production` é um piso, não um teto.
+    """
+    perfil = BuildPolicy.production().merged_with(declared)
+    console.print("\n[bold]Perfil de produção[/bold]")
+    for regra, valor in perfil.to_dict().items():
+        if valor:
+            console.print(f"  [cyan]{regra}[/cyan]  [dim]{safe(_describe_rule(valor))}[/dim]")
+    if declared is not None:
+        console.print(
+            "  [dim]somado ao .dockerls-policy.yaml do contexto, sempre pelo lado "
+            "mais estrito[/dim]"
+        )
+    console.print()
+    return perfil
+
+
+def _describe_rule(value: object) -> str:
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {v}" for k, v in value.items())
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    return str(value)
+
+
+def _print_inheritance(report: InheritanceReport | None) -> None:
+    """De quem é cada CVE -- a resposta para "consertar o quê?".
+
+    Uma contagem sozinha manda consertar sem dizer o quê, e quem lê passa a
+    tarde descobrindo que nada no Dockerfile dela resolve o problema.
+    """
+    if report is None:
+        return
+    if not report.available:
+        console.print(
+            f"\n[yellow]Atribuição indisponível:[/yellow] [dim]{safe(report.explain())}[/dim]"
+        )
+        return
+
+    console.print("\n[bold]De onde vêm as vulnerabilidades[/bold]")
+    console.print(f"[dim]{safe(report.explain())}[/dim]\n")
+
+    linhas = (
+        ("herdadas da base", len(report.inherited), FindingOrigin.INHERITED, "yellow"),
+        ("das suas camadas", len(report.introduced), FindingOrigin.INTRODUCED, "red"),
+        ("removidas no build", len(report.removed), FindingOrigin.REMOVED, "green"),
+    )
+    for rotulo, quantidade, origem, cor in linhas:
+        if not quantidade:
+            continue
+        console.print(f"  [{cor}]{quantidade:>4}[/{cor}]  {rotulo}")
+        console.print(f"        [dim]{safe(ACTIONS[origem])}[/dim]")
+
+    _print_plan(report)
+
+    if report.inherited_share >= 0.5 and report.inherited:
+        console.print(
+            f"\n[yellow]{report.inherited_share:.0%} das vulnerabilidades desta imagem "
+            "vieram da base.[/yellow]\n[dim]Mexer no seu Dockerfile não resolve essa "
+            "parte: rode `dockerls base --alternatives` para medir outra base.[/dim]"
+        )
+
+
+def _print_plan(report: InheritanceReport) -> None:
+    """O plano de trabalho: origem cruzada com "existe correção?".
+
+    Origem sozinha diz de quem é o problema; correção diz se ele tem solução.
+    Só as duas juntas dizem o que fazer na segunda-feira -- e a diferença é
+    grande: se nenhuma das herdadas tem correção publicada, atualizar a base é
+    trabalho perdido.
+    """
+    plano = report.plan()
+    if not plano:
+        return
+
+    console.print("\n[bold]Plano de trabalho[/bold]")
+    for bucket in plano:
+        de_onde = "da base" if bucket.origin is FindingOrigin.INHERITED else "suas"
+        com_correcao = "com correção" if bucket.fixable else "sem correção"
+        criticas = f", {bucket.critical} CRITICAL" if bucket.critical else ""
+        cor = "red" if bucket.critical else "yellow"
+        console.print(f"  [{cor}]{bucket.count:>4}[/{cor}]  {de_onde}, {com_correcao}{criticas}")
+        console.print(f"        [dim]{safe(bucket.action())}[/dim]")
+        # Os três primeiros por severidade: uma lista completa aqui viraria
+        # rolagem, e quem quer todos usa --format json.
+        amostra = ", ".join(f"{f.cve_id} ({f.package_name})" for f in bucket.findings[:3])
+        if amostra:
+            resto = f" e mais {bucket.count - 3}" if bucket.count > 3 else ""
+            console.print(f"        [dim]{safe(amostra)}{resto}[/dim]")
+
+
+def _digest_reference(reference: str, digest: str) -> str:
+    """`reg.io/app:1.0` + digest -> `reg.io/app@sha256:...`.
+
+    A tag sai fora. `nome:tag@digest` é válido e o digest é quem manda, mas
+    manter os dois convida quem lê a achar que a tag importa -- e a assinatura
+    existe justamente porque ela não importa.
+    """
+    head = reference.split("@", 1)[0]
+    repositorio, separador, cauda = head.rpartition(":")
+    # `registry:5000/app` tem `:` no host, não na tag.
+    if separador and "/" not in cauda:
+        head = repositorio
+    return f"{head}@{digest}"
+
+
+def _print_signature(signature: SignatureResult) -> None:
+    cor = "green" if signature.trustworthy or signature.status is SignatureStatus.SIGNED else "red"
+    console.print(f"\n[{cor}]{signature.status}[/{cor}]  [dim]{safe(signature.explain())}[/dim]")
+    if signature.detail and not signature.trustworthy:
+        console.print(f"[dim]{safe(signature.detail)}[/dim]")
+
+
+def _load_policy(context: str, explicit: str | None, *, no_policy: bool) -> BuildPolicy | None:
+    """A política a conferir neste build, ou `None` quando não há nenhuma.
+
+    Um arquivo de política ilegível **encerra o comando**, em vez de virar
+    "sem política". A direção da falha é o que decide: uma regra que não
+    carrega deixa de exigir alguma coisa, e o build passaria parecendo ter
+    sido conferido. Uma chave digitada errado seria um portão aberto com cara
+    de fechado, e ninguém descobre isso olhando a saída verde.
+    """
+    if no_policy:
+        console.print(
+            "[yellow]--no-policy: o .dockerls-policy.yaml do contexto não será "
+            "conferido neste build.[/yellow]"
+        )
+        return None
+
+    target = Path(explicit) if explicit else find_policy_file(Path(context))
+    if target is None:
+        return None
+    if explicit and not target.is_file():
+        console.print(f"[red]Error:[/red] arquivo de política não encontrado: {safe(explicit)}")
+        raise typer.Exit(EXIT_ERROR)
+
+    try:
+        declared = load_policy(target)
+    except PolicyFileError as e:
+        console.print(f"[red]Error:[/red] {safe(str(e))}")
+        raise typer.Exit(EXIT_ERROR) from e
+
+    console.print(f"[dim]Política declarada em {safe(str(target))} será conferida.[/dim]")
+    return declared
+
+
+def _print_policy_violations(violations: list[PolicyViolation]) -> None:
+    if not violations:
+        return
+    console.print("\n[bold red]Política não cumprida[/bold red]")
+    for violation in violations:
+        console.print(f"  [red]x[/red] [bold]{violation.rule}[/bold]  {safe(violation.message)}")
+    console.print(
+        "\n[dim]Estas regras vêm do perfil `--production` e/ou do "
+        ".dockerls-policy.yaml do contexto. O arquivo é versionado junto do código: "
+        "mudá-lo é uma alteração revisável, passar uma flag diferente na linha de "
+        "comando não é.[/dim]"
+    )
 
 
 def _parse_json_option(raw: str | None, flag: str) -> dict[str, str] | None:
@@ -561,6 +851,7 @@ def _print_validation_output(response: BuildImageResponse, report_file: str | No
             )
         )
 
+    _print_policy_violations(response.policy_violations)
     _write_report_file(response.report, report_file)
     console.print()
 
@@ -574,6 +865,8 @@ def _print_build_output(response: BuildImageResponse, report_file: str | None) -
                 expand=False,
             )
         )
+        _print_inheritance(response.inheritance)
+        _print_policy_violations(response.policy_violations)
         _write_report_file(response.report, report_file)
         return
 
@@ -589,6 +882,8 @@ def _print_build_output(response: BuildImageResponse, report_file: str | None) -
     if report is not None:
         _print_report(report)
         _write_report_file(report, report_file)
+
+    _print_inheritance(response.inheritance)
 
     if response.provenance is not None:
         _print_provenance(response.provenance)
@@ -694,7 +989,12 @@ def _report_dict(report: BuildReport) -> dict[str, Any]:
     }
 
 
-def _print_json_output(response: BuildImageResponse, output_file: str | None = None) -> None:
+def _print_json_output(
+    response: BuildImageResponse,
+    output_file: str | None = None,
+    *,
+    signature: SignatureResult | None = None,
+) -> None:
     """Imprime saída JSON (CI mode).
 
     Vai para stdout via `typer.echo`, não pelo console do Rich: em CI o
@@ -714,6 +1014,12 @@ def _print_json_output(response: BuildImageResponse, output_file: str | None = N
     # supply chain lê para decidir, e ele não lê tabela de terminal.
     if response.provenance is not None:
         output_data["provenance"] = response.provenance.to_dict()
+    if signature is not None:
+        output_data["signature"] = signature.to_dict()
+    if response.inheritance is not None:
+        output_data["inheritance"] = response.inheritance.to_dict()
+    if response.policy_violations:
+        output_data["policy_violations"] = [v.to_dict() for v in response.policy_violations]
     if response.error:
         output_data["error"] = response.error
 

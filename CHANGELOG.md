@@ -5,6 +5,293 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.0] -- 2026-08-22
+
+### Adicionado -- do "de quem é" para o "o que eu faço"
+
+- **Plano de trabalho: origem cruzada com "existe correção?".** Dizer que 41
+  vulnerabilidades vêm da base ainda não diz se **atualizar** a base adianta --
+  e a resposta muda tudo: se nenhuma tem correção publicada upstream,
+  atualizar é trabalho perdido e trocar a base é o único caminho. `--attribute`
+  passa a imprimir os quatro grupos (herdada/sua × com/sem correção), cada um
+  com a ação correspondente e os CVEs mais graves de amostra.
+- **Os grupos são ordenados por CRITICAL, não por total.** É onde a primeira
+  hora de trabalho rende mais; ordenar por total faria um monte de LOW passar à
+  frente de dois CRITICAL sem correção.
+- **A linha do portão carrega a origem.** Quando a atribuição rodou,
+  `Vulnerabilities exceed threshold` passa a dizer quantas vieram da base,
+  quantas dessas têm correção publicada, e quantas são das suas camadas. Quem
+  lê o log do CI está decidindo naquele segundo se mexe no Dockerfile ou na
+  base. A base é escaneada **uma vez só** nesse caminho.
+
+### Corrigido
+
+- **Uma imagem limpa cujo build removeu CVEs da base dizia "nenhuma
+  vulnerabilidade a atribuir"**, escondendo o melhor resultado possível. Agora
+  diz que a imagem está limpa *e* que as da base não sobreviveram ao build.
+- **Concordância verbal na atribuição:** "1 vêm da base" virou "1 vem".
+
+### Notas
+
+- O grupo "da base, com correção" diz **"pode resolver"**, não "resolve": uma
+  correção existir upstream não significa que quem publica a base já
+  reconstruiu com ela. Prometer o contrário é como uma ferramenta perde a
+  confiança de quem seguiu o conselho e não viu o número cair.
+- Quando a atribuição não rodou ou não fechou, o portão fica calado sobre
+  origem. Um portão que insinua uma origem que não mediu é pior do que um
+  portão calado.
+
+## [2.9.1] -- 2026-08-22
+
+### Corrigido -- duas mensagens que se contradiziam na mesma tela
+
+- **`DF001` dizia "Base image tag is pinned" para `node:22`**, na mesma tela em
+  que a política reprovava a mesma linha com "não está fixada por digest". As
+  duas frases eram verdadeiras -- PASS ali significa apenas "não é `latest`" --
+  e lidas juntas pareciam contradição. A mensagem agora distingue os dois casos
+  e o `details` carrega `pinned_by_digest`.
+- **A sugestão de base era uma string fixa** (`"FROM node:22-alpine or FROM
+  chainguard/node:latest-dev"`), devolvida igual para qualquer Dockerfile --
+  inclusive um de Python, onde nomear uma imagem Node é simplesmente errado.
+  Nomear uma imagem que ninguém mediu é o oposto do que esta ferramenta faz em
+  todo o resto; a sugestão passa a apontar para `dockerls base` e `dockerls base
+  --alternatives`, que medem.
+
+### Documentação
+
+- **Seção "Do zero à imagem em produção"**: percurso completo com dois
+  Dockerfiles reais, do `fleet` ao `verify`, com **saídas capturadas verbatim**
+  e uma tabela do que cada passo custa.
+- `--production`, `--attribute` e o preflight de política documentados com
+  saída real; o único bloco ilustrativo do README está marcado como tal.
+- A seção Performance passa a trazer os números medidos e a metodologia,
+  incluindo o que foi medido e **não** implementado (hashing paralelo: 0,20 s
+  -> 0,13 s com 4 threads, pior com 8 e 16 -- não se paga).
+
+## [2.9.0] -- 2026-08-22
+
+### Corrigido -- o portão podia ser afrouxado em silêncio
+
+- **`effective_fail_on` escolhia o limiar mais permissivo, não o mais
+  estrito.** `--fail-on low` reprova em LOW *e em tudo acima*, enquanto
+  `--fail-on critical` só olha para CRITICAL -- ou seja, `low` é o mais
+  exigente que existe e `critical` o mais brando. A função ordenava pela
+  "gravidade da palavra" e devolvia `critical` quando um dos lados pedia
+  `high`, afrouxando um portão que alguém tinha apertado. A decisão D-025
+  ("vence a mais estrita") estava certa; a implementação fazia o contrário.
+- **`fail_on: unknown` era aceito pelo arquivo de política e o portão não sabe
+  avaliá-lo**, então o build morria com erro técnico no meio do caminho em vez
+  de ser recusado na leitura do arquivo. `unknown` segue válido como teto em
+  `max_vulnerabilities`: um achado sem severidade ainda é um achado.
+
+### Adicionado -- de quem é cada CVE
+
+- **`dockerls build --attribute`.** Um relatório que diz "47 vulnerabilidades"
+  manda consertar sem dizer o quê, e quem lê passa a tarde descobrindo que nada
+  no Dockerfile dela resolve o problema. A base declarada passa a ser escaneada
+  junto da imagem, e os achados são divididos em `INHERITED` (da base -- só
+  atualizar ou trocar resolve), `INTRODUCED` (das suas camadas) e `REMOVED` (o
+  que o seu endurecimento comprou). Sem os dois scans não há atribuição: o
+  relatório diz `UNAVAILABLE` e o motivo, nunca "tudo é seu".
+- **`dockerls build --production`.** O conjunto que uma imagem publicada
+  precisa, sob um nome só, em vez de sete flags que cada pipeline digita de
+  novo esquecendo uma diferente por vez. Diz na saída o que ligou. Um
+  `.dockerls-policy.yaml` do contexto continua valendo e só pode apertar.
+- **Preflight de política no `--validate-only`.** O que dá para reprovar sem
+  construir passa a reprovar em segundos. Descobrir um rótulo obrigatório
+  faltando depois de dez minutos de build e um scan é o atrito que faz as
+  pessoas pararem de rodar o portão.
+
+### Desempenho
+
+- **Digestão do contexto de build: 65x mais rápida em contexto real.** A poda
+  do `.dockerignore` acontecia *depois* de percorrer a árvore inteira, então
+  `.git` e `node_modules` eram abertos arquivo por arquivo só para serem
+  descartados. Num contexto de 52.400 arquivos em que 401 são enviados ao
+  daemon: **0,84 s -> 0,013 s**, com o digest byte a byte idêntico (a
+  ordenação final continua sobre os caminhos completos, então um documento de
+  procedência antigo segue comparável com um novo).
+- **Arranque do CLI ~1,5x mais rápido:** mediana de **0,58 s -> 0,39 s** para
+  `dockerls version`. O SQLAlchemy era importado no arranque de toda invocação
+  por causa de dois imports de módulo, e comandos que nunca tocam o cache
+  pagavam por ele.
+
+## [2.8.0] -- 2026-08-21
+
+### Adicionado -- `dockerls registry-audit`
+
+- **O que o registry conta sobre uma imagem publicada, sem credencial de
+  nuvem.** Auditar retenção, IAM e content trust exige acesso administrativo e
+  uma API por provedor -- e um relatório que precisa disso para existir é um
+  relatório que ninguém roda. Este usa só o protocolo OCI: resolve a
+  referência, diz se ela é digest ou tag, procura assinatura e atestação cosign
+  nas tags derivadas do digest, e mede se o registry respondeu sem credencial.
+- **`TAG_STABLE` mede mutabilidade em vez de ler configuração.** A
+  imutabilidade declarada no registry é uma declaração; o histórico de digests
+  é uma observação, e quando as duas discordam é a observação que descreve o
+  que aconteceu.
+
+### Decidido
+
+- **`PUBLICLY_READABLE` é relatado e nunca alerta.** "Público" é o estado
+  correto de uma imagem base oficial e o estado errado de um artefato interno,
+  e a diferença é a intenção de quem publicou -- que a ferramenta não mede.
+  Transformar o fato em alerta seria afirmar uma intenção.
+- **Todo achado é tri-estado.** "O registry não respondeu sobre a assinatura"
+  nunca vira "não há assinatura".
+
+## [2.7.0] -- 2026-08-21
+
+### Adicionado -- assinatura e alternativas medidas
+
+- **`dockerls verify` e `dockerls build --sign`.** O scan diz o que há dentro
+  de uma imagem e a procedência diz de onde ela veio; nenhum dos dois impede
+  alguém com acesso de escrita ao registry de sobrescrever a tag. A assinatura
+  responde a pergunta que faltava: quem publicou estes bytes.
+- **`dockerls base --alternatives`.** O `base` atualizava o digest, o que
+  resolve a data e não resolve a escolha: trocar `node:22` por `node:22` de
+  ontem continua sendo `node:22`. Agora cada `FROM` distinto é escaneado junto
+  das candidatas, e a melhor medida aparece com o custo da troca ao lado. Nada
+  é aplicado -- trocar a família da base muda libc, shell e usuário, e isso é
+  revisão de arquitetura, não atualização de digest.
+
+### Decidido
+
+- **`cosign` ausente nunca vira "não assinado".** Três estados e três exit
+  codes: `VERIFIED` (0), `UNSIGNED` (2, veredito sobre a imagem) e
+  `SIGNER_MISSING`/`FAILED` (1, falha do medidor). Sem essa distinção um
+  pipeline trataria "não deu para conferir" como "não está assinada".
+- **Só se assina por digest, e só com procedência verificada.** Assinar uma tag
+  assinaria o que ela aponta agora, e ela pode mover no instante seguinte -- a
+  assinatura seguiria válida cobrindo outros bytes.
+- **Uma alternativa pior é reportada, não filtrada.** Esconder o que ficou pior
+  transformaria a lista num argumento em vez de uma medição.
+
+## [2.6.0] -- 2026-08-21
+
+### Adicionado -- `dockerls fleet`
+
+- **O retrato de todos os Dockerfiles de uma vez.** Cada comando desta
+  ferramenta olhava para um artefato, o que resolve a pergunta de quem está com
+  o arquivo aberto e nenhuma das perguntas de quem responde por trinta
+  repositórios. A saída é uma fila de trabalho ordenada por violações, com o
+  empate resolvido pelo caminho para que duas varreduras sejam comparáveis.
+- **A política estática é aplicada por arquivo.** Só as regras decidíveis sem
+  build (`require_pinned_bases`, `require_nonroot`, `required_labels`,
+  `allowed_base_registries`); as que dependem de scan continuam no `build`,
+  porque uma violação idêntica por arquivo não distingue nada.
+- **"root" e "usuário indeterminado" são colunas separadas.** Juntá-los
+  transformaria ausência de medida em acusação, e a fila de trabalho de cada um
+  é diferente.
+
+### Notas
+
+- A varredura **não segue symlink** (um link para `/` transformaria a varredura
+  de um repositório numa varredura da máquina), pula diretórios de dependência,
+  e **diz quando foi truncada** -- um retrato parcial que se apresenta como
+  completo é pior do que nenhum retrato.
+- As bases são lidas com expansão de `ARG`: `FROM python:3.12@${PY}` conta como
+  fixado, porque é a forma correta de fixar e uma varredura que reprova quem fez
+  certo ensina a fazer errado.
+- A saída diz, ela mesma, que leu Dockerfiles e não escaneou imagem nenhuma.
+
+## [2.5.0] -- 2026-08-21
+
+### Adicionado -- política como código
+
+- **`.dockerls-policy.yaml`.** `--fail-on critical` é um portão que mora na
+  linha de comando, e uma regra que mora na linha de comando é uma regra que
+  cada pipeline reescreve à mão: bastava um `--fail-on high` esquecido num
+  repositório para a política da organização deixar de valer ali, sem que nada
+  acusasse. Agora ela é dado versionado junto do código, conferido em todo
+  `dockerls build` do contexto. Oito regras, todas mensuráveis a partir do que
+  o build mediu: `fail_on`, `max_vulnerabilities`, `require_scan`,
+  `require_pinned_bases`, `require_nonroot`, `required_labels`,
+  `allowed_base_registries` e `require_provenance`.
+- **`dockerls policy`** mostra e valida o arquivo sem precisar de um build.
+  Descobrir uma chave errada no meio de um build de dez minutos é caro;
+  descobrir aqui custa um segundo.
+- **`--policy` e `--no-policy` no `build`.** O segundo registra na saída que a
+  política foi ignorada -- desligar um portão em silêncio seria o mesmo
+  problema que ele existe para resolver.
+
+### Decidido
+
+- **Arquivo de política malformado é erro, não ausência de política.** É a
+  única diferença de comportamento em relação ao `.dockerls-ignore.yaml`, e ela
+  vem da direção da falha: uma regra de ignore que não carrega deixa de esconder
+  uma CVE (mais alarme, e alarme a mais é seguro); uma regra de política que não
+  carrega deixa de exigir alguma coisa, e o build passa parecendo ter sido
+  conferido. `require_non_root` no lugar de `require_nonroot` viraria um portão
+  aberto com cara de fechado.
+- **A política nunca afrouxa o que a linha de comando apertou.** Entre os dois
+  `fail_on` vence o mais estrito: senão bastaria commitar um YAML para publicar
+  o que não passaria.
+- **Não medir nunca aprova.** Teto de severidade sem scan é violação, não
+  silêncio; `require_nonroot` sem a checagem é violação, e a mensagem distingue
+  "roda como root" de "não foi possível determinar".
+
+## [2.4.0] -- 2026-08-21
+
+Segundo lote da lista de melhorias: fecha a cadeia entre o documento de
+procedência e a assinatura, e transforma duas mensagens vagas em medidas.
+
+### Adicionado
+
+- **`dockerls provenance`.** O `build --provenance` arquivava um JSON que
+  ninguém lia — e um documento que ninguém confere descreve com precisão uma
+  imagem que ninguém sabe se deveria ter sido publicada. O comando recalcula o
+  veredito a partir dos digests em vez de acreditar no campo `status` gravado
+  (que é editável por qualquer um com um editor de texto) e **reprova por
+  código de saída** quando a cadeia não fecha, o que o torna portão de CI.
+- **`--github-output` e o workflow de exemplo.** `subject-name` e
+  `subject-digest` saem do próprio documento para o
+  `actions/attest-build-provenance`. Redigitar o digest no YAML é onde a
+  cadeia arrebenta sem ninguém perceber: uma assinatura perfeitamente válida
+  apontando para bytes que ninguém escaneou. O workflow completo está em
+  `examples/github/image-release.yml`.
+- **Histórico de digests por tag no `dockerls base`.** "Esta base mudou" e
+  "esta base muda toda semana" pedem decisões opostas, e as duas produziam
+  exatamente o mesmo `PINNED_STALE`. Cada digest observado é guardado com a
+  data (TTL de um ano — um histórico é o passado, não fica obsoleto), e a linha
+  passa a dizer quantas vezes a tag mudou e desde quando. O histórico começa na
+  primeira vez que a ferramenta olhou, e a mensagem diz isso em vez de fingir
+  que o silêncio anterior era estabilidade. Se o cache falhar, o diagnóstico
+  segue sem a linha: um extra não pode derrubar o principal.
+- **`dockerls base-image --compare <família>`.** Responder "alpine ou debian
+  para isto?" exigia gerar os dois Dockerfiles e contar pacotes na mão. O diff
+  mostra o que entra, o que sai e o que cada troca custa — com destaque para a
+  mudança de libc, a única que quebra binário compilado. Não escreve arquivo
+  nenhum e **não elege vencedora**: contar pacotes não mede CVE, e a resposta
+  vem de escanear as duas.
+
+## [2.3.0] -- 2026-08-20
+
+Primeiro lote da lista de melhorias: três itens de baixo esforço, todos
+fechando inconsistências reais.
+
+### Corrigido
+
+- **O relatório do `build` perdia as citações.** O terminal cita o controle
+  publicado atrás de cada regra (CIS 4.1, NIST 4.1.2, OWASP RULE #2) e o
+  relatório serializava só `check`, `status`, `message`, `severity` e `line` —
+  exatamente onde a citação vale mais, que é o arquivo que vai para auditoria.
+  Passa a carregar `rule_id`, `references` e `rationale`.
+- **Core dumps do scanner ficavam ligados.** Um scanner que falha um pull
+  autenticado tem o token na memória; um SIGSEGV com core dump gravaria esse
+  token em disco, num arquivo que ninguém redige. `RLIMIT_CORE` vai a zero
+  antes do `exec`. `RLIMIT_AS` continua deliberadamente de fora, e há teste
+  fixando isso: o Trivy é um binário Go, e o runtime do Go reserva um espaço
+  de endereçamento virtual enorme na largada — limitar mataria o processo na
+  inicialização, virando falha de scan em vez de defesa.
+
+### Adicionado
+
+- **`dockerls base-image --build`.** Gerar e construir em dois comandos deixava
+  um vão onde a receita existe e ninguém a mediu — e receita não medida é
+  intenção, não afirmação sobre segurança. O portão entra em `critical`, e os
+  rótulos da receita seguem para a imagem.
+
 ## [2.2.1] -- 2026-08-20
 
 ### Corrigido — o npm embutido era quase toda a superfície de uma base Node

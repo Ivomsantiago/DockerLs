@@ -87,3 +87,67 @@ class TestUpgradeBase:
         result = await UpgradeBaseUseCase(_inspector()).execute(tmp_path)
         assert len(result.findings) == 2
         assert result.applied == 2
+
+
+@pytest.mark.asyncio
+class TestTagHistoryWiring:
+    """ "Esta base mudou" e "esta base muda toda semana" pedem decisões
+    diferentes, e antes disto as duas produziam a mesma linha."""
+
+    async def test_o_digest_observado_alimenta_o_historico(self, tmp_path):
+        from dockerls.application.services.tag_history_store import TagHistoryStore
+        from tests.unit.test_tag_history_store import FakeCache
+
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text(f"FROM python:3.12@{_ANTIGO}\n")
+        cache = FakeCache()
+
+        result = await UpgradeBaseUseCase(_inspector(), TagHistoryStore(cache)).execute(
+            tmp_path, apply=False
+        )
+
+        historico = result.history_for(result.findings[0].base)
+        assert historico is not None
+        assert historico.current_digest == _ATUAL
+
+    async def test_movimento_entre_execucoes_aparece_no_documento(self, tmp_path):
+        from dockerls.application.services.tag_history_store import TagHistoryStore
+        from tests.unit.test_tag_history_store import FakeCache
+
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text("FROM python:3.12\n")
+        cache = FakeCache()
+
+        await UpgradeBaseUseCase(_inspector(_ANTIGO), TagHistoryStore(cache)).execute(
+            tmp_path, apply=False
+        )
+        result = await UpgradeBaseUseCase(_inspector(_ATUAL), TagHistoryStore(cache)).execute(
+            tmp_path, apply=False
+        )
+
+        payload = result.to_dict()
+        assert payload["bases"][0]["history"]["moves"] == 1
+
+    async def test_sem_historico_o_documento_omite_a_chave_em_vez_de_mentir(self, tmp_path):
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text("FROM python:3.12\n")
+
+        result = await UpgradeBaseUseCase(_inspector()).execute(tmp_path, apply=False)
+
+        assert result.to_dict()["bases"][0]["history"] is None
+
+    async def test_base_irresolvivel_nao_gera_observacao(self, tmp_path):
+        """Não ter conseguido perguntar não é uma observação: gravá-la
+        inventaria um movimento que nunca houve."""
+        from dockerls.application.services.tag_history_store import TagHistoryStore
+        from tests.unit.test_tag_history_store import FakeCache
+
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text("FROM python:3.12\n")
+        cache = FakeCache()
+
+        await UpgradeBaseUseCase(_inspector(""), TagHistoryStore(cache)).execute(
+            tmp_path, apply=False
+        )
+
+        assert not cache.writes

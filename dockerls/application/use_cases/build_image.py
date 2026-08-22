@@ -22,11 +22,27 @@ from dockerls.domain.entities.dockerfile_analysis import (
     HardeningRule,
     ValidationStatus,
 )
+from dockerls.domain.entities.vulnerability import Severity, Vulnerability
+from dockerls.domain.value_objects.base_upgrade import parse_bases
+from dockerls.domain.value_objects.build_policy import (
+    BaseFact,
+    BuildPolicy,
+    PolicyFacts,
+    PolicyViolation,
+    evaluate,
+)
+from dockerls.domain.value_objects.image_reference import registry_host_of
+from dockerls.domain.value_objects.inheritance import (
+    InheritanceReport,
+    attribute,
+    unavailable,
+)
 from dockerls.domain.value_objects.provenance import (
     ArtifactDigests,
     BuildProvenance,
     SourceDigests,
 )
+from dockerls.domain.value_objects.tristate import Tristate
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_POLICY
 from dockerls.infrastructure.hashing import ContextTooLargeError, hash_context, hash_file
 from dockerls.utils.executables import ExecutableNotFoundError, resolve_executable
@@ -141,6 +157,12 @@ class BuildImageRequest:
     #: já nomeia um registry -- e era o comportamento anterior, que falhava com
     #: "denied" para toda tag sem host.
     push_reference: str = ""
+    #: A política declarada em `.dockerls-policy.yaml`, já carregada pela
+    #: camada CLI. O caso de uso confere; ler o arquivo é trabalho da borda.
+    policy: BuildPolicy | None = None
+    #: Escanear também a base declarada, para dizer de quem é cada CVE. Custa
+    #: um segundo scan, e por isso é escolha e não padrão.
+    attribute_findings: bool = False
 
 
 @dataclass
@@ -162,6 +184,10 @@ class BuildImageResponse:
     #: A cadeia entre o que entrou no build e o que saiu dele. Presente em
     #: todo build que chegou a produzir imagem.
     provenance: BuildProvenance | None = None
+    #: Regras de `.dockerls-policy.yaml` que este build não cumpriu.
+    policy_violations: list[PolicyViolation] = field(default_factory=list)
+    #: De quem é cada vulnerabilidade: da base declarada ou das suas camadas.
+    inheritance: InheritanceReport | None = None
     error: str | None = None
     exit_code: int = EXIT_OK
 
@@ -193,9 +219,24 @@ class BuildImageUseCase:
                     exit_code=EXIT_ERROR,
                 )
 
-            # 2. Modo validate-only
+            # 2. Modo validate-only. A política entra aqui pelo subconjunto
+            #    estático: sem build não há scan, procedência nem imagem, e
+            #    aplicar as regras que dependem deles produziria uma violação
+            #    por execução dizendo sempre a mesma coisa. O que dá para
+            #    conferir só lendo o Dockerfile é conferido -- e é justamente
+            #    o que evita descobrir um rótulo faltando depois de dez
+            #    minutos de build.
             if request.validate_only:
-                return self._format_validation_response(validation_result)
+                response = self._format_validation_response(validation_result)
+                response.policy_violations = self._preflight(request, validation_result)
+                if response.policy_violations and response.exit_code == EXIT_OK:
+                    response.success = False
+                    response.error = (
+                        f"{len(response.policy_violations)} regra(s) de política não "
+                        "cumprida(s) no que dá para conferir sem construir"
+                    )
+                    response.exit_code = EXIT_POLICY
+                return response
 
             # 3. Modo suggest-only
             if request.suggest_only:
@@ -324,8 +365,15 @@ class BuildImageUseCase:
                             )
                             break
 
-            # 7. Verificar thresholds de falha
-            if request.fail_on:
+            # 7. Verificar thresholds de falha. Entre o limiar da política e o
+            #    da linha de comando vence o mais estrito: um arquivo no
+            #    repositório não pode desligar um portão que o pipeline pediu.
+            threshold = (
+                request.policy.effective_fail_on(request.fail_on or "")
+                if request.policy
+                else (request.fail_on or "")
+            )
+            if threshold:
                 # Um portão que não pôde ser avaliado não é um portão
                 # aprovado. Sem scan, `--fail-on` deixava passar em silêncio
                 # qualquer imagem numa máquina sem scanner instalado.
@@ -337,19 +385,62 @@ class BuildImageUseCase:
                         validation=validation,
                         analysis=validation_result.analysis,
                         error=(
-                            f"--fail-on {request.fail_on} requires a vulnerability scan, "
+                            f"--fail-on {threshold} requires a vulnerability scan, "
                             "and no scanner (trivy, grype) could be run"
                         ),
                         exit_code=EXIT_ERROR,
                     )
-                if self._should_fail(scan_result, request.fail_on):
+                if self._should_fail(scan_result, threshold):
+                    # A atribuição é calculada aqui e reaproveitada na
+                    # mensagem: escanear a base duas vezes para dizer a mesma
+                    # coisa duas vezes seria pagar minutos por nada.
+                    gate_inheritance = self._attribute_findings(
+                        request, validation_result, scan_result
+                    )
                     return BuildImageResponse(
                         success=False,
                         image_tag=request.tag,
                         image_sha256=build_result.image_sha256,
                         validation=validation,
                         analysis=validation_result.analysis,
-                        error=self._gate_failure_summary(scan_result, request.fail_on),
+                        error=self._gate_failure_summary(scan_result, threshold, gate_inheritance),
+                        inheritance=gate_inheritance,
+                        exit_code=EXIT_POLICY,
+                    )
+
+            # 7a. Cruzar os achados com os da base: a contagem sozinha diz
+            #     "conserte", e não diz o quê. Roda antes dos portões porque
+            #     precisa aparecer no relatório mesmo quando o build reprova --
+            #     é justamente aí que a pergunta "de quem é isso?" é feita.
+            inheritance = self._attribute_findings(request, validation_result, scan_result)
+
+            # 7b. Conferir a política declarada. Antes do push, pelo mesmo
+            #     motivo do portão de scan: uma imagem que viola a política da
+            #     organização não é publicada por ter sido construída.
+            if request.policy is not None:
+                violations = evaluate(
+                    request.policy,
+                    self._policy_facts(
+                        request=request,
+                        analysis=validation_result.analysis,
+                        scan_result=scan_result,
+                        source_before=source_before,
+                        source_after=source_after,
+                        image_id=build_result.image_sha256 or "",
+                    ),
+                )
+                if violations:
+                    return BuildImageResponse(
+                        success=False,
+                        image_tag=request.tag,
+                        image_sha256=build_result.image_sha256,
+                        validation=validation,
+                        analysis=validation_result.analysis,
+                        policy_violations=violations,
+                        inheritance=inheritance,
+                        error=(
+                            f"{len(violations)} regra(s) de .dockerls-policy.yaml não cumprida(s)"
+                        ),
                         exit_code=EXIT_POLICY,
                     )
 
@@ -417,6 +508,7 @@ class BuildImageUseCase:
                 image_tag=request.tag,
                 image_sha256=build_result.image_sha256,
                 provenance=provenance,
+                inheritance=inheritance,
                 report=report,
                 validation=validation,
                 analysis=validation_result.analysis,
@@ -551,13 +643,21 @@ class BuildImageUseCase:
             "passed": validation.passed,
             "warnings": validation.warnings,
             "errors": validation.errors,
+            # `rule_id`, `references` e `rationale` entram aqui porque este é o
+            # arquivo que vai para auditoria. O terminal citava o controle
+            # publicado (CIS 4.1, NIST 4.1.2) e o relatório perdia a citação --
+            # exatamente onde ela vale mais, que é diante de quem precisa
+            # mapear achado para programa de conformidade.
             "checks": [
                 {
                     "check": check.check,
+                    "rule_id": check.rule_id,
                     "status": check.status.value,
                     "message": check.message,
                     "severity": check.severity.value,
                     "line": check.line,
+                    "references": check.references,
+                    "rationale": check.rationale,
                 }
                 for check in validation.checks
             ],
@@ -1032,12 +1132,22 @@ class BuildImageUseCase:
     #: Cada um reprova também tudo que for pior que ele.
     FAIL_ON_THRESHOLDS = ("critical", "high", "medium", "low")
 
-    def _gate_failure_summary(self, scan_result: ScanResult, threshold: str) -> str:
+    def _gate_failure_summary(
+        self,
+        scan_result: ScanResult,
+        threshold: str,
+        inheritance: InheritanceReport | None = None,
+    ) -> str:
         """Nomeia os CVEs que dispararam o portão.
 
         "Vulnerabilities exceed threshold (critical)" obriga quem lê o log do
         CI a reabrir o relatório para descobrir *o quê*. O portão passa a
         dizer qual achado o disparou, com pacote e versão de correção.
+
+        Quando a atribuição rodou, a linha do portão também diz **de onde** os
+        achados vieram. É a informação mais cara de obter e a mais barata de
+        mostrar aqui: quem lê o log do CI está decidindo, naquele segundo, se
+        mexe no Dockerfile ou na base -- e sem isso a decisão é um palpite.
         """
         cutoff = self.FAIL_ON_THRESHOLDS.index(threshold.strip().lower())
         levels = self.FAIL_ON_THRESHOLDS[: cutoff + 1]
@@ -1067,7 +1177,8 @@ class BuildImageUseCase:
             return (
                 header
                 if total == 0
-                else f"{header} (não retidos na amostra do relatório; rode o scanner para a lista)"
+                else f"{header}{_origin_hint(inheritance)} "
+                "(não retidos na amostra do relatório; rode o scanner para a lista)"
             )
         listed = "; ".join(
             f"{v.get('cve_id') or '?'} ({v.get('severity')}) in "
@@ -1076,7 +1187,7 @@ class BuildImageUseCase:
             for v in offenders[:10]
         )
         more = f"; ... and {len(offenders) - 10} more" if len(offenders) > 10 else ""
-        return f"{header} -- {listed}{more}"
+        return f"{header}{_origin_hint(inheritance)} -- {listed}{more}"
 
     def _should_fail(self, scan_result: ScanResult, threshold: str) -> bool:
         """Verifica se deve falhar o build baseado no threshold.
@@ -1100,6 +1211,165 @@ class BuildImageUseCase:
             )
         cutoff = self.FAIL_ON_THRESHOLDS.index(normalized)
         return any(counts[level] > 0 for level in self.FAIL_ON_THRESHOLDS[: cutoff + 1])
+
+    def _preflight(
+        self, request: BuildImageRequest, validation: AnalyzeDockerfileResponse
+    ) -> list[PolicyViolation]:
+        """As regras que já dá para reprovar sem construir nada.
+
+        Descobrir um rótulo obrigatório faltando depois de dez minutos de build
+        e um scan é o tipo de atrito que faz as pessoas pararem de rodar o
+        portão. As regras que dependem de medição continuam para depois: elas
+        não são consideradas cumpridas aqui, apenas não são conferíveis.
+        """
+        if request.policy is None:
+            return []
+        return evaluate(
+            request.policy.static_subset(),
+            PolicyFacts(
+                bases=self._base_facts(request),
+                labels=dict(request.labels or {}),
+                nonroot=self._nonroot_state(validation.analysis),
+            ),
+        )
+
+    def _base_facts(self, request: BuildImageRequest) -> tuple[BaseFact, ...]:
+        """As bases declaradas, lidas do arquivo com expansão de `ARG`."""
+        path = Path(request.context_path) / request.dockerfile_path
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            logger.debug(f"Não foi possível reler {path}: {e}")
+            return ()
+        return tuple(
+            BaseFact(
+                reference=base.reference,
+                registry=registry_host_of(base.name),
+                pinned=base.is_pinned,
+            )
+            for base in parse_bases(content)
+        )
+
+    def _attribute_findings(
+        self,
+        request: BuildImageRequest,
+        validation: AnalyzeDockerfileResponse,
+        scan_result: ScanResult | None,
+    ) -> InheritanceReport | None:
+        """De quem é cada CVE: da base declarada, ou das camadas deste build.
+
+        Um relatório que diz "47 vulnerabilidades" manda consertar sem dizer o
+        quê. A resposta exige um segundo scan -- o da base -- e por isso é
+        escolha explícita: dobrar o tempo de portão por padrão faria as pessoas
+        desligarem o portão.
+
+        Devolve `None` quando ninguém pediu, e um relatório `UNAVAILABLE` com o
+        motivo quando pediram e não deu. As duas coisas são diferentes de "tudo
+        é seu" e de "tudo é herdado", que seriam as duas formas de transformar
+        ausência de medição em acusação.
+        """
+        if not request.attribute_findings:
+            return None
+        if scan_result is None:
+            return unavailable("", "a imagem construída não pôde ser escaneada")
+
+        analysis = validation.analysis
+        base_reference = (analysis.info.final_base_image or "") if analysis else ""
+        if not base_reference:
+            return unavailable(
+                "",
+                "não foi possível determinar a base do estágio final a partir do Dockerfile",
+            )
+        if base_reference.lower() == "scratch":
+            # `scratch` não é uma imagem: não há o que escanear, e tudo que a
+            # imagem carrega veio das camadas deste build. Dizer isso é
+            # atribuição, não omissão.
+            return attribute(
+                _as_vulnerabilities(scan_result.vulnerabilities), [], base_reference=base_reference
+            )
+
+        logger.info(f"Escaneando a base {base_reference} para atribuir os achados")
+        base_scan = self._scan_image(base_reference)
+        if base_scan is None:
+            return unavailable(
+                base_reference,
+                f"a base {base_reference} não pôde ser escaneada",
+            )
+        return attribute(
+            _as_vulnerabilities(scan_result.vulnerabilities),
+            _as_vulnerabilities(base_scan.vulnerabilities),
+            base_reference=base_reference,
+        )
+
+    def _policy_facts(
+        self,
+        *,
+        request: BuildImageRequest,
+        analysis: DockerfileAnalysis | None,
+        scan_result: ScanResult | None,
+        source_before: SourceDigests,
+        source_after: SourceDigests,
+        image_id: str,
+    ) -> PolicyFacts:
+        """Os fatos medidos neste build, no formato que a política avalia.
+
+        Nada aqui infere: cada campo ou vem de uma medição que aconteceu ou
+        fica no valor que significa "não medido". É o que faz a política
+        reprovar por ausência de prova em vez de aprovar por falta de sinal.
+        """
+        counts: dict[str, int] = {}
+        if scan_result is not None:
+            counts = {
+                "critical": scan_result.critical,
+                "high": scan_result.high,
+                "medium": scan_result.medium,
+                "low": scan_result.low,
+            }
+
+        bases = tuple(
+            BaseFact(
+                reference=reference,
+                registry=registry_host_of(reference),
+                pinned=bool(digest) or "@sha256:" in reference,
+            )
+            for reference, digest in source_before.base_images.items()
+        )
+
+        # A procedência é recalculada aqui e não lida do documento: o registro
+        # final só existe depois do push, e a política precisa decidir antes.
+        parcial = BuildProvenance(
+            tag=request.tag,
+            source=source_before,
+            source_after=source_after,
+            artifact=ArtifactDigests(image_id=image_id),
+        )
+
+        return PolicyFacts(
+            scan_ran=scan_result is not None,
+            severity_counts=counts,
+            bases=bases,
+            labels=dict(request.labels or {}),
+            nonroot=self._nonroot_state(analysis),
+            provenance_status=str(parcial.status),
+        )
+
+    @staticmethod
+    def _nonroot_state(analysis: DockerfileAnalysis | None) -> Tristate:
+        """Se a imagem roda sem privilégio, segundo o que a validação mediu.
+
+        A ausência da checagem é `UNKNOWN`, e não `FALSE`: não ter medido não
+        é ter medido e reprovado, e a política distingue os dois na mensagem.
+        O veredito vem do DF002, que já sabe que `USER 0` e `USER 0:0` são root
+        tanto quanto `USER root` -- reimplementar a leitura aqui seria manter
+        duas definições de "sem privilégio" que divergiriam na primeira
+        correção.
+        """
+        if analysis is None:
+            return Tristate.UNKNOWN
+        for check in analysis.validation.checks:
+            if check.rule_id == "DF002":
+                return Tristate.of(check.status is ValidationStatus.PASS)
+        return Tristate.UNKNOWN
 
     def _digest_source(self, context_path: str, dockerfile_path: str) -> SourceDigests:
         """Digere a entrada do build: Dockerfile, contexto, bases e revisão.
@@ -1345,3 +1615,51 @@ class BuildImageUseCase:
             logger.debug(f"Não foi possível obter {what}: exit {result.returncode}")
             return None
         return result.stdout.strip()
+
+
+def _as_vulnerabilities(raw: list[dict[str, Any]]) -> list[Vulnerability]:
+    """Converte os achados crus do scanner nas entidades do domínio.
+
+    O `ScanResult` deste módulo carrega dicionários porque o relatório de build
+    os serializa direto. A atribuição, porém, é lógica de domínio e trabalha
+    com a entidade -- converter aqui é o que evita duas definições de "o que é
+    um achado" convivendo no mesmo processo.
+
+    Uma severidade que o scanner reporte com um nome que não conhecemos vira
+    `UNKNOWN` em vez de derrubar o build: a atribuição usa CVE e pacote, e a
+    severidade é só o que se mostra ao lado.
+    """
+    findings: list[Vulnerability] = []
+    for item in raw:
+        severity = str(item.get("severity") or "").strip().upper()
+        findings.append(
+            Vulnerability(
+                cve_id=str(item.get("cve_id") or ""),
+                package_name=str(item.get("package") or ""),
+                severity=Severity(severity)
+                if severity in Severity.__members__
+                else Severity.UNKNOWN,
+                installed_version=str(item.get("installed_version") or ""),
+                fixed_version=str(item.get("fixed_version") or ""),
+            )
+        )
+    return findings
+
+
+def _origin_hint(inheritance: InheritanceReport | None) -> str:
+    """Uma frase curta sobre de onde vieram os achados, quando se sabe.
+
+    Fica vazia quando ninguém pediu `--attribute` ou quando a atribuição não
+    fechou: um portão que insinua uma origem que não mediu é pior do que um
+    portão calado.
+    """
+    if inheritance is None or not inheritance.available:
+        return ""
+    herdadas, suas = len(inheritance.inherited), len(inheritance.introduced)
+    if not herdadas and not suas:
+        return ""
+    corrigiveis = inheritance.fixable_inherited
+    return (
+        f" [{herdadas} da base {inheritance.base_reference}"
+        f" ({corrigiveis} com correção publicada), {suas} das suas camadas]"
+    )

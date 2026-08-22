@@ -14,7 +14,6 @@ from dockerls.application.use_cases.analyze_image import AnalyzeImageUseCase
 from dockerls.application.use_cases.compare_images import CompareImagesUseCase
 from dockerls.application.use_cases.recommend_images import RecommendImagesUseCase
 from dockerls.application.use_cases.search_images import SearchImagesUseCase
-from dockerls.cache.sqlite_cache import SQLiteCache
 from dockerls.domain.entities.image import DOCKER_HUB
 from dockerls.domain.value_objects.network_policy import NetworkPolicy
 from dockerls.infrastructure.config.settings import Settings
@@ -43,6 +42,7 @@ if TYPE_CHECKING:
 
     from dockerls.application.services.progress import ScanObserver
     from dockerls.application.services.source_registry import SourceBuilder
+    from dockerls.cache.sqlite_cache import SQLiteCache
     from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
 
 # Populated by _settings() on first use; exposed so commands can tell the
@@ -154,6 +154,13 @@ async def build_repository(cache: SQLiteCache | None = None) -> DockerHubClient:
 
 
 def build_cache() -> SQLiteCache:
+    # Import tardio: `SQLiteCache` puxa o SQLAlchemy, que sozinho responde por
+    # cerca de um segundo do arranque do processo. Comandos que nunca tocam o
+    # cache -- `version`, `--help`, `controls`, `policy` -- pagavam esse
+    # segundo em toda invocação, e um segundo de espera antes de um `--help` é
+    # o tipo de coisa que faz uma ferramenta parecer pesada sem ser.
+    from dockerls.cache.sqlite_cache import SQLiteCache
+
     s = _settings()
     return SQLiteCache(s.db_path)
 

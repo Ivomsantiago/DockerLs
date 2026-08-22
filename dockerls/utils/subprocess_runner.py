@@ -53,6 +53,33 @@ VERSION_TIMEOUT_SECONDS = 10.0
 _TERMINATE_GRACE_SECONDS = 5.0
 
 
+#: Se dá para desligar core dumps no filho. Só POSIX tem `resource`, e a
+#: ausência não é erro: no Windows o mecanismo simplesmente não existe.
+try:  # pragma: no cover - depende da plataforma
+    import resource
+
+    _CAN_LIMIT_CORE = True
+except ImportError:  # pragma: no cover - Windows
+    _CAN_LIMIT_CORE = False
+
+
+def _no_core_dumps() -> None:  # pragma: no cover - roda no processo filho
+    """Desliga core dumps no scanner, antes do `exec`.
+
+    Um scanner que falha um pull autenticado tem, na memória, o token que
+    usou. Se ele receber um SIGSEGV com core dump ligado, esse token vai
+    para o disco num arquivo que ninguém redige e quase ninguém audita --
+    e este projeto já redige log, evidência e exportação justamente para
+    isso não acontecer. Fechar a última porta custa duas linhas.
+
+    `RLIMIT_AS` continuaria sendo a escolha errada aqui e por isso não está:
+    o Trivy é um binário Go, e o runtime do Go reserva um espaço de
+    endereçamento virtual enorme na largada. Limitar isso mata o processo na
+    inicialização, transformando uma medida de segurança numa falha de scan.
+    """
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
 class OutputTooLargeError(RuntimeError):
     """A scanner wrote more than `MAX_OUTPUT_BYTES` to one stream.
 
@@ -87,6 +114,7 @@ async def run_capture(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        preexec_fn=_no_core_dumps if _CAN_LIMIT_CORE else None,  # noqa: PLW1509
     )
     try:
         stdout, stderr = await asyncio.wait_for(

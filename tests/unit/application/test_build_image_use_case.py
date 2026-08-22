@@ -958,3 +958,532 @@ class TestPushRefusesABrokenChain:
         use_case._push_image.assert_called_once()
         assert response.provenance is not None
         assert response.provenance.is_verified is True
+
+
+class TestReportCarriesTheCitations:
+    """O relatório é o arquivo que vai para auditoria.
+
+    O terminal citava o controle publicado (CIS 4.1, NIST 4.1.2) e o relatório
+    perdia a citação -- exatamente onde ela vale mais, diante de quem precisa
+    mapear achado para programa de conformidade.
+    """
+
+    def _validation(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM python:3.12-alpine\n")
+        return DockerfileValidator().validate(tmp_path)
+
+    def test_checks_carry_rule_id_references_and_rationale(self, tmp_path):
+        document = BuildImageUseCase._validation_dict(self._validation(tmp_path))
+        checks = document["checks"]
+        assert checks
+        for check in checks:
+            assert "rule_id" in check
+            assert "references" in check
+            assert "rationale" in check
+
+    def test_a_documented_rule_names_its_control(self, tmp_path):
+        document = BuildImageUseCase._validation_dict(self._validation(tmp_path))
+        non_root = next(c for c in document["checks"] if c["rule_id"] == "DF002")
+        assert any("CIS Docker Benchmark 4.1" in ref for ref in non_root["references"])
+        assert non_root["rationale"]
+
+
+class TestPolicyGate:
+    """A política de `.dockerls-policy.yaml`, conferida contra o que o build mediu.
+
+    Ela existe porque `--fail-on` mora na linha de comando, e uma regra que
+    mora na linha de comando é uma regra que cada pipeline reescreve à mão.
+    """
+
+    @pytest.fixture
+    def context(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM node:22-alpine\nUSER node\n")
+        return tmp_path
+
+    @pytest.fixture
+    def use_case(self, tmp_path):
+        validation = _validation()
+        validator = MagicMock(spec=DockerfileValidatorInterface)
+        validator.validate.return_value = validation
+        validator.analyze.return_value = _analysis(validation)
+        return BuildImageUseCase(validator, MagicMock())
+
+    def test_base_sem_digest_reprova_o_build(self, use_case, context):
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        with patch.object(use_case, "_build_image") as mock_build:
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            response = use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=False,
+                    policy=BuildPolicy(require_pinned_bases=True),
+                )
+            )
+
+        assert response.exit_code == EXIT_POLICY
+        assert response.policy_violations
+        assert "node:22-alpine" in response.policy_violations[0].message
+
+    def test_a_politica_nao_afrouxa_o_que_a_linha_de_comando_apertou(self, use_case, context):
+        """Senão bastaria commitar um YAML para publicar o que não passaria."""
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        with (
+            patch.object(use_case, "_scan_image") as mock_scan,
+            patch.object(use_case, "_build_image") as mock_build,
+        ):
+            mock_scan.return_value = ScanResult(critical=3, high=0, medium=0, low=0)
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            response = use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=True,
+                    fail_on="critical",
+                    policy=BuildPolicy(fail_on="low"),
+                )
+            )
+
+        assert response.exit_code == EXIT_POLICY
+        assert "Vulnerabilities exceed threshold" in response.error
+
+    def test_a_politica_aperta_o_que_a_linha_de_comando_nao_pediu(self, use_case, context):
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        with (
+            patch.object(use_case, "_scan_image") as mock_scan,
+            patch.object(use_case, "_build_image") as mock_build,
+        ):
+            mock_scan.return_value = ScanResult(critical=0, high=1, medium=0, low=0)
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            response = use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=True,
+                    policy=BuildPolicy(fail_on="high"),
+                )
+            )
+
+        assert response.exit_code == EXIT_POLICY
+
+    def test_imagem_que_viola_a_politica_nao_e_publicada(self, use_case, context):
+        """O portão vem antes do push pelo mesmo motivo do portão de scan."""
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        with (
+            patch.object(use_case, "_build_image") as mock_build,
+            patch.object(use_case, "_push_image") as mock_push,
+        ):
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            response = use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=False,
+                    push=True,
+                    policy=BuildPolicy(required_labels=("owner",)),
+                )
+            )
+
+        assert response.exit_code == EXIT_POLICY
+        mock_push.assert_not_called()
+
+    def test_politica_cumprida_deixa_o_build_passar(self, use_case, context):
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        with patch.object(use_case, "_build_image") as mock_build:
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            response = use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=False,
+                    labels={"owner": "Plataforma"},
+                    policy=BuildPolicy(required_labels=("owner",)),
+                )
+            )
+
+        assert response.exit_code == EXIT_OK
+        assert not response.policy_violations
+
+    def test_sem_politica_nada_muda(self, use_case, context):
+        with patch.object(use_case, "_build_image") as mock_build:
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            response = use_case.execute(
+                BuildImageRequest(context_path=str(context), tag="test:latest", scan=False)
+            )
+
+        assert response.exit_code == EXIT_OK
+        assert not response.policy_violations
+
+    def _use_case_with(self, checks):
+        validation = _validation(checks=checks)
+        validator = MagicMock(spec=DockerfileValidatorInterface)
+        validator.validate.return_value = validation
+        validator.analyze.return_value = _analysis(validation)
+        return BuildImageUseCase(validator, MagicMock())
+
+    def _df002(self, status: ValidationStatus) -> ValidationCheck:
+        return ValidationCheck(
+            check="non_root_user",
+            status=status,
+            message="",
+            severity=SeverityLevel.HIGH,
+            rule_id="DF002",
+        )
+
+    def _run(self, use_case, context, policy):
+        with patch.object(use_case, "_build_image") as mock_build:
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            return use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context), tag="test:latest", scan=False, policy=policy
+                )
+            )
+
+    def test_require_nonroot_le_o_veredito_do_df002(self, context):
+        """A regra reaproveita o DF002, que já sabe que `USER 0` é root tanto
+        quanto `USER root`."""
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        use_case = self._use_case_with([self._df002(ValidationStatus.PASS)])
+
+        response = self._run(use_case, context, BuildPolicy(require_nonroot=True))
+
+        assert response.exit_code == EXIT_OK
+
+    def test_require_nonroot_reprova_quando_o_df002_reprovou(self, context):
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        use_case = self._use_case_with([self._df002(ValidationStatus.FAIL)])
+
+        response = self._run(use_case, context, BuildPolicy(require_nonroot=True))
+
+        assert response.exit_code == EXIT_POLICY
+        assert "roda como root" in response.policy_violations[0].message
+
+    def test_sem_a_checagem_a_regra_reprova_por_ausencia_de_medida(self, context):
+        """Não determinar não é o mesmo que estar em ordem."""
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        use_case = self._use_case_with([])
+
+        response = self._run(use_case, context, BuildPolicy(require_nonroot=True))
+
+        assert response.exit_code == EXIT_POLICY
+        assert "não foi possível determinar" in response.policy_violations[0].message
+
+
+class TestAttribution:
+    """Cruzar os achados da imagem com os da base declarada.
+
+    Custa um segundo scan, e por isso é escolha e não padrão: dobrar o tempo
+    de portão faria as pessoas desligarem o portão.
+    """
+
+    @pytest.fixture
+    def context(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM node:22-alpine\nUSER node\n")
+        return tmp_path
+
+    @pytest.fixture
+    def use_case(self):
+        validation = _validation()
+        validator = MagicMock(spec=DockerfileValidatorInterface)
+        validator.validate.return_value = validation
+        analysis = _analysis(validation)
+        analysis.info.final_base_image = "node:22-alpine"
+        validator.analyze.return_value = analysis
+        return BuildImageUseCase(validator, MagicMock())
+
+    @staticmethod
+    def _scan(*findings):
+        return ScanResult(
+            total_vulnerabilities=len(findings),
+            vulnerabilities=[{"cve_id": c, "package": p, "severity": "HIGH"} for c, p in findings],
+        )
+
+    def _run(self, use_case, context, built, base, *, attribute=True):
+        scans = {"test:latest": built, "node:22-alpine": base}
+        with (
+            patch.object(use_case, "_build_image") as mock_build,
+            patch.object(use_case, "_scan_image", side_effect=lambda tag: scans.get(tag)),
+        ):
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            return use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=True,
+                    attribute_findings=attribute,
+                )
+            )
+
+    def test_separa_o_que_veio_da_base_do_que_veio_das_suas_camadas(self, use_case, context):
+        response = self._run(
+            use_case,
+            context,
+            self._scan(("CVE-1", "openssl"), ("CVE-2", "requests")),
+            self._scan(("CVE-1", "openssl")),
+        )
+
+        report = response.inheritance
+        assert report is not None and report.available
+        assert [f.cve_id for f in report.inherited] == ["CVE-1"]
+        assert [f.cve_id for f in report.introduced] == ["CVE-2"]
+
+    def test_conta_o_que_o_build_removeu_da_base(self, use_case, context):
+        response = self._run(use_case, context, self._scan(), self._scan(("CVE-9", "zlib")))
+
+        assert response.inheritance is not None
+        assert [f.cve_id for f in response.inheritance.removed] == ["CVE-9"]
+
+    def test_base_que_nao_escaneia_nao_vira_tudo_seu(self, use_case, context):
+        """Seria transformar ausência de medição em acusação."""
+        response = self._run(use_case, context, self._scan(("CVE-1", "a")), None)
+
+        report = response.inheritance
+        assert report is not None
+        assert not report.available
+        assert "não pôde ser escaneada" in report.unavailable_reason
+        assert not report.introduced
+
+    def test_sem_a_flag_nada_e_atribuido(self, use_case, context):
+        response = self._run(
+            use_case, context, self._scan(("CVE-1", "a")), self._scan(), attribute=False
+        )
+
+        assert response.inheritance is None
+
+    def test_scratch_nao_e_escaneada_e_tudo_e_atribuido_ao_build(self, use_case, context):
+        """`scratch` não é uma imagem: não há o que escanear, e tudo que a
+        imagem carrega veio das camadas deste build."""
+        use_case.validator.analyze.return_value.info.final_base_image = "scratch"
+
+        response = self._run(use_case, context, self._scan(("CVE-1", "a")), None)
+
+        report = response.inheritance
+        assert report is not None and report.available
+        assert [f.cve_id for f in report.introduced] == ["CVE-1"]
+
+
+class TestPreflight:
+    """Reprovar antes de construir o que já dá para reprovar.
+
+    Descobrir um rótulo obrigatório faltando depois de dez minutos de build e
+    um scan é o tipo de atrito que faz as pessoas pararem de rodar o portão.
+    """
+
+    @pytest.fixture
+    def context(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM node:22\n")
+        return tmp_path
+
+    @pytest.fixture
+    def use_case(self):
+        validation = _validation(
+            checks=[
+                ValidationCheck(
+                    check="non_root_user",
+                    status=ValidationStatus.FAIL,
+                    message="",
+                    severity=SeverityLevel.HIGH,
+                    rule_id="DF002",
+                )
+            ]
+        )
+        validator = MagicMock(spec=DockerfileValidatorInterface)
+        validator.validate.return_value = validation
+        validator.analyze.return_value = _analysis(validation)
+        return BuildImageUseCase(validator, MagicMock())
+
+    def test_base_sem_digest_reprova_sem_construir(self, use_case, context):
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        with patch.object(use_case, "_build_image") as mock_build:
+            response = use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    validate_only=True,
+                    policy=BuildPolicy(require_pinned_bases=True),
+                )
+            )
+
+        mock_build.assert_not_called()
+        assert response.exit_code == EXIT_POLICY
+        assert any(v.rule == "require_pinned_bases" for v in response.policy_violations)
+
+    def test_regras_que_dependem_de_medicao_nao_reprovam_no_preflight(self, use_case, context):
+        """Elas não são consideradas cumpridas -- apenas não são conferíveis
+        sem construir."""
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        response = use_case.execute(
+            BuildImageRequest(
+                context_path=str(context),
+                tag="test:latest",
+                validate_only=True,
+                policy=BuildPolicy(require_scan=True, require_provenance=True),
+            )
+        )
+
+        assert not response.policy_violations
+
+    def test_digest_vindo_de_arg_conta_como_fixado(self, use_case, tmp_path):
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        (tmp_path / "Dockerfile").write_text("ARG D=sha256:aa\nFROM node:22@${D}\n")
+
+        response = use_case.execute(
+            BuildImageRequest(
+                context_path=str(tmp_path),
+                tag="test:latest",
+                validate_only=True,
+                policy=BuildPolicy(require_pinned_bases=True),
+            )
+        )
+
+        assert not response.policy_violations
+
+    def test_sem_politica_o_preflight_nao_faz_nada(self, use_case, context):
+        response = use_case.execute(
+            BuildImageRequest(context_path=str(context), tag="test:latest", validate_only=True)
+        )
+
+        assert not response.policy_violations
+
+
+class TestGateOriginHint:
+    """A linha do portão diz de onde vieram os achados, quando se sabe.
+
+    Quem lê o log do CI está decidindo, naquele segundo, se mexe no Dockerfile
+    ou na base -- e sem isso a decisão é um palpite.
+    """
+
+    @pytest.fixture
+    def context(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM node:22-alpine\nUSER node\n")
+        return tmp_path
+
+    @pytest.fixture
+    def use_case(self):
+        validation = _validation()
+        validator = MagicMock(spec=DockerfileValidatorInterface)
+        validator.validate.return_value = validation
+        analysis = _analysis(validation)
+        analysis.info.final_base_image = "node:22-alpine"
+        validator.analyze.return_value = analysis
+        return BuildImageUseCase(validator, MagicMock())
+
+    @staticmethod
+    def _scan(*findings, critical=0):
+        return ScanResult(
+            critical=critical,
+            total_vulnerabilities=len(findings),
+            vulnerabilities=[
+                {
+                    "cve_id": c,
+                    "package": p,
+                    "severity": "CRITICAL",
+                    "fixed_version": fix,
+                }
+                for c, p, fix in findings
+            ],
+        )
+
+    def _run(self, use_case, context, built, base, *, attribute=True):
+        scans = {"test:latest": built, "node:22-alpine": base}
+        with (
+            patch.object(use_case, "_build_image") as mock_build,
+            patch.object(use_case, "_scan_image", side_effect=lambda tag: scans.get(tag)),
+        ):
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            return use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=True,
+                    fail_on="critical",
+                    attribute_findings=attribute,
+                )
+            )
+
+    def test_o_portao_diz_quantas_vieram_da_base(self, use_case, context):
+        built = self._scan(("CVE-1", "openssl", "3.0.15"), ("CVE-2", "requests", ""), critical=2)
+        base = self._scan(("CVE-1", "openssl", "3.0.15"), critical=1)
+
+        response = self._run(use_case, context, built, base)
+
+        assert response.exit_code == EXIT_POLICY
+        assert "1 da base node:22-alpine (1 com correção publicada)" in response.error
+        assert "1 das suas camadas" in response.error
+
+    def test_sem_atribuicao_o_portao_nao_insinua_origem(self, use_case, context):
+        """Um portão que insinua uma origem que não mediu é pior do que um
+        portão calado."""
+        built = self._scan(("CVE-1", "openssl", ""), critical=1)
+
+        response = self._run(use_case, context, built, None, attribute=False)
+
+        assert response.exit_code == EXIT_POLICY
+        assert "da base" not in response.error
+
+    def test_atribuicao_que_nao_fechou_tambem_nao_insinua(self, use_case, context):
+        built = self._scan(("CVE-1", "openssl", ""), critical=1)
+
+        response = self._run(use_case, context, built, None, attribute=True)
+
+        assert response.inheritance is not None
+        assert not response.inheritance.available
+        assert "da base" not in response.error
+
+    def test_a_base_e_escaneada_uma_vez_so_na_reprovacao(self, use_case, context):
+        """Escanear a base duas vezes para dizer a mesma coisa duas vezes
+        seria pagar minutos por nada."""
+        built = self._scan(("CVE-1", "openssl", ""), critical=1)
+        base = self._scan(("CVE-1", "openssl", ""), critical=1)
+        scans = {"test:latest": built, "node:22-alpine": base}
+
+        with (
+            patch.object(use_case, "_build_image") as mock_build,
+            patch.object(
+                use_case, "_scan_image", side_effect=lambda tag: scans.get(tag)
+            ) as mock_scan,
+        ):
+            mock_build.return_value = BuildResult(
+                success=True, image_tag="test:latest", image_sha256="sha256:abc"
+            )
+            use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=True,
+                    fail_on="critical",
+                    attribute_findings=True,
+                )
+            )
+
+        base_scans = [c for c in mock_scan.call_args_list if c.args[0] == "node:22-alpine"]
+        assert len(base_scans) == 1

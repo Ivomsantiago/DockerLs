@@ -780,3 +780,159 @@ class TestBaseImageCommand:
         )
         assert result.exit_code == EXIT_ERROR
         assert "alpine" in result.output
+
+
+class TestBaseImageBuildsInOneStep:
+    def test_the_build_flag_reaches_the_use_case_with_the_gate_on(self, tmp_path):
+        # Gerar e construir em dois comandos deixava um vão onde a receita
+        # existe e ninguém a mediu.
+        with patch("dockerls.application.use_cases.build_image.BuildImageUseCase") as use_case:
+            use_case.return_value.execute.return_value.success = True
+            CliRunner().invoke(
+                app,
+                [
+                    "base-image",
+                    "-o",
+                    str(tmp_path / "Dockerfile"),
+                    "--os",
+                    "alpine",
+                    "--runtime",
+                    "none",
+                    "--with",
+                    "",
+                    "--no-pin",
+                    "--build",
+                    "-t",
+                    "base:1.0",
+                    "--owner",
+                    "Plataforma",
+                ],
+            )
+        request = use_case.return_value.execute.call_args.args[0]
+        assert request.tag == "base:1.0"
+        assert request.fail_on == "critical"
+        assert request.labels["maintainer"] == "Plataforma"
+
+    def test_without_the_flag_nothing_is_built(self, tmp_path):
+        with patch("dockerls.application.use_cases.build_image.BuildImageUseCase") as use_case:
+            result = CliRunner().invoke(
+                app,
+                [
+                    "base-image",
+                    "-o",
+                    str(tmp_path / "Dockerfile"),
+                    "--os",
+                    "alpine",
+                    "--runtime",
+                    "none",
+                    "--with",
+                    "",
+                    "--no-pin",
+                ],
+            )
+        assert result.exit_code == EXIT_OK
+        use_case.assert_not_called()
+
+
+class TestSignFlag:
+    """`--sign` -- assinar é afirmar que você publicou estes bytes.
+
+    Emiti-la sobre um artefato que não se sabe de onde veio transforma a
+    assinatura em carimbo, e um carimbo é exatamente o que ela não pode ser.
+    """
+
+    @staticmethod
+    def _response(*, success=True, provenance=None):
+        from dockerls.application.use_cases.build_image import BuildImageResponse
+
+        return BuildImageResponse(
+            success=success,
+            image_tag="reg.io/app:1.0",
+            image_sha256="sha256:local",
+            provenance=provenance,
+            exit_code=0 if success else 1,
+        )
+
+    @staticmethod
+    def _provenance(*, verified=True, repo_digest="sha256:" + "b" * 64):
+        from dockerls.domain.value_objects.provenance import (
+            ArtifactDigests,
+            BuildProvenance,
+            SourceDigests,
+        )
+
+        source = SourceDigests(dockerfile="sha256:aa", context="sha256:bb")
+        depois = source if verified else SourceDigests(dockerfile="sha256:zz")
+        return BuildProvenance(
+            tag="reg.io/app:1.0",
+            source=source,
+            source_after=depois,
+            artifact=ArtifactDigests(
+                image_id="sha256:local",
+                repo_digest=repo_digest,
+                published_reference="reg.io/app:1.0",
+            ),
+        )
+
+    def test_sem_push_a_assinatura_e_ignorada(self):
+        from dockerls.cli.commands.build import _sign_if_requested
+
+        assert _sign_if_requested(self._response(), sign=True, publishing=False) is None
+
+    def test_procedencia_nao_verificada_recusa_a_assinatura(self):
+        from dockerls.cli.commands.build import _sign_if_requested
+        from dockerls.integrations.signing.cosign import SignatureStatus
+
+        result = _sign_if_requested(
+            self._response(provenance=self._provenance(verified=False)),
+            sign=True,
+            publishing=True,
+        )
+
+        assert result is not None
+        assert result.status is SignatureStatus.FAILED
+        assert not result.trustworthy
+
+    def test_sem_digest_do_manifesto_recusa_a_assinatura(self):
+        """Assinar a tag assinaria o que ela aponta agora, e ela pode mover."""
+        from dockerls.cli.commands.build import _sign_if_requested
+        from dockerls.integrations.signing.cosign import SignatureStatus
+
+        result = _sign_if_requested(
+            self._response(provenance=self._provenance(repo_digest="")),
+            sign=True,
+            publishing=True,
+        )
+
+        assert result is not None
+        assert result.status is SignatureStatus.FAILED
+        assert "sem digest" in result.detail
+
+    def test_assina_o_digest_e_nao_a_tag(self):
+        from unittest.mock import AsyncMock, patch
+
+        from dockerls.cli.commands.build import _sign_if_requested
+        from dockerls.integrations.signing.cosign import SignatureResult, SignatureStatus
+
+        assinado = AsyncMock(
+            return_value=SignatureResult(reference="x", status=SignatureStatus.SIGNED)
+        )
+        with patch("dockerls.integrations.signing.cosign.CosignClient.sign", assinado):
+            _sign_if_requested(
+                self._response(provenance=self._provenance()),
+                sign=True,
+                publishing=True,
+            )
+
+        alvo = assinado.await_args.args[0]
+        assert alvo == "reg.io/app@sha256:" + "b" * 64
+
+    def test_sem_a_flag_nada_e_assinado(self):
+        from dockerls.cli.commands.build import _sign_if_requested
+
+        assert (
+            _sign_if_requested(
+                self._response(provenance=self._provenance()), sign=False, publishing=True
+            )
+            is None
+        )

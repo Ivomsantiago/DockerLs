@@ -469,3 +469,310 @@ regra estava em duas cópias e as duas erravam em `localhost`. Agora
 `DockerImage.registry_host` delega para o domínio. Duas cópias de uma regra de
 segurança não divergem em teoria — elas divergem exatamente no caso que
 importa.
+
+## D-020 — Um documento de procedência não se auto-aprova
+
+**Contexto.** O `build --provenance` grava um JSON com os digests de entrada e
+saída do build, e um campo `status` calculado na hora. O passo seguinte natural
+— um workflow que decide se assina o artefato — leria esse campo.
+
+**Decisão.** `dockerls provenance` **recalcula** o status a partir dos digests
+e ignora o que está gravado. O campo `"status": "VERIFIED"` num arquivo JSON é
+editável por qualquer pessoa com um editor de texto; a comparação entre
+`source` e `source_after_build` não é.
+
+**Consequência.** O `from_dict` precisa reconstruir o documento inteiro em vez
+de ler um resumo, e qualquer campo ilegível leva a `INCOMPLETE` — nunca a
+`VERIFIED` por omissão. É o mesmo princípio que governa o resto da ferramenta:
+o que não pôde ser verificado não é apresentado como verificado.
+
+**Alternativa recusada.** Assinar o documento junto do artefato e verificar a
+assinatura. Resolve a adulteração, mas não a pergunta que importa — um
+documento íntegro pode descrever um build cuja entrada mudou no meio do
+caminho, e é esse caso que o recálculo pega.
+
+## D-021 — O sujeito da atestação sai do documento, nunca do YAML
+
+**Contexto.** `actions/attest-build-provenance` precisa de `subject-name` e
+`subject-digest`. O caminho óbvio é escrevê-los no workflow.
+
+**Decisão.** `--github-output` extrai os dois do documento de procedência e os
+publica em `$GITHUB_OUTPUT`. O workflow referencia a saída do passo, não uma
+string literal.
+
+**Consequência.** A atestação fala necessariamente da mesma imagem que o scan
+mediu. Um digest redigitado à mão é onde a cadeia arrebenta em silêncio: a
+assinatura continua criptograficamente válida enquanto cobre bytes que ninguém
+escaneou, e nada no processo acusa.
+
+## D-022 — Podar o histórico nunca faz uma tag parecer mais estável
+
+**Contexto.** O histórico de digests por tag tem teto (`MAX_OBSERVATIONS`). A
+poda óbvia — descartar as observações mais antigas — faria a contagem de
+movimentos regredir.
+
+**Decisão.** A primeira observação é preservada (ela ancora o "desde quando") e
+o que cai vira contagem em `dropped`, que soma em `moves`.
+
+**Consequência.** Um campo a mais no formato serializado. Em troca, a tag que
+mais muda — justamente a que estoura o teto e a que mais importa — não aparece
+como a mais estável de todas no instante em que passa do limite.
+
+## D-023 — Comparar duas receitas descreve trocas, não elege vencedora
+
+**Contexto.** `base-image --compare` mostra a diferença entre duas receitas de
+imagem base. Seria fácil (e vendável) coroar a de menor superfície.
+
+**Decisão.** O diff descreve o que entra, o que sai e o que cada troca custa, e
+termina mandando escanear as duas.
+
+**Consequência.** A pessoa ainda precisa construir e medir para decidir. É o
+custo de não mentir: contar pacotes não mede vulnerabilidade — uma base com
+menos pacotes e um deles desatualizado é pior que uma com mais pacotes e todos
+corrigidos, e um número que ignora isso seria apresentado como medida sem ser
+uma.
+
+## D-024 — Política malformada é erro; regra de ignore malformada é silêncio
+
+**Contexto.** `.dockerls-ignore.yaml` degrada para "nenhuma regra" quando não
+carrega. O `.dockerls-policy.yaml` poderia seguir a mesma convenção.
+
+**Decisão.** Não segue. Chave desconhecida, tipo errado, severidade inexistente
+e arquivo vazio **encerram o comando**.
+
+**Consequência.** A direção da falha é o que decide. Uma regra de ignore que
+não carrega deixa de esconder uma CVE: o resultado é mais alarme, e alarme a
+mais é seguro. Uma regra de política que não carrega deixa de exigir alguma
+coisa, e o build passa parecendo ter sido conferido. `require_non_root` no
+lugar de `require_nonroot` seria um portão aberto com cara de fechado, e
+ninguém descobre isso olhando uma saída verde.
+
+**Alternativa recusada.** Avisar e seguir. O aviso vira ruído no log de CI em
+duas semanas, e o portão continua desligado.
+
+## D-025 — Entre a política e a linha de comando, vence a mais estrita
+
+**Contexto.** `fail_on` pode vir do `.dockerls-policy.yaml` e do `--fail-on`.
+Alguma das duas precisa ganhar.
+
+**Decisão.** Vence a mais estrita, venha de onde vier.
+
+**Consequência.** Um arquivo no repositório não desliga um portão que o
+pipeline pediu — senão bastaria commitar um YAML para publicar o que não
+passaria. E um pipeline não afrouxa a política da organização passando uma
+flag. Nenhum dos dois lados pode relaxar o outro; ambos podem apertar.
+
+## D-026 — A política só contém regras mensuráveis
+
+**Contexto.** Uma política de segurança "completa" naturalmente incluiria
+coisas como "não use pacotes inseguros" ou "mantenha a imagem enxuta".
+
+**Decisão.** Só entra regra decidível a partir do que este build mediu.
+
+**Consequência.** A lista é curta e cada regra aponta para uma medição
+específica. Uma regra que não pode ser avaliada é uma regra que reprova por
+engano ou aprova por omissão, e as duas corroem a confiança no portão até
+alguém desligá-lo inteiro.
+
+## D-027 — A varredura de frota nunca fala sobre vulnerabilidade
+
+**Contexto.** `dockerls fleet` percorre uma árvore e resume o estado dos
+Dockerfiles. A palavra "frota" convida a chamar isso de auditoria de segurança.
+
+**Decisão.** Não é. O relatório diz, na própria saída, que leu Dockerfiles e não
+construiu imagem nem chamou scanner, e nenhuma métrica dele fala de CVE.
+
+**Consequência.** Quem quiser o número de vulnerabilidades ainda precisa
+construir e escanear cada imagem. É o custo de não converter "li o arquivo" em
+"medi a imagem" — a mesma substituição que esta ferramenta recusa em todo lugar.
+
+## D-028 — Na frota, a política aplicada é o subconjunto estático
+
+**Contexto.** A varredura não constrói nem escaneia, então `require_scan` e
+`max_vulnerabilities` violariam em todo arquivo.
+
+**Decisão.** `BuildPolicy.static_subset()` remove as regras que dependem de
+medição, e a saída diz que fez isso.
+
+**Consequência.** As regras removidas **não** são consideradas cumpridas — elas
+continuam valendo no `build`, que é onde há medição. Uma lista em que tudo está
+vermelho pela mesma razão não distingue nada, e a fila de trabalho deixaria de
+ser fila.
+
+## D-029 — Symlink não é seguido, e o truncamento é dito em voz alta
+
+**Contexto.** Percorrer uma árvore arbitrária no disco de outra pessoa.
+
+**Decisão.** Symlinks são ignorados; há teto de arquivos e de profundidade; e o
+relatório carrega `truncated` quando qualquer um deles é atingido.
+
+**Consequência.** Um link para `/` num repositório não transforma a varredura
+numa varredura da máquina inteira, e um retrato parcial nunca se apresenta como
+completo. Em troca, um repositório que usa symlink para compartilhar
+Dockerfiles entre pastas terá o arquivo contado uma vez só — o que é o
+comportamento correto, e não uma limitação.
+
+## D-030 — Assinante ausente não é imagem não assinada
+
+**Contexto.** `cosign` pode não estar instalado, pode falhar por rede, ou pode
+responder que não há assinatura. Um booleano colapsaria os três.
+
+**Decisão.** `SignatureStatus` tem cinco valores e `is_conclusive` separa
+veredito de falha do medidor. `dockerls verify` sai `0`, `2` e `1`
+respectivamente.
+
+**Consequência.** Um pipeline consegue tratar "esta imagem não está assinada"
+de forma diferente de "não deu para conferir". Sem isso, uma máquina sem cosign
+reprovaria toda imagem da organização — e a resposta previsível seria desligar
+a checagem.
+
+## D-031 — Só se assina por digest, e só com procedência verificada
+
+**Contexto.** `--sign` roda depois do push, e a tag está ali à mão.
+
+**Decisão.** A referência assinada é sempre `repositório@sha256:...`, com a tag
+removida; e a assinatura é recusada quando a procedência não é `VERIFIED`.
+
+**Consequência.** Uma assinatura aponta para bytes e diz "eu publiquei isto".
+Assinar uma tag assinaria o que ela aponta naquele instante, e a assinatura
+seguiria válida depois que a tag mudasse. Assinar sem procedência seria
+carimbar um artefato cuja entrada ninguém conseguiu fechar — o carimbo é
+exatamente o que uma assinatura não pode ser.
+
+## D-032 — `base --alternatives` mede e propõe; não aplica
+
+**Contexto.** O `base` já reescreve o Dockerfile para atualizar digests. Seria
+coerente reescrever também para trocar a base por uma melhor.
+
+**Decisão.** Não reescreve. As alternativas são impressas com os deltas
+medidos e os trade-offs; a troca é do humano.
+
+**Consequência.** Uma pessoa ainda precisa editar o arquivo. É o correto:
+atualizar um digest preserva libc, shell, usuário e gerenciador de pacotes,
+enquanto trocar a família muda todos os quatro. As duas coisas cabem no mesmo
+comando; não cabem na mesma automação.
+
+## D-033 — A auditoria de registry para no que o OCI revela
+
+**Contexto.** Uma "auditoria de endurecimento de registry" completa leria
+políticas de retenção, IAM e content trust de ACR, GAR e GHCR — cada um com
+sua API e sua credencial.
+
+**Decisão.** O comando usa só o protocolo OCI, sem credencial de nuvem, e a
+saída declara o que não leu.
+
+**Consequência.** O relatório é menor e roda em qualquer lugar, inclusive
+contra um registry de terceiro. A parte que depende de credencial continua sem
+resposta — e dizer isso é melhor do que uma checagem por provedor que ninguém
+consegue exercitar e que apodrece na primeira mudança de API.
+
+## D-034 — Acesso público é relatado, nunca alertado
+
+**Contexto.** O comando descobre, como efeito de conseguir resposta anônima,
+que uma imagem é legível por qualquer pessoa.
+
+**Decisão.** O achado entra no relatório marcado como informativo, e não conta
+como alerta nem afeta o exit code.
+
+**Consequência.** "Público" é o estado correto de uma imagem base oficial e o
+estado errado de um artefato interno. A diferença é a intenção de quem
+publicou, e essa esta ferramenta não tem como medir. Alertar seria afirmar uma
+intenção; relatar entrega o fato a quem sabe qual era.
+
+## D-035 — "Mais estrito" é o limiar mais baixo, não a palavra mais grave
+
+**Contexto.** D-025 decidiu que, entre o `fail_on` da política e o da linha de
+comando, vence o mais estrito. A implementação ordenava as severidades por
+gravidade e escolhia o mínimo — devolvendo `critical` quando um dos lados
+pedia `high`.
+
+**Decisão.** A ordenação do portão é a que vale: `--fail-on low` reprova em LOW
+e em tudo acima, então `low` é o limiar mais exigente e `critical` o mais
+brando. A escolha passa a ser o índice máximo em `GATE_THRESHOLDS`.
+
+**Consequência.** Uma política `fail_on: high` deixa de ser silenciosamente
+relaxada por um pipeline que passa `--fail-on critical`. Era o caso exato que
+D-025 existia para impedir, invertido — e nada na saída acusava, porque o
+build passava.
+
+## D-036 — Sem os dois scans não há atribuição
+
+**Contexto.** `--attribute` divide os achados entre os que vieram da base e os
+que vieram das suas camadas. Se a base não escaneia, seria fácil listar tudo
+como "seu".
+
+**Decisão.** O relatório fica `UNAVAILABLE` com o motivo, e nenhuma contagem é
+apresentada.
+
+**Consequência.** Quem quer a divisão precisa de uma base escaneável. Em troca,
+o relatório nunca acusa o Dockerfile de alguém por causa de um scanner que não
+rodou — nem, na direção oposta, absolve o build atribuindo tudo à base.
+
+## D-037 — O perfil de produção tem nome, e diz o que ligou
+
+**Contexto.** Uma imagem publicada precisa de sete coisas ao mesmo tempo. A
+alternativa a nomeá-las é uma lista de flags que cada pipeline redigita.
+
+**Decisão.** `--production` liga o conjunto e **imprime cada regra que ligou**;
+um `.dockerls-policy.yaml` do contexto é somado, sempre pelo lado mais estrito.
+
+**Consequência.** A omissão vira uma decisão visível (`--no-policy`,
+`--fail-on` explícito) em vez de um esquecimento invisível. E um perfil que
+muda o comportamento em silêncio seria descoberto pelo build reprovando — cuja
+primeira reação é desligar o portão.
+
+**Alternativa recusada.** `fail_on: high` no perfil. Um perfil que ninguém
+consegue cumprir é um perfil que as pessoas desligam inteiro, e `high` reprova
+praticamente toda base Debian num dia qualquer. O teto de HIGH fica declarado à
+parte, onde se enxerga e se discute.
+
+## D-038 — A poda do contexto acontece na descida
+
+**Contexto.** `hash_context` percorria a árvore com `rglob("*")` e descartava
+depois o que o `.dockerignore` excluía.
+
+**Decisão.** Diretórios ignorados não são percorridos; a ordenação final
+continua sobre os caminhos completos.
+
+**Consequência.** Num contexto de 52.400 arquivos em que 401 são enviados ao
+daemon, 0,84 s viraram 0,013 s — e o digest é byte a byte o mesmo, o que é o
+que torna a mudança segura: documentos de procedência antigos continuam
+comparáveis com novos.
+
+## D-039 — Origem sem "tem correção?" ainda não é um plano
+
+**Contexto.** A atribuição divide os achados entre os que vieram da base e os
+que vieram das suas camadas. Parecia resposta suficiente.
+
+**Decisão.** Não é. O plano cruza origem com a existência de correção
+publicada, produzindo quatro grupos com quatro ações distintas.
+
+**Consequência.** "41 vêm da base" leva a "atualize a base" — que é trabalho
+perdido se nenhuma das 41 tiver correção publicada. Só a segunda dimensão
+separa "atualizar" de "trocar", e são semanas de trabalho diferentes.
+
+## D-040 — "Pode resolver", nunca "resolve"
+
+**Contexto.** Um achado herdado com `fixed_version` preenchido convida a dizer
+que atualizar a base o elimina.
+
+**Decisão.** O texto diz que atualizar **pode** resolver, e explica por quê: a
+correção existir upstream não significa que quem publica a base já reconstruiu
+com ela.
+
+**Consequência.** O conselho fica menos vendável e continua verdadeiro. É como
+uma ferramenta perde a confiança de quem seguiu a recomendação, reconstruiu, e
+viu o mesmo número — uma vez basta para ninguém mais ler a seção.
+
+## D-041 — O portão só fala de origem quando mediu origem
+
+**Contexto.** A linha que reprova o build é o texto mais lido de toda a
+ferramenta, e enriquecê-la com a origem dos achados é tentador mesmo sem
+`--attribute`.
+
+**Decisão.** Sem atribuição disponível, a linha não menciona origem.
+
+**Consequência.** Quem não pediu `--attribute` vê a mensagem antiga. Em troca,
+a frase sobre origem, quando aparece, é sempre medida — um portão que insinua
+uma origem que não mediu é pior do que um portão calado, porque manda alguém
+mexer no lugar errado com a autoridade de quem mediu.

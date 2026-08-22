@@ -7,6 +7,8 @@ corresponde ao que foi medido.
 
 from __future__ import annotations
 
+import pytest
+
 from dockerls.domain.value_objects.provenance import (
     ArtifactDigests,
     BuildProvenance,
@@ -91,3 +93,72 @@ class TestArchivedDocument:
             tag="app:1.0", source=SourceDigests(base_images={"python:3.12": ""})
         )
         assert record.to_dict()["source"]["base_images"] == {"python:3.12": ""}
+
+
+class TestFromDict:
+    """Ler de volta um documento arquivado, sem acreditar no que ele diz de si."""
+
+    def test_ida_e_volta_preserva_a_cadeia(self) -> None:
+        original = BuildProvenance(
+            tag="app:1.0",
+            source=SourceDigests(
+                dockerfile="sha256:aaa",
+                context="sha256:bbb",
+                context_files=7,
+                base_images={"python:3.12-alpine": "sha256:ccc"},
+                git_revision="abc123",
+                git_dirty=True,
+            ),
+            source_after=SourceDigests(dockerfile="sha256:aaa", context="sha256:bbb"),
+            artifact=ArtifactDigests(
+                image_id="sha256:ddd", repo_digest="sha256:eee", scanner="trivy"
+            ),
+        )
+
+        voltou = BuildProvenance.from_dict(original.to_dict())
+
+        assert voltou.status is ProvenanceStatus.VERIFIED
+        assert voltou.source == original.source
+        assert voltou.artifact == original.artifact
+
+    def test_status_gravado_nao_sobrepoe_o_recalculo(self) -> None:
+        """Um `"status": "VERIFIED"` num JSON é editável por qualquer um."""
+        voltou = BuildProvenance.from_dict(
+            {
+                "tag": "app:1.0",
+                "status": "VERIFIED",
+                "source": {"dockerfile_sha256": "sha256:aaa", "context_sha256": "sha256:bbb"},
+                "source_after_build": {
+                    "dockerfile_sha256": "sha256:zzz",
+                    "context_sha256": "sha256:bbb",
+                },
+                "artifact": {"image_id": "sha256:ddd"},
+            }
+        )
+
+        assert voltou.status is ProvenanceStatus.INPUT_CHANGED
+
+    @pytest.mark.parametrize(
+        "raw",
+        [None, "texto", 42, [], {"source": "não é dicionário"}],
+    )
+    def test_documento_ilegivel_nunca_vira_verificado(self, raw: object) -> None:
+        assert BuildProvenance.from_dict(raw).status is ProvenanceStatus.INCOMPLETE
+
+    def test_campos_de_tipo_errado_viram_vazio_e_nao_explodem(self) -> None:
+        voltou = BuildProvenance.from_dict(
+            {
+                "tag": 7,
+                "source": {"dockerfile_sha256": ["lista"], "context_files": "muitos"},
+                "artifact": {"image_id": None},
+            }
+        )
+
+        assert voltou.tag == ""
+        assert voltou.source.dockerfile == ""
+        assert voltou.source.context_files == 0
+        assert voltou.status is ProvenanceStatus.INCOMPLETE
+
+    def test_context_files_booleano_nao_vira_um(self) -> None:
+        voltou = BuildProvenance.from_dict({"source": {"context_files": True}})
+        assert voltou.source.context_files == 0

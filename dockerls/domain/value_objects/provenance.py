@@ -121,6 +121,51 @@ class BuildProvenance:
             )
         return "entrada e saída digeridas, e a entrada não mudou durante o build"
 
+    @staticmethod
+    def from_dict(raw: object) -> BuildProvenance:
+        """Reconstrói o documento arquivado, para conferi-lo depois.
+
+        Um documento é uma afirmação sobre um build que já terminou, e quem o
+        lê -- um passo de CI, uma revisão de incidente -- precisa recalcular o
+        `status` a partir dos digests, e não aceitar o `status` gravado. Um
+        campo `"status": "VERIFIED"` num arquivo JSON é editável por qualquer
+        um; a comparação entre `source` e `source_after_build` não é.
+
+        O que não parsear vira campo vazio, o que leva o status a
+        `INCOMPLETE` -- nunca a `VERIFIED` por omissão.
+        """
+        if not isinstance(raw, dict):
+            return BuildProvenance(tag="")
+        source = _mapping(raw.get("source"))
+        after = _mapping(raw.get("source_after_build"))
+        artifact = _mapping(raw.get("artifact"))
+        bases = source.get("base_images")
+        return BuildProvenance(
+            tag=_text(raw.get("tag")),
+            source=SourceDigests(
+                dockerfile=_text(source.get("dockerfile_sha256")),
+                context=_text(source.get("context_sha256")),
+                context_files=_count(source.get("context_files")),
+                base_images=(
+                    {str(k): str(v) for k, v in bases.items()} if isinstance(bases, dict) else {}
+                ),
+                git_revision=_text(source.get("git_revision")),
+                git_dirty=source.get("git_dirty") is True,
+            ),
+            source_after=SourceDigests(
+                dockerfile=_text(after.get("dockerfile_sha256")),
+                context=_text(after.get("context_sha256")),
+            ),
+            artifact=ArtifactDigests(
+                image_id=_text(artifact.get("image_id")),
+                repo_digest=_text(artifact.get("repo_digest")),
+                published_reference=_text(artifact.get("published_reference")),
+                scanner=_text(artifact.get("scanner")),
+            ),
+            started_at=_text(raw.get("started_at")),
+            finished_at=_text(raw.get("finished_at")),
+        )
+
     def to_dict(self) -> dict[str, object]:
         """O documento arquivado junto do relatório.
 
@@ -152,3 +197,15 @@ class BuildProvenance:
                 "scanner": self.artifact.scanner,
             },
         }
+
+
+def _mapping(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0

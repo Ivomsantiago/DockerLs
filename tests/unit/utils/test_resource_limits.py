@@ -140,3 +140,33 @@ class TestWorkerSizing:
         monkeypatch.setattr(resources, "_CGROUP_V2_MEMORY", tmp_path / "missing")
         monkeypatch.setattr(resources, "_CGROUP_V1_MEMORY", path)
         assert resources._cgroup_memory_limit() is None
+
+
+class TestCoreDumpsAreDisabled:
+    """Um scanner que falha um pull autenticado tem o token na memória.
+
+    Com core dump ligado, um SIGSEGV grava esse token em disco num arquivo que
+    ninguém redige -- e este projeto já redige log, evidência e exportação
+    justamente para isso não acontecer.
+    """
+
+    def test_the_limiter_sets_rlimit_core_to_zero(self):
+        import resource
+        from unittest.mock import patch
+
+        from dockerls.utils.subprocess_runner import _no_core_dumps
+
+        with patch.object(resource, "setrlimit") as setrlimit:
+            _no_core_dumps()
+        setrlimit.assert_called_once_with(resource.RLIMIT_CORE, (0, 0))
+
+    def test_rlimit_as_is_deliberately_not_set(self):
+        # O Trivy é um binário Go, e o runtime do Go reserva um espaço de
+        # endereçamento virtual enorme na largada: limitar isso mataria o
+        # processo na inicialização, virando falha de scan em vez de defesa.
+        import inspect
+
+        from dockerls.utils import subprocess_runner
+
+        source = inspect.getsource(subprocess_runner)
+        assert "RLIMIT_AS" not in source.replace("`RLIMIT_AS`", "")

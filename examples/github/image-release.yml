@@ -1,0 +1,92 @@
+# Construir, medir e atestar uma imagem — nesta ordem, e sem pular nenhuma.
+#
+# O que este workflow demonstra não é "como rodar o dockerls no CI"; é como
+# fechar a cadeia entre o que foi medido e o que foi assinado. Uma atestação
+# aponta para bytes; se o digest do YAML for redigitado à mão, ela pode
+# perfeitamente apontar para bytes que ninguém escaneou — e ninguém percebe,
+# porque a assinatura continua válida.
+#
+# Aqui o sujeito da atestação sai do próprio documento de procedência, e o
+# `dockerls provenance` recusa por código de saída quando o documento não
+# fecha. O passo de assinar simplesmente não roda sobre um build cuja entrada
+# mudou no meio do caminho.
+#
+# Copie para .github/workflows/ do seu projeto e ajuste registry, imagem e
+# credenciais.
+
+name: Publicar imagem
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Necessária para a atestação: é ela que dá ao job um token OIDC para
+      # assinar sem nenhum segredo de longa duração no repositório.
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install dockerls
+
+      - name: Autenticar no registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `--fail-on critical` é o portão. O `--provenance` é o que torna o
+      # resto verificável: sem ele, os passos seguintes falariam sobre uma
+      # imagem que não conseguem nomear.
+      - name: Construir, escanear e publicar
+        run: |
+          dockerls build \
+            --tag "${IMAGE}:${GITHUB_REF_NAME}" \
+            --fail-on critical \
+            --provenance provenance.json \
+            --registry ghcr.io \
+            --owner "${{ github.repository_owner }}" \
+            --security-contact security@example.com \
+            --source "${{ github.server_url }}/${{ github.repository }}" \
+            --non-interactive \
+            --push \
+            .
+
+      # Recalcula o veredito a partir dos digests em vez de acreditar no campo
+      # `status` gravado no arquivo, e falha o job se a entrada mudou durante o
+      # build. É o que impede uma assinatura de cobrir um artefato órfão.
+      - name: Conferir a procedência
+        id: provenance
+        run: dockerls provenance provenance.json --github-output
+
+      - name: Atestar a imagem publicada
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.provenance.outputs.subject-name }}
+          subject-digest: ${{ steps.provenance.outputs.subject-digest }}
+          push-to-registry: true
+
+      # O documento acompanha a release: quem for auditar depois precisa dos
+      # digests de entrada, e eles não estão dentro da imagem.
+      - name: Anexar a procedência à release
+        uses: actions/upload-artifact@v4
+        with:
+          name: provenance
+          path: provenance.json

@@ -401,10 +401,22 @@ class DockerfileValidator(DockerfileValidatorInterface):
                     title="Upgrade base image",
                     description="Use a pinned, minimal base image",
                     current_state=base,
-                    suggested_fix="FROM node:22-alpine or FROM chainguard/node:latest-dev",
+                    # Esta sugestão era a string fixa
+                    # `"FROM node:22-alpine or FROM chainguard/node:latest-dev"`,
+                    # devolvida igual para qualquer Dockerfile -- inclusive um
+                    # de Python, onde nomear uma imagem Node é simplesmente
+                    # errado. Nomear uma imagem que ninguém mediu é o oposto do
+                    # que esta ferramenta faz em todo o resto, então ela agora
+                    # aponta para os comandos que medem de verdade.
+                    suggested_fix=(
+                        "dockerls base --dry-run          # fixa a base por digest\n"
+                        "dockerls base --alternatives     # mede alternativas mais seguras"
+                    ),
                     reason=(
-                        "Pinned versions ensure reproducibility; "
-                        "minimal bases reduce attack surface"
+                        "Pinned versions ensure reproducibility; minimal bases reduce "
+                        "attack surface. Which base is actually safer for this project "
+                        "is a measurement, not a name -- `dockerls base --alternatives` "
+                        "scans the current base alongside the candidates"
                     ),
                 )
             )
@@ -511,14 +523,26 @@ class DockerfileValidator(DockerfileValidatorInterface):
                 )
             )
         else:
+            # PASS aqui significa apenas "não é `latest`". Dizer "pinned" sem
+            # mais nada punha um ✅ ao lado de `node:22` na mesma tela em que a
+            # política reprovava a mesma linha por "não está fixada por
+            # digest" -- duas frases verdadeiras que, lidas juntas, pareciam
+            # contradição. A distinção agora está na própria mensagem.
+            por_digest = all("@sha256:" in reference for reference in info.base_images)
+            message = (
+                "Base image pinned by digest"
+                if por_digest
+                else "Base image tag is not 'latest' (still a moving tag -- "
+                "`dockerls base` pins it by digest)"
+            )
             result.add_check(
                 ValidationCheck(
                     check="base_image_pinned",
                     status=ValidationStatus.PASS,
-                    message="Base image tag is pinned",
+                    message=message,
                     severity=SeverityLevel.INFO,
                     rule_id="DF001",
-                    details={"base_images": info.base_images},
+                    details={"base_images": info.base_images, "pinned_by_digest": por_digest},
                 )
             )
 
