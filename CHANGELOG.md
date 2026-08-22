@@ -5,6 +5,33 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.1] -- 2026-08-22
+
+### Corrigido -- duas mensagens que se contradiziam na mesma tela
+
+- **`DF001` dizia "Base image tag is pinned" para `node:22`**, na mesma tela em
+  que a política reprovava a mesma linha com "não está fixada por digest". As
+  duas frases eram verdadeiras -- PASS ali significa apenas "não é `latest`" --
+  e lidas juntas pareciam contradição. A mensagem agora distingue os dois casos
+  e o `details` carrega `pinned_by_digest`.
+- **A sugestão de base era uma string fixa** (`"FROM node:22-alpine or FROM
+  chainguard/node:latest-dev"`), devolvida igual para qualquer Dockerfile --
+  inclusive um de Python, onde nomear uma imagem Node é simplesmente errado.
+  Nomear uma imagem que ninguém mediu é o oposto do que esta ferramenta faz em
+  todo o resto; a sugestão passa a apontar para `dockerls base` e `dockerls base
+  --alternatives`, que medem.
+
+### Documentação
+
+- **Seção "Do zero à imagem em produção"**: percurso completo com dois
+  Dockerfiles reais, do `fleet` ao `verify`, com **saídas capturadas verbatim**
+  e uma tabela do que cada passo custa.
+- `--production`, `--attribute` e o preflight de política documentados com
+  saída real; o único bloco ilustrativo do README está marcado como tal.
+- A seção Performance passa a trazer os números medidos e a metodologia,
+  incluindo o que foi medido e **não** implementado (hashing paralelo: 0,20 s
+  -> 0,13 s com 4 threads, pior com 8 e 16 -- não se paga).
+
 ## [2.9.0] -- 2026-08-22
 
 ### Corrigido -- o portão podia ser afrouxado em silêncio

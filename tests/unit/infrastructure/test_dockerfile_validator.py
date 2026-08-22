@@ -300,3 +300,65 @@ class TestLabelParsing:
             "USER 1001\n"
         )
         assert checks["security_labels"] == ValidationStatus.PASS
+
+
+class TestBaseSuggestionIsMeasured:
+    """A sugestão de base não nomeia imagem que ninguém mediu.
+
+    Era a string fixa `"FROM node:22-alpine or FROM chainguard/node:latest-dev"`,
+    devolvida igual para qualquer Dockerfile -- inclusive um de Python, onde
+    nomear uma imagem Node é simplesmente errado.
+    """
+
+    def _suggestion(self, tmp_path, content: str):
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text(content, encoding="utf-8")
+        rules = DockerfileValidator().suggest_hardening(str(dockerfile))
+        return next((r for r in rules if r.title == "Upgrade base image"), None)
+
+    def test_nao_nomeia_uma_imagem_node_num_projeto_python(self, tmp_path):
+        rule = self._suggestion(tmp_path, "FROM python:3.12\nUSER 10001\n")
+
+        assert rule is not None
+        assert "node" not in rule.suggested_fix.lower()
+        assert "chainguard" not in rule.suggested_fix.lower()
+
+    def test_aponta_para_os_comandos_que_medem(self, tmp_path):
+        rule = self._suggestion(tmp_path, "FROM ubuntu:24.04\nUSER 10001\n")
+
+        assert rule is not None
+        assert "dockerls base --alternatives" in rule.suggested_fix
+
+    def test_a_razao_diz_que_a_escolha_e_medicao_e_nao_nome(self, tmp_path):
+        rule = self._suggestion(tmp_path, "FROM ubuntu:24.04\nUSER 10001\n")
+
+        assert rule is not None
+        assert "measurement, not a name" in rule.reason
+
+
+class TestPinnedMessageIsUnambiguous:
+    """PASS em DF001 significa apenas "não é `latest`".
+
+    Dizer "pinned" sem mais nada punha um PASS ao lado de `node:22` na mesma
+    tela em que a política reprovava a mesma linha por "não está fixada por
+    digest".
+    """
+
+    def _check(self, tmp_path, content: str):
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text(content, encoding="utf-8")
+        result = DockerfileValidator().validate(str(dockerfile))
+        return next(c for c in result.checks if c.check == "base_image_pinned")
+
+    def test_tag_sem_digest_diz_que_ainda_e_movel(self, tmp_path):
+        check = self._check(tmp_path, "FROM node:22\nUSER 10001\n")
+
+        assert check.status is ValidationStatus.PASS
+        assert "moving tag" in check.message
+        assert check.details["pinned_by_digest"] is False
+
+    def test_digest_e_reconhecido_como_tal(self, tmp_path):
+        check = self._check(tmp_path, f"FROM node:22@sha256:{'a' * 64}\nUSER 10001\n")
+
+        assert "pinned by digest" in check.message.lower()
+        assert check.details["pinned_by_digest"] is True
