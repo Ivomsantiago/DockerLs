@@ -776,3 +776,38 @@ ferramenta, e enriquecê-la com a origem dos achados é tentador mesmo sem
 a frase sobre origem, quando aparece, é sempre medida — um portão que insinua
 uma origem que não mediu é pior do que um portão calado, porque manda alguém
 mexer no lugar errado com a autoridade de quem mediu.
+
+## D-042 — Num estágio de execução, remover o instalador vence atualizá-lo
+
+**Contexto.** O `pip 25.0.1` embutido na `python:3.12-alpine` acumulou seis
+advisories. A reação natural é `pip install --upgrade pip`.
+
+**Decisão.** `pip`, `setuptools`, `pkg_resources` e `wheel` são removidos do
+estágio final, com um portão que falha o build se `import pip` ainda funcionar.
+
+**Consequência.** Atualizar resolve os advisories de hoje e não o próximo: pip
+é alvo grande e recebe advisory novo com regularidade, então `--upgrade` vira
+imposto recorrente pago em todo rebuild. Remover encerra a categoria. O custo é
+que a imagem não instala mais nada em runtime — que é exatamente a propriedade
+desejada numa imagem de execução, e o mesmo argumento que este projeto já
+aplica ao npm de uma base Node.
+
+**O que a decisão não compra:** tamanho. Os bytes seguem na camada da base; o
+que muda é que o arquivo não existe mais no sistema de arquivos do container.
+É remoção de capacidade e de superfície, e dizer o contrário seria vender uma
+otimização que não aconteceu.
+
+## D-043 — Um padrão inseguro em teste é corrigido como se fosse produção
+
+**Contexto.** Seis alertas de "Incomplete URL substring sanitization" do
+CodeQL, todos em testes e benchmarks (`"cgr.dev" in url`). Nenhum explorável:
+são duplos de teste com transporte falso.
+
+**Decisão.** Corrigidos assim mesmo, por igualdade de host — e o teste de
+aceitação passa a chamar `registry_host_of`, a mesma função da produção.
+
+**Consequência.** Custou meia hora e removeu seis alertas de severidade alta
+da lista. O argumento não é o risco direto: é que um padrão que passa na
+revisão num arquivo reaparece no outro, e que uma ferramenta de segurança com
+a lista de alertas vermelha ensina todo mundo a ignorar a lista — inclusive
+quando ela ficar vermelha por um motivo real.

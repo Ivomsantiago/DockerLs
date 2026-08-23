@@ -5,6 +5,40 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.1] -- 2026-08-22
+
+### Corrigido -- os alertas abertos no code scanning do próprio repositório
+
+Uma ferramenta de segurança com a lista de alertas vermelha ensina todo mundo
+a ignorar a lista. Os onze alertas abertos em `Master` foram triados um a um.
+
+- **`pip` sai da imagem publicada (5 alertas Trivy: #571-#575).** A
+  `python:3.12-alpine` embute `pip 25.0.1`, que carrega seis advisories
+  abertos segundo o OSV -- corrigidos ao longo de 25.3, 26.0, 26.1, 26.1.2 e
+  26.2. Atualizar resolveria as seis de hoje e não a próxima: pip é alvo
+  grande e recebe advisory novo com regularidade, então `--upgrade` vira
+  imposto recorrente. Numa imagem de **execução** um instalador de pacotes não
+  é conveniência, é superfície -- o mesmo argumento que este projeto já usa
+  para tirar o npm de uma base Node. `setuptools`, `pkg_resources` e `wheel`
+  saem junto: nenhuma dependência de runtime deste projeto os importa,
+  conferido uma a uma. O passo tem portão: se `import pip` continuar
+  funcionando, o build falha em vez de publicar a imagem.
+- **Seis alertas de "Incomplete URL substring sanitization" (CodeQL: #1, #2,
+  #559, #560, #566, #567).** Todos em teste e benchmark -- `"cgr.dev" in url`
+  e `"api.github.com" in request.url.host`. Nenhum era explorável ali, e o
+  padrão é o mesmo que seria confusão de host em produção. Trocados por
+  igualdade de host, e o teste de aceitação passa a usar `registry_host_of` --
+  a mesma função que a produção usa -- em vez de redefinir a regra por conta
+  própria. **A varredura confirmou que o padrão não existe em `dockerls/`.**
+
+### Corrigido -- duas afirmações que a auto-remediação não podia fazer
+
+- `"Upgraded bundled npm CLI to latest patched release"` e `"Upgraded
+  pip/setuptools to secure versions"` eram afirmações sobre o resultado de
+  comandos que ainda não tinham rodado. As mensagens passam a descrever a
+  ação e a dizer que o veredito é do scan seguinte -- e a do pip menciona que,
+  num estágio de execução, remover costuma ser melhor que atualizar.
+
 ## [2.10.0] -- 2026-08-22
 
 ### Adicionado -- do "de quem é" para o "o que eu faço"

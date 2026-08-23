@@ -82,6 +82,48 @@ RUN addgroup -g 1001 dockerls && \
 
 COPY --from=builder /install /usr/local
 
+# O `pip` sai da imagem final, e o motivo é o mesmo que este projeto usa para
+# tirar o `npm` de uma base Node: numa imagem de **execução**, um instalador de
+# pacotes não é conveniência, é superfície.
+#
+# Medido, não suposto. O `pip 25.0.1` que a `python:3.12-alpine` embute carrega
+# seis advisories abertos (consulta ao OSV em 2026-08-22):
+#
+#   GHSA-wf93-45jw-7689  path traversal em nomes de entry point   -> corrigida em 26.1.2
+#   GHSA-jp4c-xjxw-mgf9  execução de código via wheel maliciosa   -> corrigida em 26.1
+#   GHSA-58qw-9mgm-455v  conflito de interpretação em tar         -> corrigida em 26.1
+#   GHSA-6vgw-5pg2-w6jp  path traversal                           -> corrigida em 26.0
+#   GHSA-4xh5-x5gv-qwph  symlink não conferido na extração de tar -> corrigida em 25.3
+#   PYSEC-2026-3721                                               -> corrigida em 26.2
+#
+# Atualizar resolveria as seis de hoje e não a próxima: pip é um alvo grande e
+# recebe advisory novo com regularidade, então `--upgrade` transforma isto num
+# imposto recorrente. Remover encerra a categoria -- e nada aqui precisa dele.
+# O pacote é instalado no stage `builder` e copiado pronto; em tempo de
+# execução o `dockerls` usa `importlib.metadata` da biblioteca padrão, e nenhum
+# módulo deste projeto importa `pkg_resources`, `setuptools` ou `wheel`.
+#
+# **O que isto não faz:** não diminui a imagem. Os bytes continuam na camada da
+# base; o que muda é que o arquivo deixa de existir no sistema de arquivos do
+# container, então não há binário para invocar nem pacote para um scanner
+# encontrar. É remoção de capacidade e de superfície, não de tamanho.
+# Nenhuma dependência de runtime deste projeto importa `pkg_resources` ou
+# `setuptools` -- conferido em cada uma delas --, então os três saem juntos.
+# A última linha é o portão: um `rm` que não removeu nada passaria despercebido,
+# e publicar a imagem ainda com o que este passo existe para tirar é pior do que
+# falhar o build aqui.
+RUN rm -rf /usr/local/lib/python3.12/site-packages/pip \
+           /usr/local/lib/python3.12/site-packages/pip-* \
+           /usr/local/lib/python3.12/site-packages/setuptools \
+           /usr/local/lib/python3.12/site-packages/setuptools-* \
+           /usr/local/lib/python3.12/site-packages/pkg_resources \
+           /usr/local/lib/python3.12/site-packages/wheel \
+           /usr/local/lib/python3.12/site-packages/wheel-* \
+           /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.12 \
+           /usr/local/bin/wheel && \
+    if python -c 'import pip' 2>/dev/null; then echo 'pip continua importável' >&2; exit 1; fi && \
+    dockerls version >/dev/null
+
 RUN mkdir -p /home/dockerls/.cache/dockerls && \
     chown -R dockerls:dockerls /home/dockerls
 

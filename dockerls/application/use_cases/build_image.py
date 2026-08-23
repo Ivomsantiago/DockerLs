@@ -749,7 +749,11 @@ class BuildImageUseCase:
         if has_npm_vulns and "npm install -g npm" not in lower_content:
             npm_cmd = "RUN npm install -g npm@latest && npm cache clean --force"
             content = self._insert_instruction(content, npm_cmd)
-            applied.append("Upgraded bundled npm CLI to latest patched release")
+            # "latest patched release" era uma afirmação sobre o resultado de um
+            # comando que ainda não rodou: `npm@latest` traz o que estiver
+            # publicado, que pode ou não corrigir o achado. A ação é descrita; o
+            # veredito fica com o scan da próxima rodada, que é quem mede.
+            applied.append("Inserted `npm install -g npm@latest` (next scan says if it helped)")
 
         # 3. Patch de pip embutido
         has_pip_vulns = any(
@@ -759,7 +763,16 @@ class BuildImageUseCase:
         if has_pip_vulns and "pip install --upgrade pip" not in lower_content:
             pip_cmd = "RUN pip install --no-cache-dir --upgrade pip setuptools wheel"
             content = self._insert_instruction(content, pip_cmd)
-            applied.append("Upgraded pip/setuptools to secure versions")
+            # Mesma correção da mensagem do npm: `--upgrade` não é sinônimo de
+            # "seguro". Além disso, numa imagem de execução **remover** costuma
+            # ser melhor que atualizar -- pip recebe advisory novo com
+            # regularidade, então atualizar é imposto recorrente. Isso não é
+            # automatizado aqui porque um estágio pode legitimamente precisar
+            # de pip depois; a alternativa é dita, e a decisão fica com quem lê.
+            applied.append(
+                "Inserted `pip install --upgrade pip setuptools wheel` (next scan says if "
+                "it helped; in a runtime stage, removing pip usually beats upgrading it)"
+            )
 
         if not applied:
             return original_dockerfile_path, []
