@@ -29,6 +29,7 @@ from dockerls.cli.progress import RichScanObserver
 from dockerls.domain.entities.image import DockerImage
 from dockerls.domain.entities.scan_result import ScanResult, ScanStatus
 from dockerls.domain.interfaces.eol_checker import EOLCheckerInterface
+from dockerls.domain.value_objects.image_reference import registry_host_of
 from dockerls.infrastructure.evidence import EvidenceStore
 from dockerls.integrations.grype.scanner import GrypeScanner
 from dockerls.integrations.registry.hardened import (
@@ -207,13 +208,13 @@ async def test_source_label_matches_the_registry_each_image_came_from(pipeline):
     build, _, _ = pipeline
     result = await _run(build, RichScanObserver(enabled=False))
 
+    # O host sai de `registry_host_of`, que é a mesma função que a produção usa
+    # para decidir isto -- em vez de um `startswith` que o teste redefine por
+    # conta própria e que só por sorte concorda com ela.
+    esperado = {"cgr.dev": "Chainguard", "gcr.io": "Distroless"}
     for analysis in result.recommendations:
-        if analysis.image.full_reference.startswith("cgr.dev/"):
-            assert analysis.image.source == "Chainguard"
-        elif analysis.image.full_reference.startswith("gcr.io/"):
-            assert analysis.image.source == "Distroless"
-        else:
-            assert analysis.image.source == "Docker Hub"
+        host = registry_host_of(analysis.image.full_reference)
+        assert analysis.image.source == esperado.get(host, "Docker Hub")
 
 
 @pytest.mark.asyncio

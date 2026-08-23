@@ -230,9 +230,11 @@ class TestSourceUrls:
         assert url == "https://images.chainguard.dev/directory/image/node/versions"
 
     def test_distroless_links_to_its_registry_page(self):
+        # Igualdade, como no teste do Chainguard logo acima. Duas asserções de
+        # substring passariam para uma URL que apontasse para o lugar errado
+        # desde que carregasse os dois pedaços em algum canto dela.
         url = source_url("gcr.io/distroless/nodejs", "18")
-        assert "console.cloud.google.com" in url
-        assert "nodejs" in url
+        assert url == ("https://console.cloud.google.com/gcr/images/distroless/global/nodejs")
 
     def test_unknown_registry_has_no_url(self):
         assert source_url("ghcr.io/org/app", "v1") == ""

@@ -89,6 +89,10 @@ def test_derive_remediated_dockerfile_applies_npm_upgrade(tmp_path):
     )
 
     assert Path(remediated_path).exists()
-    assert any("npm CLI" in a for a in applied)
+    # A mensagem descreve a ação, não promete o resultado: "latest patched
+    # release" era uma afirmação sobre o efeito de um comando que ainda não
+    # rodou, e quem mede é o scan da próxima rodada.
+    assert any("npm install -g npm@latest" in a for a in applied)
+    assert not any("patched" in a for a in applied)
     content = Path(remediated_path).read_text(encoding="utf-8")
     assert "RUN npm install -g npm@latest" in content

@@ -145,7 +145,8 @@ def _catalog_transport() -> httpx.MockTransport:
     body = json.dumps(tree)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        counts["api" if "api.github.com" in request.url.host else "raw"] += 1
+        # Igualdade em vez de substring: ver a nota em test_dhi_catalog.py.
+        counts["api" if request.url.host == "api.github.com" else "raw"] += 1
         return httpx.Response(200, text=body)
 
     return httpx.MockTransport(handler)

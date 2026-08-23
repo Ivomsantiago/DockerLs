@@ -337,7 +337,12 @@ class _FakeCache:
 
 def _transport(tree_payload: dict) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
-        if "api.github.com" in request.url.host:
+        # Igualdade, não `in`: `evil-api.github.com.attacker.test` contém
+        # "api.github.com" como substring e não é o GitHub. Num duplo de teste
+        # a diferença não é explorável, mas é o mesmo padrão que seria um bug
+        # de verdade em código de produção -- e um padrão que passa na revisão
+        # aqui reaparece lá.
+        if request.url.host == "api.github.com":
             return httpx.Response(200, text=json.dumps(tree_payload))
         return httpx.Response(404)
 

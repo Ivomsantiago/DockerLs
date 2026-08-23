@@ -39,7 +39,7 @@ DISTROLESS_TAGS = {"tags": ["latest", "nonroot", "debug"], "name": "distroless/n
 
 async def handler(request: httpx.Request) -> httpx.Response:
     url = str(request.url)
-    counts[_bucket(url)] += 1
+    counts[_bucket(request)] += 1
     await asyncio.sleep(LATENCY)
 
     if "token" in url or "auth" in url:
@@ -51,20 +51,26 @@ async def handler(request: httpx.Request) -> httpx.Response:
             401,
             headers={"WWW-Authenticate": 'Bearer realm="https://cgr.dev/token",service="cgr.dev"'},
         )
-    if "cgr.dev" in url:
+    if request.url.host == "cgr.dev":
         return httpx.Response(200, json=CHAINGUARD_TAGS)
-    if "gcr.io" in url:
+    if request.url.host == "gcr.io":
         return httpx.Response(200, json=DISTROLESS_TAGS)
     return httpx.Response(200, json={"results": [], "next": None})
 
 
-def _bucket(url: str) -> str:
-    if "token" in url:
+def _bucket(request: httpx.Request) -> str:
+    """Em qual registry esta requisição caiu, pelo host e não por substring.
+
+    `"cgr.dev" in url` casa com `https://cgr.dev.attacker.test/v2/`, que não é
+    o Chainguard. Aqui isso só produziria um número errado no benchmark, mas é
+    o mesmo padrão que seria confusão de host em código de produção -- e um
+    padrão que passa na revisão num arquivo reaparece no outro.
+    """
+    if "token" in request.url.path:
         return "token"
-    if "cgr.dev" in url:
-        return "cgr.dev"
-    if "gcr.io" in url:
-        return "gcr.io"
+    host = request.url.host
+    if host in ("cgr.dev", "gcr.io"):
+        return host
     return "other"
 
 
