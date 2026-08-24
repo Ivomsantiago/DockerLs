@@ -64,11 +64,11 @@ FROM python:3.12-alpine@${PYTHON_DIGEST}
 # `org.opencontainers.image.*` são as chaves pré-definidas da especificação
 # OCI, que é o que permite a alguém respondendo a um incidente saber de onde a
 # imagem veio sem adivinhar pela tag.
-LABEL maintainer="GhostN3xus" \
+LABEL maintainer="Ivomsantiago" \
       security.scanner="dockerls" \
       org.opencontainers.image.title="DockerLs" \
       org.opencontainers.image.description="Enterprise Docker Image Security Advisor" \
-      org.opencontainers.image.source="https://github.com/GhostN3xus/DockerLs" \
+      org.opencontainers.image.source="https://github.com/Ivomsantiago/DockerLs" \
       org.opencontainers.image.licenses="MIT"
 
 # O digest pinado congela a base no dia em que foi publicada; sem isto, um

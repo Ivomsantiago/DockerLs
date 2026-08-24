@@ -1,7 +1,7 @@
 # DockerLs
 
-[![CI](https://github.com/GhostN3xus/DockerLs/actions/workflows/ci.yml/badge.svg)](https://github.com/GhostN3xus/DockerLs/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/GhostN3xus/DockerLs/actions/workflows/codeql.yml/badge.svg)](https://github.com/GhostN3xus/DockerLs/actions/workflows/codeql.yml)
+[![CI](https://github.com/Ivomsantiago/DockerLs/actions/workflows/ci.yml/badge.svg)](https://github.com/Ivomsantiago/DockerLs/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Ivomsantiago/DockerLs/actions/workflows/codeql.yml/badge.svg)](https://github.com/Ivomsantiago/DockerLs/actions/workflows/codeql.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Typed](https://img.shields.io/badge/mypy-strict-blue)](pyproject.toml)
@@ -142,7 +142,7 @@ pip install dockerls
 ### A partir do código-fonte
 
 ```bash
-git clone https://github.com/GhostN3xus/DockerLs.git
+git clone https://github.com/Ivomsantiago/DockerLs.git
 cd DockerLs
 pip install .
 ```

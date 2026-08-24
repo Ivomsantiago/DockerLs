@@ -100,7 +100,7 @@ class SARIFExporter(ExporterInterface):
                     "tool": {
                         "driver": {
                             "name": "DockerLs",
-                            "informationUri": "https://github.com/GhostN3xus/DockerLs",
+                            "informationUri": "https://github.com/Ivomsantiago/DockerLs",
                             "version": __version__,
                             "rules": list(rules.values()),
                         }

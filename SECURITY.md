@@ -13,7 +13,7 @@ If you discover a security vulnerability in DockerLs, please report it responsib
 **Do not open a public issue.**
 
 Use GitHub's private vulnerability reporting for this repository:
-[Report a vulnerability](https://github.com/GhostN3xus/DockerLs/security/advisories/new).
+[Report a vulnerability](https://github.com/Ivomsantiago/DockerLs/security/advisories/new).
 
 That form is the only official reporting channel — it keeps the report private
 until a fix is released and notifies the maintainers directly.

@@ -1140,11 +1140,11 @@ def _parse_label_pairs(text: str) -> dict[str, str]:
     O padrão anterior era `^LABEL\\s+([^=]+)=(.*)$`: ele casava até o primeiro
     `=` e engolia o resto da linha como *valor*. Numa instrução idiomática --
 
-        LABEL maintainer="GhostN3xus" \\
+        LABEL maintainer="Ivomsantiago" \\
               security.scanner="dockerls"
 
     -- as continuações já vêm unidas numa linha lógica, então o resultado era a
-    chave `maintainer` com valor `"GhostN3xus" security.scanner="dockerls"`, e
+    chave `maintainer` com valor `"Ivomsantiago" security.scanner="dockerls"`, e
     `security.scanner` simplesmente não existia. A regra DF007 então reprovava
     um Dockerfile que declara o rótulo que ela cobra. Um falso positivo é pior
     que nenhuma checagem: ele ensina o leitor a ignorar o aviso.

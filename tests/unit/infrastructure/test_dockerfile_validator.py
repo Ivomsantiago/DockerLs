@@ -296,7 +296,7 @@ class TestLabelParsing:
     def test_a_dockerfile_declaring_the_required_labels_passes_df007(self, validate):
         checks = validate(
             "FROM python:3.12-slim\n"
-            'LABEL maintainer="GhostN3xus" security.scanner="dockerls"\n'
+            'LABEL maintainer="Ivomsantiago" security.scanner="dockerls"\n'
             "USER 1001\n"
         )
         assert checks["security_labels"] == ValidationStatus.PASS
