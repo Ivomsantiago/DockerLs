@@ -267,8 +267,8 @@ def _check_scan(policy: BuildPolicy, facts: PolicyFacts, violations: list[Policy
             PolicyViolation(
                 rule=PolicyRule.REQUIRE_SCAN,
                 message=(
-                    "a política exige scan e nenhum scanner rodou: uma imagem que não "
-                    "pôde ser medida não é uma imagem sem vulnerabilidades"
+                    "the policy requires a scan and no scanner ran: an image that "
+                    "could not be measured is not an image without vulnerabilities"
                 ),
             )
         )
@@ -287,8 +287,8 @@ def _check_ceilings(
             PolicyViolation(
                 rule=PolicyRule.MAX_VULNERABILITIES,
                 message=(
-                    "a política declara tetos por severidade e nenhum scanner rodou: "
-                    "não há contagem para conferir contra eles"
+                    "the policy declares per-severity ceilings and no scanner ran: "
+                    "there is no count to check them against"
                 ),
             )
         )
@@ -303,8 +303,8 @@ def _check_ceilings(
                 PolicyViolation(
                     rule=PolicyRule.MAX_VULNERABILITIES,
                     message=(
-                        f"{found} vulnerabilidade(s) {severity.upper()} contra um teto "
-                        f"de {limit} na política"
+                        f"{found} {severity.upper()} vulnerability(ies) against a "
+                        f"policy ceiling of {limit}"
                     ),
                 )
             )
@@ -319,8 +319,8 @@ def _check_bases(
                 PolicyViolation(
                     rule=PolicyRule.REQUIRE_PINNED_BASES,
                     message=(
-                        "a política exige bases fixadas por digest e nenhuma base pôde "
-                        "ser lida do Dockerfile"
+                        "the policy requires digest-pinned bases and no base could "
+                        "be read from the Dockerfile"
                     ),
                 )
             )
@@ -330,9 +330,9 @@ def _check_bases(
                     PolicyViolation(
                         rule=PolicyRule.REQUIRE_PINNED_BASES,
                         message=(
-                            f"{base.reference} não está fixada por digest: o que foi "
-                            "testado e o que vai para produção podem ser bytes "
-                            "diferentes sem nenhuma mudança sua"
+                            f"{base.reference} is not pinned by digest: what was "
+                            "tested and what ships to production can be different "
+                            "bytes with no change of yours"
                         ),
                     )
                 )
@@ -349,8 +349,8 @@ def _check_bases(
                 PolicyViolation(
                     rule=PolicyRule.ALLOWED_BASE_REGISTRIES,
                     message=(
-                        f"{base.reference} vem de {registry}, que não está entre os "
-                        f"registries permitidos ({', '.join(sorted(permitidos))})"
+                        f"{base.reference} comes from {registry}, which is not among "
+                        f"the allowed registries ({', '.join(sorted(permitidos))})"
                     ),
                 )
             )
@@ -362,15 +362,15 @@ def _check_nonroot(
     if not policy.require_nonroot or facts.nonroot.is_true:
         return
     motivo = (
-        "a imagem roda como root"
+        "the image runs as root"
         if facts.nonroot.is_false
-        else "não foi possível determinar com que usuário a imagem roda, e não "
-        "determinar não é o mesmo que estar em ordem"
+        else "the user the image runs as could not be determined, and not "
+        "determining is not the same as being in order"
     )
     violations.append(
         PolicyViolation(
             rule=PolicyRule.REQUIRE_NONROOT,
-            message=f"a política exige execução sem privilégio: {motivo}",
+            message=f"the policy requires running without privilege: {motivo}",
         )
     )
 
@@ -384,9 +384,9 @@ def _check_labels(
                 PolicyViolation(
                     rule=PolicyRule.REQUIRED_LABELS,
                     message=(
-                        f"rótulo obrigatório ausente ou vazio: {label} -- sem ele "
-                        "ninguém sabe a quem recorrer quando esta imagem aparecer num "
-                        "alerta às três da manhã"
+                        f"required label missing or empty: {label} -- without it "
+                        "nobody knows who to turn to when this image shows up in an "
+                        "alert at three in the morning"
                     ),
                 )
             )
@@ -399,10 +399,10 @@ def _check_provenance(
         return
     if facts.provenance_status == "VERIFIED":
         return
-    detalhe = facts.provenance_status or "nenhum registro foi produzido"
+    detalhe = facts.provenance_status or "no record was produced"
     violations.append(
         PolicyViolation(
             rule=PolicyRule.REQUIRE_PROVENANCE,
-            message=(f"a política exige procedência verificada, e o registro está: {detalhe}"),
+            message=(f"the policy requires verified provenance, and the record is: {detalhe}"),
         )
     )

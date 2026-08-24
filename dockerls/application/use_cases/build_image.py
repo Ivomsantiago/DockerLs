@@ -360,7 +360,7 @@ class BuildImageUseCase:
                         )
                         if new_scan.total_vulnerabilities == 0:
                             logger.info(
-                                "✨ Success: Image achieved ZERO "
+                                "Success: image achieved ZERO "
                                 f"vulnerabilities in round {round_num}!"
                             )
                             break

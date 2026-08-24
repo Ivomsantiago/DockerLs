@@ -1177,7 +1177,7 @@ class TestPolicyGate:
         response = self._run(use_case, context, BuildPolicy(require_nonroot=True))
 
         assert response.exit_code == EXIT_POLICY
-        assert "roda como root" in response.policy_violations[0].message
+        assert "the image runs as root" in response.policy_violations[0].message
 
     def test_sem_a_checagem_a_regra_reprova_por_ausencia_de_medida(self, context):
         """Não determinar não é o mesmo que estar em ordem."""
@@ -1188,7 +1188,7 @@ class TestPolicyGate:
         response = self._run(use_case, context, BuildPolicy(require_nonroot=True))
 
         assert response.exit_code == EXIT_POLICY
-        assert "não foi possível determinar" in response.policy_violations[0].message
+        assert "could not be determined" in response.policy_violations[0].message
 
 
 class TestAttribution:

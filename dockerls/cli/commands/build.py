@@ -660,7 +660,7 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
     """Executa wizard interativo completo com questionário aprofundado."""
     console.print(
         Panel(
-            "[bold cyan]🐳 DockerLs Interactive Build Wizard[/bold cyan]\n"
+            "[bold cyan]DockerLs Interactive Build Wizard[/bold cyan]\n"
             "[dim]Configuração passo a passo com foco em segurança e zero vulnerabilidades[/dim]",
             expand=False,
         )
@@ -837,7 +837,7 @@ def _print_validation_output(response: BuildImageResponse, report_file: str | No
     if response.success:
         console.print(
             Panel(
-                "[bold green]✅ Validation Passed[/bold green]\n"
+                "[bold green]Validation Passed[/bold green]\n"
                 "[dim]No blocking policy violations found[/dim]",
                 expand=False,
             )
@@ -845,7 +845,7 @@ def _print_validation_output(response: BuildImageResponse, report_file: str | No
     else:
         console.print(
             Panel(
-                f"[bold red]❌ Validation Failed[/bold red]\n\n"
+                f"[bold red]Validation Failed[/bold red]\n\n"
                 f"[red]{response.error or 'Dockerfile validation failed'}[/red]",
                 expand=False,
             )
@@ -860,7 +860,7 @@ def _print_build_output(response: BuildImageResponse, report_file: str | None) -
     if not response.success:
         console.print(
             Panel(
-                f"[bold red]❌ Build Failed[/bold red]\n\n"
+                f"[bold red]Build Failed[/bold red]\n\n"
                 f"[red]{response.error or 'Build failed'}[/red]",
                 expand=False,
             )
@@ -872,7 +872,7 @@ def _print_build_output(response: BuildImageResponse, report_file: str | None) -
 
     console.print(
         Panel(
-            f"[bold green]✅ Build Successful[/bold green]\n[dim]{response.image_tag}[/dim]",
+            f"[bold green]Build Successful[/bold green]\n[dim]{response.image_tag}[/dim]",
             expand=False,
         )
     )
@@ -889,7 +889,7 @@ def _print_build_output(response: BuildImageResponse, report_file: str | None) -
         _print_provenance(response.provenance)
 
     if response.recommendations:
-        console.print(Panel("[bold yellow]💡 Hardening Suggestions[/bold yellow]", expand=False))
+        console.print(Panel("[bold yellow]Hardening Suggestions[/bold yellow]", expand=False))
         for i, rec in enumerate(response.recommendations[:3], 1):
             console.print(f"\n{i}. [bold]{rec.title}[/bold]")
             console.print(f"   [dim]{rec.description}[/dim]")
@@ -913,14 +913,14 @@ def _print_report(report: BuildReport) -> None:
 
     validation = report.validation
     console.print(
-        f"✅ Validation: {validation.get('passed', 0)} passed | "
-        f"⚠️ {validation.get('warnings', 0)} warnings | "
-        f"❌ {validation.get('errors', 0)} errors"
+        f"Validation: [green]{validation.get('passed', 0)} passed[/green] | "
+        f"[yellow]{validation.get('warnings', 0)} warnings[/yellow] | "
+        f"[red]{validation.get('errors', 0)} errors[/red]"
     )
     console.print()
 
     if report.scan_results:
-        console.print(Panel("[bold magenta]🔍 Security Scan Results[/bold magenta]", expand=False))
+        console.print(Panel("[bold magenta]Security Scan Results[/bold magenta]", expand=False))
         scan_data = next(iter(report.scan_results.values()))
         console.print(f"  CRITICAL: [red]{scan_data.get('critical', 0)}[/red]")
         console.print(f"  HIGH: [red]{scan_data.get('high', 0)}[/red]")
@@ -929,7 +929,7 @@ def _print_report(report: BuildReport) -> None:
         console.print()
 
     if report.remediation_history:
-        console.print(Panel("[bold green]✨ Auto-Remediation Summary[/bold green]", expand=False))
+        console.print(Panel("[bold green]Auto-Remediation Summary[/bold green]", expand=False))
         for item in report.remediation_history:
             round_num = item.get("round", 1)
             actions = item.get("actions", [])
@@ -943,11 +943,11 @@ def _print_report(report: BuildReport) -> None:
                 f"Critical: {crit_b} -> [green]{crit_a}[/green]"
             )
             for action in actions:
-                console.print(f"    • [dim]{action}[/dim]")
+                console.print(f"    - [dim]{action}[/dim]")
         console.print()
 
     if report.recommendations:
-        console.print(Panel("[bold yellow]💡 Recommendations[/bold yellow]", expand=False))
+        console.print(Panel("[bold yellow]Recommendations[/bold yellow]", expand=False))
         priority_colors = {"CRITICAL": "red", "HIGH": "red", "MEDIUM": "yellow", "LOW": "dim"}
         for i, rec in enumerate(report.recommendations[:5], 1):
             priority = str(rec.get("priority", "MEDIUM"))
@@ -969,7 +969,7 @@ def _write_report_file(report: BuildReport | None, report_file: str | None) -> N
         # that was already printed above.
         console.print(f"\n[red]Could not write report to {report_file}:[/red] {e}")
         return
-    console.print(f"\n📄 Report saved: [cyan]{report_file}[/cyan]")
+    console.print(f"\nReport saved: [cyan]{report_file}[/cyan]")
 
 
 def _report_dict(report: BuildReport) -> dict[str, Any]:
@@ -1079,7 +1079,7 @@ def _render_html_report(report: BuildReport) -> str:
     </style>
 </head>
 <body>
-    <h1>🐳 DockerLs Build Report</h1>
+    <h1>DockerLs Build Report</h1>
     <p><strong>Image:</strong> {image or "(not built)"}</p>
     <p><strong>Dockerfile:</strong> {dockerfile_path}</p>
     <p><strong>Timestamp:</strong> {timestamp}</p>
@@ -1187,7 +1187,7 @@ def _print_provenance(provenance: BuildProvenance) -> None:
         ProvenanceStatus.INPUT_CHANGED: "red",
     }
     color = colors.get(status, "white")
-    console.print(Panel(f"[bold {color}]🔗 Supply chain: {status}[/bold {color}]", expand=False))
+    console.print(Panel(f"[bold {color}]Supply chain: {status}[/bold {color}]", expand=False))
     console.print(f"  [dim]{safe(provenance.explain())}[/dim]\n")
 
     source = provenance.source
