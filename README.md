@@ -768,6 +768,64 @@ verdade**: um `doctor` que imprime "faltam componentes" e sai `0` deixa o runner
 passar no próprio pré-voo e falhar depois, dentro do scan, onde a causa é muito
 menos óbvia.
 
+#### `doctor --install`: preparar a máquina
+
+O diagnóstico acima é read-only e continua sendo o que roda por padrão.
+`--install` é a única coisa que escreve algo, e **nunca roda sem
+consentimento**: ou alguém confirma no terminal, ou `--yes` é passado
+explicitamente (para pipeline não-interativo). Sem TTY e sem `--yes`, a
+resposta é não.
+
+```bash
+dockerls doctor --install                          # confirma antes
+dockerls doctor --install --yes                    # CI
+dockerls doctor --install --install-dir ~/bin      # destino próprio
+```
+
+**De onde vem cada ferramenta.** Só do release oficial do próprio projeto,
+nunca de um mirror de terceiro:
+
+| Ferramenta | Fonte |
+|---|---|
+| `trivy` | `https://github.com/aquasecurity/trivy/releases` |
+| `grype` | `https://github.com/anchore/grype/releases` |
+
+**O que ele faz, e o que deliberadamente não faz.** O padrão usual para
+instalar essas ferramentas é `curl ... | sh`, e ele está fora de questão aqui:
+não há como verificar a integridade de um script antes de executá-lo, e nem o
+Trivy nem o Grype publicam checksum do próprio `install.sh` — o que eles
+publicam é o checksum dos binários. Então este caminho faz o que aquele script
+faria, verificando:
+
+1. resolve a versão publicada mais recente pela API de releases do projeto;
+2. baixa o arquivo compactado **e** o `checksums.txt` do mesmo release;
+3. confere o SHA-256 antes de qualquer extração;
+4. quando o `cosign` está no PATH, confere também a assinatura — uma assinatura
+   **inválida** aborta, e a ausência do cosign apenas deixa a verificação de
+   assinatura de fora;
+5. extrai **apenas** o binário, com `tarfile`/`zipfile` do Python, sem shell.
+
+**Nada baixado é executado**, e nenhum script de instalação é buscado ou
+rodado. Um `.tar.gz` pode conter caminhos como `../../.ssh/authorized_keys`, e
+é assim que uma extração ingênua vira escrita arbitrária: só o membro com o
+nome exato do binário, na raiz do arquivo, é aceito.
+
+**Privilégio.** O destino padrão é `~/.local/bin` (ou o equivalente sob
+`%LOCALAPPDATA%` no Windows) — diretórios do próprio usuário, então a
+instalação não pede sudo. Se você apontar `--install-dir` para um lugar que
+exige privilégio, isso aparece **na confirmação**, antes do download, nunca de
+surpresa no meio da execução.
+
+**Plataformas.** Linux e Windows (e macOS, que sai de graça do mesmo
+mecanismo), em amd64 e arm64. Uma plataforma sem artefato publicado falha com
+mensagem em vez de tentar uma URL genérica.
+
+Tudo acontece num diretório temporário que é removido ao fim, com sucesso ou
+sem: um download interrompido não deixa meio binário ocupando espaço nem meio
+binário no PATH. Uma ferramenta que falha não impede a outra de ser tentada, e
+ao final o mesmo diagnóstico roda de novo — dizer "instalado" sem reconferir
+seria reportar a intenção em vez do resultado.
+
 ### health
 
 Verifica a conectividade com os serviços externos dos quais a ferramenta depende:
