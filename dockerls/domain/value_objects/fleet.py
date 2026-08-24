@@ -132,25 +132,25 @@ class FleetReport:
     def summary(self) -> str:
         """A frase que resume o retrato sem prometer o que não foi medido."""
         if not self.total:
-            return "nenhum Dockerfile encontrado"
+            return "no Dockerfile found"
         partes = [
             f"{self.total} Dockerfile(s)",
-            f"{self.fully_pinned} com todas as bases fixadas",
+            f"{self.fully_pinned} with every base pinned",
         ]
         if self.running_as_root:
-            partes.append(f"{self.running_as_root} rodando como root")
+            partes.append(f"{self.running_as_root} running as root")
         if self.undetermined_user:
-            partes.append(f"{self.undetermined_user} com usuário indeterminado")
+            partes.append(f"{self.undetermined_user} with an undetermined user")
         if self.unreadable:
-            partes.append(f"{len(self.unreadable)} ilegível(is)")
+            partes.append(f"{len(self.unreadable)} unreadable")
         return ", ".join(partes)
 
     def caveat(self) -> str:
         """O que este relatório deliberadamente não afirma."""
         return (
-            "esta varredura lê Dockerfiles: não constrói imagem nem chama scanner. "
-            "Ela diz o que os arquivos declaram, e nada sobre as vulnerabilidades "
-            "das imagens que eles produzem"
+            "this scan reads Dockerfiles: it builds no image and calls no scanner. "
+            "It reports what the files declare, and nothing about the vulnerabilities "
+            "of the images they produce"
         )
 
     def to_dict(self) -> dict[str, object]:

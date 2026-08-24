@@ -79,10 +79,10 @@ class TestQueue:
 class TestHonesty:
     def test_o_relatorio_diz_o_que_nao_mediu(self) -> None:
         caveat = FleetReport(root=".").caveat()
-        assert "não constrói imagem nem chama scanner" in caveat
+        assert "builds no image and calls no scanner" in caveat
 
     def test_resumo_de_frota_vazia_nao_finge_sucesso(self) -> None:
-        assert FleetReport(root=".").summary() == "nenhum Dockerfile encontrado"
+        assert FleetReport(root=".").summary() == "no Dockerfile found"
 
     def test_truncamento_entra_no_documento(self) -> None:
         payload = FleetReport(root=".", truncated=True).to_dict()

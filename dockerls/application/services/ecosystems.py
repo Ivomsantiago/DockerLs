@@ -128,45 +128,43 @@ def get_ecosystem_insights(image_reference: str) -> EcosystemInsight:
     if ecosystem == "node":
         major = version.split(".")[0] if version else "22"
         runtime_features = [
-            f"Node.js {major}.x V8 Engine com suporte otimizado a ECMAScript Modules (ESM).",
-            "Suporte nativo a variáveis de ambiente (--env-file=.env) dispensando dotenv.",
-            "Cliente WebSocket nativo e suporte nativo a fetch API (Undici).",
-            "Suporte nativo a Corepack para gerenciamento de yarn/pnpm.",
+            f"Node.js {major}.x V8 engine with optimised ECMAScript Modules (ESM) support.",
+            "Native environment-file support (--env-file=.env), with no need for dotenv.",
+            "Native WebSocket client and native fetch API (Undici).",
+            "Native Corepack support for managing yarn/pnpm.",
         ]
         base_advice = []
         if distro == "alpine":
             base_advice.extend(
                 [
-                    "⚠️ Alpine usa musl libc: Pacotes nativos C++ (sharp, bcrypt, sqlite3) "
-                    "exigem compilação ou 'libc6-compat'.",
-                    "💡 Para máxima compatibilidade sem overhead de compilação, "
-                    "considere 'node:22-bookworm-slim' (glibc).",
-                    "💡 Imagens oficiais 'node:alpine' já contêm o usuário "
-                    "non-root 'node' (UID: 1000, GID: 1000).",
+                    "Alpine uses musl libc: native C++ packages (sharp, bcrypt, sqlite3) "
+                    "must be compiled, or need 'libc6-compat'.",
+                    "For full compatibility without the build overhead, consider "
+                    "'node:22-bookworm-slim' (glibc).",
+                    "Official 'node:alpine' images already ship the non-root user "
+                    "'node' (UID 1000, GID 1000).",
                 ]
             )
         else:
             base_advice.extend(
                 [
-                    "✅ Debian Slim oferece compatibilidade total com binários "
-                    "pré-compilados glibc.",
-                    "💡 Considere 'distroless/nodejs22-debian12' para remover o shell.",
+                    "Debian Slim is fully compatible with pre-built glibc binaries.",
+                    "Consider 'distroless/nodejs22-debian12' to drop the shell.",
                 ]
             )
 
         security = [
-            "Defina 'ENV NODE_ENV=production' para ativar otimizações de runtime "
-            "e desativar devDependencies.",
-            "O CLI do npm embutido possui ciclo de CVEs independente: execute "
-            "'RUN npm install -g npm@latest' ou remova-o no multi-stage.",
-            "Ajuste '--max-old-space-size' para evitar que o Node exceda o limite "
-            "de memória do container.",
-            "Utilize 'USER node' (ou crie UID 10001) para nunca executar como root.",
+            "Set 'ENV NODE_ENV=production' to enable runtime optimisations and "
+            "disable devDependencies.",
+            "The bundled npm CLI has its own CVE cycle: run "
+            "'RUN npm install -g npm@latest', or drop it in a multi-stage build.",
+            "Tune '--max-old-space-size' so Node stays within the container memory limit.",
+            "Use 'USER node' (or create UID 10001) so the process never runs as root.",
         ]
         pitfalls = [
-            "Evite rodar 'npm start' como PID 1 (o npm não repassa sinais SIGTERM); "
+            "Avoid running 'npm start' as PID 1 (npm does not forward SIGTERM); "
             'use \'CMD ["node", "dist/index.js"]\'.',
-            "Não inclua 'node_modules' na raiz do build context sem .dockerignore.",
+            "Do not leave 'node_modules' in the build context root without a .dockerignore.",
         ]
         snippets = [
             'ENV NODE_ENV=production\nUSER node\nCMD ["--enable-source-maps", "dist/index.js"]',
@@ -187,37 +185,38 @@ def get_ecosystem_insights(image_reference: str) -> EcosystemInsight:
 
     elif ecosystem == "python":
         runtime_features = [
-            "Python runtime com isolamento de dependências via multi-stage builder.",
-            "Suporte a Python 3.11/3.12/3.13 com melhorias de velocidade de execução.",
+            "Python runtime with dependency isolation through a multi-stage builder.",
+            "Supports Python 3.11/3.12/3.13, with execution-speed improvements.",
         ]
         base_advice = []
         if distro == "alpine":
             base_advice.extend(
                 [
-                    "⚠️ Alpine musl não suporta wheels manylinux. Bibliotecas como pandas, "
-                    "numpy e cryptography compilam do zero (lento e exige gcc).",
-                    "💡 Para Python com dependências C/C++, 'python:3.12-slim-bookworm' "
-                    "é muito mais rápido no build e gera imagens menores.",
+                    "Alpine musl does not support manylinux wheels. Libraries such as "
+                    "pandas, numpy and cryptography compile from source (slow, needs gcc).",
+                    "For Python with C/C++ dependencies, 'python:3.12-slim-bookworm' "
+                    "builds far faster and produces smaller images.",
                 ]
             )
         else:
             base_advice.extend(
                 [
-                    "✅ Debian Slim suporta todos os wheels pré-compilados manylinux "
-                    "do PyPI sem necessidade de compiladores no container final.",
+                    "Debian Slim supports every pre-built manylinux wheel on PyPI, "
+                    "so the final container needs no compilers.",
                 ]
             )
 
         security = [
-            "Configure 'ENV PYTHONUNBUFFERED=1' para logs em tempo real sem buffering.",
-            "Configure 'ENV PYTHONDONTWRITEBYTECODE=1' para não gerar arquivos .pyc.",
-            "Instale dependências com 'pip install --no-cache-dir --user -r requirements.txt' "
-            "no builder e copie '/root/.local' para o usuário não-root.",
-            "Crie um usuário 'appuser' (UID 10001) para executar o processo.",
+            "Set 'ENV PYTHONUNBUFFERED=1' for unbuffered, real-time logs.",
+            "Set 'ENV PYTHONDONTWRITEBYTECODE=1' so no .pyc files are written.",
+            "Install dependencies with "
+            "'pip install --no-cache-dir --user -r requirements.txt' in the builder, "
+            "then copy '/root/.local' across for the non-root user.",
+            "Create an 'appuser' (UID 10001) to run the process.",
         ]
         pitfalls = [
-            "Não use healthchecks dependentes de 'requests' externos; "
-            "use 'urllib.request.urlopen' da biblioteca padrão.",
+            "Do not write healthchecks that depend on the external 'requests' "
+            "package; use 'urllib.request.urlopen' from the standard library.",
         ]
         snippets = [
             (
@@ -245,19 +244,19 @@ def get_ecosystem_insights(image_reference: str) -> EcosystemInsight:
             ecosystem="Go",
             version=version or "1.23.x",
             runtime_features=[
-                "Binários nativos estáticos sem dependência de interpretadores ou runtime.",
+                "Statically linked native binaries, with no interpreter or runtime dependency.",
             ],
             base_distro_advice=[
-                "✅ Imagens 'scratch' ou distroless oferecem a menor superfície (ZERO CVEs).",
-                "💡 Copie '/etc/ssl/certs/ca-certificates.crt' do builder para chamadas HTTPS.",
+                "'scratch' or distroless images give the smallest surface (zero CVEs).",
+                "Copy '/etc/ssl/certs/ca-certificates.crt' from the builder for HTTPS calls.",
             ],
             security_guidelines=[
                 "Compile com 'CGO_ENABLED=0 GOOS=linux go build -ldflags=\"-s -w\" -o app .'.",
-                "Em 'scratch', use 'USER 65534:65534' (nobody) pois não existe /etc/passwd.",
+                "On 'scratch', use 'USER 65534:65534' (nobody): there is no /etc/passwd.",
             ],
             common_pitfalls=[
-                "Não use healthchecks em formato shell em scratch; "
-                'use exec: CMD ["/app", "-health"].',
+                "Do not use shell-form healthchecks on scratch; "
+                'use exec form: CMD ["/app", "-health"].',
             ],
             recommended_dockerfile_snippets=[
                 "FROM scratch\n"
@@ -271,19 +270,19 @@ def get_ecosystem_insights(image_reference: str) -> EcosystemInsight:
             ecosystem="Java / JVM",
             version=version or "21 LTS",
             runtime_features=[
-                "Eclipse Temurin / Amazon Corretto JRE com suporte a containers.",
+                "Eclipse Temurin / Amazon Corretto JRE with container awareness.",
             ],
             base_distro_advice=[
-                "✅ Use 'eclipse-temurin:21-jre-alpine' em vez do JDK completo "
-                "para reduzir mais de 300MB de ferramentas desnecessárias.",
+                "Use 'eclipse-temurin:21-jre-alpine' rather than the full JDK: it "
+                "drops over 300MB of tooling the runtime does not need.",
             ],
             security_guidelines=[
                 "Configure 'JAVA_OPTS=\"-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 "
                 "-Djava.security.egd=file:/dev/./urandom\"'.",
-                "Execute como usuário non-root 'appuser' (UID 10001).",
+                "Run as the non-root user 'appuser' (UID 10001).",
             ],
             common_pitfalls=[
-                "Evite alocar memória fixa (-Xmx) sem considerar o limite do container.",
+                "Avoid pinning heap size (-Xmx) without accounting for the container memory limit.",
             ],
             recommended_dockerfile_snippets=[
                 'ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"\n'
@@ -297,14 +296,14 @@ def get_ecosystem_insights(image_reference: str) -> EcosystemInsight:
             ecosystem="Rust",
             version=version or "1.82",
             runtime_features=[
-                "Binários nativos estáticos com musl e target-feature=+crt-static.",
+                "Statically linked native binaries with musl and target-feature=+crt-static.",
             ],
             base_distro_advice=[
-                "✅ Imagens 'scratch' ou distroless reduzem CVEs a zero.",
+                "'scratch' or distroless images reduce CVEs to zero.",
             ],
             security_guidelines=[
                 "Use 'cargo build --release --target x86_64-unknown-linux-musl'.",
-                "Execute como non-root 'USER 65534:65534'.",
+                "Run as non-root: 'USER 65534:65534'.",
             ],
             common_pitfalls=[],
             recommended_dockerfile_snippets=[
@@ -321,13 +320,14 @@ def get_ecosystem_insights(image_reference: str) -> EcosystemInsight:
             ecosystem="PHP",
             version=version or "8.3",
             runtime_features=[
-                "PHP 8.3 com JIT e Opcache habilitado.",
+                "PHP 8.3 with JIT and Opcache enabled.",
             ],
             base_distro_advice=[
-                "✅ Use multi-stage com 'composer:2' no builder e copie apenas '/app/vendor'.",
+                "Use a multi-stage build with 'composer:2' in the builder, copying "
+                "only '/app/vendor'.",
             ],
             security_guidelines=[
-                "Habilite Opcache para desempenho e execute com non-root (UID 10001).",
+                "Enable Opcache for performance, and run as non-root (UID 10001).",
             ],
             common_pitfalls=[],
             recommended_dockerfile_snippets=[
@@ -338,12 +338,12 @@ def get_ecosystem_insights(image_reference: str) -> EcosystemInsight:
     return EcosystemInsight(
         ecosystem="Generic Container",
         version=version or "latest",
-        runtime_features=["Container Linux padrão."],
-        base_distro_advice=["Prefira distribuições minimalistas como Alpine ou Distroless."],
+        runtime_features=["Standard Linux container."],
+        base_distro_advice=["Prefer minimal distributions such as Alpine or Distroless."],
         security_guidelines=[
-            "Nunca execute como root (USER 10001).",
-            "Mantenha um .dockerignore limpo.",
-            "Use healthchecks para monitoramento de liveness/readiness.",
+            "Never run as root (USER 10001).",
+            "Keep a tidy .dockerignore.",
+            "Use healthchecks for liveness/readiness monitoring.",
         ],
         common_pitfalls=[],
         recommended_dockerfile_snippets=[],

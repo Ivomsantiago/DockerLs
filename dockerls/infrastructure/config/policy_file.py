@@ -66,7 +66,7 @@ def load_policy(path: Path) -> BuildPolicy:
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as e:
-        raise PolicyFileError(f"não foi possível ler {path}: {e}") from e
+        raise PolicyFileError(f"could not read {path}: {e}") from e
 
     try:
         data = safe_load_yaml(raw, origin=str(path))
@@ -75,18 +75,18 @@ def load_policy(path: Path) -> BuildPolicy:
 
     if data is None:
         raise PolicyFileError(
-            f"{path} está vazio. Um arquivo de política vazio quase sempre é um "
-            "engano; remova-o se a intenção é não ter política."
+            f"{path} is empty. An empty policy file is almost always a mistake; "
+            "remove it if the intent is to have no policy."
         )
     if not isinstance(data, dict):
-        raise PolicyFileError(f"{path}: o documento precisa ser um mapa de regras")
+        raise PolicyFileError(f"{path}: the document must be a map of rules")
 
     desconhecidas = sorted(set(data) - _KNOWN_KEYS)
     if desconhecidas:
         raise PolicyFileError(
-            f"{path}: regra(s) desconhecida(s): {', '.join(desconhecidas)}. "
-            f"As aceitas são: {', '.join(sorted(_KNOWN_KEYS))}. "
-            "Uma chave digitada errado seria um portão aberto com cara de fechado."
+            f"{path}: unknown rule(s): {', '.join(desconhecidas)}. "
+            f"Accepted rules are: {', '.join(sorted(_KNOWN_KEYS))}. "
+            "A mistyped key would be an open gate that looks closed."
         )
 
     policy = BuildPolicy(
@@ -101,8 +101,8 @@ def load_policy(path: Path) -> BuildPolicy:
     )
     if policy.is_empty:
         raise PolicyFileError(
-            f"{path}: nenhuma regra foi declarada. Um arquivo presente que não exige "
-            "nada é indistinguível de um portão desligado."
+            f"{path}: no rule was declared. A file that is present but demands "
+            "nothing is indistinguishable from a gate that is switched off."
         )
     return policy
 
@@ -110,7 +110,7 @@ def load_policy(path: Path) -> BuildPolicy:
 def _flag(data: dict[str, Any], key: str, path: Path) -> bool:
     value = data.get(key, False)
     if not isinstance(value, bool):
-        raise PolicyFileError(f"{path}: {key} precisa ser true ou false, não {value!r}")
+        raise PolicyFileError(f"{path}: {key} must be true or false, not {value!r}")
     return value
 
 
@@ -123,7 +123,7 @@ def _severity(data: dict[str, Any], key: str, path: Path) -> str:
     # com erro técnico no meio do caminho por causa de uma linha de YAML.
     if not isinstance(value, str) or value.strip().lower() not in GATE_THRESHOLDS:
         raise PolicyFileError(
-            f"{path}: {key} precisa ser uma de {', '.join(GATE_THRESHOLDS)}, não {value!r}"
+            f"{path}: {key} must be one of {', '.join(GATE_THRESHOLDS)}, not {value!r}"
         )
     return value.strip().lower()
 
@@ -133,21 +133,17 @@ def _ceilings(data: dict[str, Any], path: Path) -> dict[str, int]:
     if not value:
         return {}
     if not isinstance(value, dict):
-        raise PolicyFileError(
-            f"{path}: max_vulnerabilities precisa ser um mapa de severidade para número"
-        )
+        raise PolicyFileError(f"{path}: max_vulnerabilities must be a map of severity to number")
     ceilings: dict[str, int] = {}
     for severity, limit in value.items():
         chave = str(severity).strip().lower()
         if chave not in SEVERITY_ORDER:
-            raise PolicyFileError(
-                f"{path}: severidade desconhecida em max_vulnerabilities: {severity!r}"
-            )
+            raise PolicyFileError(f"{path}: unknown severity in max_vulnerabilities: {severity!r}")
         # `bool` é subclasse de `int` em Python: `high: true` passaria como
         # teto de 1, que não é o que ninguém quis dizer.
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
             raise PolicyFileError(
-                f"{path}: o teto de {chave} precisa ser um inteiro >= 0, não {limit!r}"
+                f"{path}: the {chave} ceiling must be an integer >= 0, not {limit!r}"
             )
         ceilings[chave] = limit
     return ceilings
@@ -158,8 +154,8 @@ def _strings(data: dict[str, Any], key: str, path: Path) -> tuple[str, ...]:
     if not value:
         return ()
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-        raise PolicyFileError(f"{path}: {key} precisa ser uma lista de textos")
+        raise PolicyFileError(f"{path}: {key} must be a list of strings")
     itens = tuple(v.strip() for v in value if v.strip())
     if not itens:
-        raise PolicyFileError(f"{path}: {key} foi declarado sem nenhum valor útil")
+        raise PolicyFileError(f"{path}: {key} was declared with no usable value")
     return itens

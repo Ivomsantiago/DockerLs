@@ -21,19 +21,19 @@ console = Console()
 
 
 def analyze(
-    path: str = typer.Argument(".", help="Caminho para o Dockerfile ou diretório"),
+    path: str = typer.Argument(".", help="Path to the Dockerfile or directory"),
     validate_only: bool = typer.Option(
-        False, "--validate-only", help="Apenas valida sem sugerir melhorias"
+        False, "--validate-only", help="Validate only, without suggesting improvements"
     ),
     suggestions: bool = typer.Option(
-        True, "--suggestions/--no-suggestions", help="Mostra sugestões de hardening"
+        True, "--suggestions/--no-suggestions", help="Show hardening suggestions"
     ),
     output_format: str = typer.Option(
-        "table", "--format", "-f", help="Formato de saída: table ou json"
+        "table", "--format", "-f", help="Output format: table or json"
     ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Habilita logs detalhados"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging"),
 ) -> None:
-    """Analisa um Dockerfile em busca de problemas de segurança."""
+    """Analyze a Dockerfile for security problems."""
     if verbose:
         enable_console_logging()
 

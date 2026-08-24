@@ -91,7 +91,7 @@ def reject_tagged_reference(image: str, command: str) -> str | None:
     if not tag:
         return None
     return (
-        f"Erro: '{command}' recebe o nome da imagem, não uma tag específica. "
-        f"Você quis dizer 'dockerls {command} {repository}'? "
-        f"Para analisar uma tag específica, use 'dockerls analyze {image}'."
+        f"Error: '{command}' takes the image name, not a specific tag. "
+        f"Did you mean 'dockerls {command} {repository}'? "
+        f"To analyze one specific tag, use 'dockerls analyze {image}'."
     )

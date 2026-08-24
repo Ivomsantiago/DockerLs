@@ -66,3 +66,42 @@ O DockerLs segue estes princípios de segurança:
 - Todas as capabilities removidas
 - Flag de no-new-privileges
 - Healthcheck configurado
+
+---
+
+## Convenção de idioma
+
+O projeto é publicado em inglês -- README, PyPI, nomes de comando e de flag --
+e a saída do CLI segue a mesma língua. A regra separa o que o usuário lê do
+que só quem mexe no código lê:
+
+| O quê | Idioma | Por quê |
+|---|---|---|
+| Strings de saída ao usuário: `console.print`, mensagens de erro, `help=` do Typer, docstring de função de comando (vira o `--help`), conteúdo de tabelas Rich | **Inglês, obrigatório** | é o que chega a quem instala do PyPI |
+| Comentários de código e docstrings internas | **Português, permitido** | convenção estabelecida do projeto; explicam decisões de design para quem mantém |
+
+Vale para toda a árvore, não só para `cli/`: uma string em `domain/` ou
+`infrastructure/` que é impressa por um comando é saída ao usuário e segue a
+primeira linha da tabela.
+
+### Sem emoji na saída
+
+Nada de `✅ ⚠️ ❌ 🔍 💡` no terminal. A cor do Rich (`[green]`, `[yellow]`,
+`[red]`) já carrega o sinal visual, e ela degrada de forma limpa sob
+`--no-color` ou num pipe para arquivo de log -- coisa que um emoji não faz.
+Status de check são texto: `PASS` / `WARN` / `FAIL` / `SKIP`. Bullets são `-`.
+
+Box Drawing (`├─`, `└─`) **não** é emoji: é estrutura de árvore, a mesma
+convenção do `tree`, e pode ficar.
+
+### O guard
+
+`tests/unit/cli/test_output_is_english_ascii.py` roda cada comando traduzido
+contra um fixture mínimo e reprova se a saída trouxer caractere acentuado ou
+emoji. Comandos ainda não traduzidos estão listados ali em
+`_NOT_YET_TRANSLATED`, explicitamente, para que a ausência deles não seja lida
+como aprovação.
+
+Uma limitação conhecida: o guard detecta acento, então português **sem
+acentuação** (`"Apenas valida sem sugerir melhorias"`) passa por ele. A
+revisão humana continua sendo o que pega esse caso.

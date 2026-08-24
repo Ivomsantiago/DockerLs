@@ -44,8 +44,8 @@ def test_sem_politica_a_saida_diz_que_nada_foi_conferido(tmp_path: Path):
     result = runner.invoke(app, ["fleet", str(tmp_path), "--no-color"])
 
     assert result.exit_code == EXIT_OK
-    assert "conformidade" in result.output
-    assert "Nenhuma política declarada" in result.output
+    assert "not the same as being compliant" in " ".join(result.output.split())
+    assert "No policy declared" in result.output
 
 
 def test_a_saida_diz_o_que_nao_foi_medido(tmp_path: Path):
@@ -53,7 +53,7 @@ def test_a_saida_diz_o_que_nao_foi_medido(tmp_path: Path):
 
     result = runner.invoke(app, ["fleet", str(tmp_path), "--no-color"])
 
-    assert "não constrói imagem nem chama scanner" in " ".join(result.output.split())
+    assert "builds no image and calls no scanner" in " ".join(result.output.split())
 
 
 def test_politica_invalida_falha_em_vez_de_varrer_sem_ela(tmp_path: Path):
@@ -91,11 +91,11 @@ def test_limite_corta_a_fila_e_diz_quantos_ficaram(tmp_path: Path):
 
     result = runner.invoke(app, ["fleet", str(tmp_path), "--limit", "2", "--no-color"])
 
-    assert "e mais 2" in result.output
+    assert "and 2 more" in result.output
 
 
 def test_frota_vazia_nao_finge_sucesso(tmp_path: Path):
     result = runner.invoke(app, ["fleet", str(tmp_path), "--no-color"])
 
     assert result.exit_code == EXIT_OK
-    assert "Nenhum Dockerfile" in result.output
+    assert "No Dockerfile found" in result.output

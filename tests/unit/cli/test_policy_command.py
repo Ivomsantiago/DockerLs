@@ -39,14 +39,14 @@ def test_arquivo_invalido_falha_aqui_em_vez_de_no_meio_do_build(tmp_path: Path):
     result = runner.invoke(app, ["policy", str(tmp_path), "--no-color"])
 
     assert result.exit_code == EXIT_ERROR
-    assert "desconhecida" in result.output
+    assert "unknown rule" in result.output
 
 
 def test_sem_arquivo_diz_que_nao_ha_politica(tmp_path: Path):
     result = runner.invoke(app, ["policy", str(tmp_path), "--no-color"])
 
     assert result.exit_code == EXIT_OK
-    assert "Nenhum" in result.output
+    assert "No .dockerls-policy.yaml" in result.output
 
 
 def test_formato_json_traz_a_politica(tmp_path: Path):

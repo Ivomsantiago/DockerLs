@@ -33,27 +33,27 @@ console = Console()
 
 #: O que cada regra exige, em uma linha, para a saída de tabela.
 _DESCRIPTIONS = {
-    "fail_on": "reprova o build a partir desta severidade",
-    "max_vulnerabilities": "teto de achados por severidade",
-    "require_scan": "exige que um scanner tenha rodado",
-    "require_pinned_bases": "exige todo FROM fixado por digest",
-    "require_nonroot": "exige execução sem privilégio",
-    "required_labels": "rótulos que a imagem precisa carregar",
-    "allowed_base_registries": "de onde as bases podem vir",
-    "require_provenance": "exige procedência verificada",
+    "fail_on": "fails the build from this severity upwards",
+    "max_vulnerabilities": "ceiling on findings per severity",
+    "require_scan": "requires that a scanner has run",
+    "require_pinned_bases": "requires every FROM pinned by digest",
+    "require_nonroot": "requires the image to run without privilege",
+    "required_labels": "labels the image must carry",
+    "allowed_base_registries": "where bases may come from",
+    "require_provenance": "requires verified provenance",
 }
 
 
 def policy(
     path: str = typer.Argument(
-        ".", help="Diretório com o arquivo de política, ou o próprio arquivo"
+        ".", help="Directory containing the policy file, or the file itself"
     ),
     output_format: str = typer.Option(
-        OutputFormat.TABLE.value, "--format", "-f", help="Formato de saída: table ou json"
+        OutputFormat.TABLE.value, "--format", "-f", help="Output format: table or json"
     ),
-    no_color: bool = typer.Option(False, "--no-color", help="Desativa cor na saída"),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable colored output"),
 ) -> None:
-    """Mostra e valida a política declarada em `.dockerls-policy.yaml`."""
+    """Show and validate the policy declared in `.dockerls-policy.yaml`."""
     if no_color:
         console.no_color = True
     fmt = parse_output_format(output_format)
@@ -66,10 +66,10 @@ def policy(
                 console.print(json.dumps({"policy": None}, indent=2), soft_wrap=True)
             else:
                 console.print(
-                    f"[yellow]Nenhum {DEFAULT_POLICY_FILENAME} em {safe(str(target))}.[/yellow]\n"
-                    "[dim]Sem política declarada, só valem os portões que a linha de "
-                    "comando pedir -- e uma regra que mora na linha de comando é uma "
-                    "regra que cada pipeline reescreve à mão.[/dim]"
+                    f"[yellow]No {DEFAULT_POLICY_FILENAME} in {safe(str(target))}.[/yellow]\n"
+                    "[dim]With no declared policy, only the gates the command line "
+                    "asks for apply -- and a rule that lives on the command line is a "
+                    "rule every pipeline rewrites by hand.[/dim]"
                 )
             raise typer.Exit(EXIT_OK)
         target = found
@@ -77,7 +77,7 @@ def policy(
     try:
         declared = load_policy(target)
     except PolicyFileError as e:
-        console.print(f"[red]Erro:[/red] {safe(str(e))}")
+        console.print(f"[red]Error:[/red] {safe(str(e))}")
         raise typer.Exit(EXIT_ERROR) from e
 
     if fmt == OutputFormat.JSON:
@@ -96,9 +96,9 @@ def policy(
             f"    {safe(_format(value))}"
         )
     console.print(
-        "\n[dim]Conferida em todo `dockerls build` neste contexto. Entre o limiar "
-        "daqui e o da linha de comando vence o mais estrito: um arquivo no "
-        "repositório não pode desligar um portão que o pipeline pediu.[/dim]"
+        "\n[dim]Checked on every `dockerls build` in this context. Between the "
+        "threshold here and the one on the command line, the stricter wins: a file in "
+        "the repository cannot switch off a gate the pipeline asked for.[/dim]"
     )
     raise typer.Exit(EXIT_OK)
 

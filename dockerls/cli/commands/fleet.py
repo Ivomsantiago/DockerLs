@@ -35,29 +35,29 @@ if TYPE_CHECKING:
 console = Console()
 
 _USER_LABEL = {
-    Tristate.TRUE: "[green]sem privilégio[/green]",
+    Tristate.TRUE: "[green]non-root[/green]",
     Tristate.FALSE: "[red]root[/red]",
-    Tristate.UNKNOWN: "[yellow]indeterminado[/yellow]",
+    Tristate.UNKNOWN: "[yellow]undetermined[/yellow]",
 }
 
 
 def fleet(
-    root: str = typer.Argument(".", help="Raiz da árvore a varrer"),
+    root: str = typer.Argument(".", help="Root of the tree to scan"),
     policy_path: str | None = typer.Option(
         None,
         "--policy",
         help=(
-            "Política a conferir em cada Dockerfile (padrão: .dockerls-policy.yaml "
-            "na raiz, quando existir). Só as regras decidíveis sem build são aplicadas"
+            "Policy to check every Dockerfile against (default: .dockerls-policy.yaml "
+            "at the root, when present). Only rules decidable without a build apply"
         ),
     ),
     output_format: str = typer.Option(
-        OutputFormat.TABLE.value, "--format", "-f", help="Formato de saída: table ou json"
+        OutputFormat.TABLE.value, "--format", "-f", help="Output format: table or json"
     ),
-    limit: int = typer.Option(0, "--limit", help="Mostra só os N primeiros da fila (0 = todos)"),
-    no_color: bool = typer.Option(False, "--no-color", help="Desativa cor na saída"),
+    limit: int = typer.Option(0, "--limit", help="Show only the first N in the queue (0 = all)"),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable colored output"),
 ) -> None:
-    """Varre uma árvore de repositórios e resume o estado dos Dockerfiles."""
+    """Scan a tree of repositories and summarise the state of its Dockerfiles."""
     if no_color:
         console.no_color = True
     fmt = parse_output_format(output_format)
@@ -72,19 +72,19 @@ def fleet(
 
     target = Path(root)
     if not target.is_dir():
-        console.print(f"[red]Erro:[/red] {safe(root)} não é um diretório")
+        console.print(f"[red]Error:[/red] {safe(root)} is not a directory")
         raise typer.Exit(EXIT_ERROR)
 
     policy_file = Path(policy_path) if policy_path else find_policy_file(target)
     declared = None
     if policy_file is not None:
         if not policy_file.is_file():
-            console.print(f"[red]Erro:[/red] política não encontrada: {safe(str(policy_file))}")
+            console.print(f"[red]Error:[/red] policy not found: {safe(str(policy_file))}")
             raise typer.Exit(EXIT_ERROR)
         try:
             declared = load_policy(policy_file)
         except PolicyFileError as e:
-            console.print(f"[red]Erro:[/red] {safe(str(e))}")
+            console.print(f"[red]Error:[/red] {safe(str(e))}")
             raise typer.Exit(EXIT_ERROR) from e
 
     report = FleetScanUseCase(DockerfileValidator()).execute(
@@ -107,7 +107,7 @@ def _render(report: FleetReport, *, limit: int) -> None:
     console.print(f"[dim]{safe(report.summary())}[/dim]\n")
 
     if not report.total:
-        console.print("[yellow]Nenhum Dockerfile encontrado sob esta raiz.[/yellow]")
+        console.print("[yellow]No Dockerfile found under this root.[/yellow]")
         return
 
     fila = report.worst_first()
@@ -118,15 +118,15 @@ def _render(report: FleetReport, *, limit: int) -> None:
             continue
 
         fixadas = (
-            f"{entry.pinned_bases}/{entry.total_bases} fixada(s)"
+            f"{entry.pinned_bases}/{entry.total_bases} pinned"
             if entry.total_bases
-            else "sem FROM legível"
+            else "no readable FROM"
         )
         cor = "green" if entry.fully_pinned else "yellow"
         console.print(
             f"  {safe(entry.path)}\n"
             f"    [{cor}]{fixadas}[/{cor}]  {_USER_LABEL[entry.nonroot]}  "
-            f"[dim]{entry.stages} estágio(s)[/dim]"
+            f"[dim]{entry.stages} stage(s)[/dim]"
         )
         for violation in entry.violations:
             console.print(
@@ -134,27 +134,26 @@ def _render(report: FleetReport, *, limit: int) -> None:
             )
 
     if limit > 0 and len(fila) > limit:
-        console.print(f"\n[dim]... e mais {len(fila) - limit} (use --limit 0 para todos).[/dim]")
+        console.print(f"\n[dim]... and {len(fila) - limit} more (use --limit 0 for all).[/dim]")
 
     console.print()
     if report.truncated:
         console.print(
-            "[yellow]A varredura foi truncada no teto de arquivos ou de "
-            "profundidade: este retrato está incompleto.[/yellow]"
+            "[yellow]The scan hit the file or depth ceiling: this picture is incomplete.[/yellow]"
         )
     for path in report.unreadable_paths:
-        console.print(f"[yellow]Diretório não percorrido: {safe(path)}[/yellow]")
+        console.print(f"[yellow]Directory not walked: {safe(path)}[/yellow]")
 
     if report.policy_applied:
         console.print(
-            f"[bold]{report.with_violations} arquivo(s) com violação, "
-            f"{report.total_violations} no total.[/bold]\n"
-            "[dim]Só as regras decidíveis sem build foram aplicadas; as que dependem "
-            "de scan continuam valendo no `dockerls build`.[/dim]"
+            f"[bold]{report.with_violations} file(s) with violations, "
+            f"{report.total_violations} in total.[/bold]\n"
+            "[dim]Only rules decidable without a build were applied; the ones that "
+            "need a scan still hold in `dockerls build`.[/dim]"
         )
     else:
         console.print(
-            "[dim]Nenhuma política declarada: nada foi conferido contra regras, e "
-            "isso não é o mesmo que estar em conformidade.[/dim]"
+            "[dim]No policy declared: nothing was checked against any rule, and that "
+            "is not the same as being compliant.[/dim]"
         )
     console.print(f"[dim]{safe(report.caveat())}[/dim]")

@@ -109,9 +109,7 @@ async def _advisor(image: str, workers: int | None, output_format: OutputFormat)
         console.print(json.dumps(payload, indent=2, default=str), soft_wrap=True)
         return
 
-    console.print(
-        Panel(f"[bold cyan]🐳 DockerLs Security Advisor: {image}[/bold cyan]", expand=False)
-    )
+    console.print(Panel(f"[bold cyan]DockerLs Security Advisor: {image}[/bold cyan]", expand=False))
     console.print()
 
     info = Table(show_header=False, box=None, padding=(0, 2))
@@ -134,22 +132,22 @@ async def _advisor(image: str, workers: int | None, output_format: OutputFormat)
         console.print()
         console.print(
             Panel(
-                "[bold magenta]🔍 Ecosystem Particularities & Hardening[/bold magenta]",
+                "[bold magenta]Ecosystem Particularities & Hardening[/bold magenta]",
                 expand=False,
             )
         )
         if insights.base_distro_advice:
             console.print("\n[bold]Base Image & Distribution Notes:[/bold]")
             for advice in insights.base_distro_advice:
-                console.print(f"  • {advice}")
+                console.print(f"  - {advice}")
         if insights.security_guidelines:
             console.print("\n[bold]Production & Security Guidelines:[/bold]")
             for item in insights.security_guidelines:
-                console.print(f"  • {item}")
+                console.print(f"  - {item}")
         if insights.common_pitfalls:
             console.print("\n[bold red]Common Pitfalls to Avoid:[/bold red]")
             for pit in insights.common_pitfalls:
-                console.print(f"  ⚠️ {pit}")
+                console.print(f"  [yellow]![/yellow] {pit}")
 
     if plan is not None:
         _print_migration(plan)

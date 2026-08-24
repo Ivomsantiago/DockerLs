@@ -50,24 +50,24 @@ _COLORS = {
 
 
 def base(
-    path: str = typer.Argument(".", help="Diretório com Dockerfile, ou o próprio arquivo"),
+    path: str = typer.Argument(".", help="Directory containing a Dockerfile, or the file itself"),
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Mostra o que mudaria sem escrever no arquivo"
+        False, "--dry-run", help="Show what would change without writing to the file"
     ),
     alternatives: bool = typer.Option(
         False,
         "--alternatives",
         help=(
-            "Além de atualizar o digest, procura uma base mais segura para cada FROM "
-            "e mede as duas. Exige scanner e leva minutos"
+            "Beyond refreshing the digest, look for a safer base for each FROM and "
+            "measure both. Requires a scanner and takes minutes"
         ),
     ),
     output_format: str = typer.Option(
-        OutputFormat.TABLE.value, "--format", "-f", help="Formato de saída: table ou json"
+        OutputFormat.TABLE.value, "--format", "-f", help="Output format: table or json"
     ),
-    no_color: bool = typer.Option(False, "--no-color", help="Desativa cor na saída"),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable colored output"),
 ) -> None:
-    """Confere as bases do Dockerfile contra o registry e atualiza os digests."""
+    """Check the Dockerfile bases against the registry and refresh their digests."""
     if no_color:
         console.no_color = True
     fmt = parse_output_format(output_format)
@@ -90,7 +90,7 @@ async def _base(
     try:
         history = TagHistoryStore(build_cache())
     except Exception as e:  # pragma: no cover - abrir o cache é o caminho instável
-        logger.debug(f"Histórico de tags indisponível: {e}")
+        logger.debug(f"Tag history unavailable: {e}")
         history = TagHistoryStore(None)
     try:
         result = await UpgradeBaseUseCase(inspector, history).execute(path, apply=apply)
@@ -118,26 +118,26 @@ async def _base(
 
 def _render(result: UpgradeBaseResult, *, apply: bool) -> None:
     if result.error:
-        console.print(f"[red]Erro:[/red] {safe(result.error)}")
+        console.print(f"[red]Error:[/red] {safe(result.error)}")
         return
 
     console.print(f"[bold]{safe(result.dockerfile)}[/bold]\n")
     for finding in result.findings:
         color = _COLORS.get(finding.status, "white")
-        stage = f"  [dim](estágio {safe(finding.base.stage)})[/dim]" if finding.base.stage else ""
+        stage = f"  [dim](stage {safe(finding.base.stage)})[/dim]" if finding.base.stage else ""
         console.print(
-            f"  linha {finding.base.line}  [{color}]{finding.status}[/{color}]{stage}\n"
+            f"  line {finding.base.line}  [{color}]{finding.status}[/{color}]{stage}\n"
             f"    {safe(finding.base.reference)}"
         )
         console.print(f"    [dim]{safe(finding.explain())}[/dim]")
         historico = result.history_for(finding.base)
         if historico is not None and historico.moves:
-            console.print(f"    [dim]histórico: {safe(historico.explain())}[/dim]")
+            console.print(f"    [dim]history: {safe(historico.explain())}[/dim]")
         if finding.proposed_reference:
             alvo = (
                 f"ARG {safe(finding.base.digest_arg)}"
                 if finding.base.digest_arg
-                else f"linha {finding.base.line}"
+                else f"line {finding.base.line}"
             )
             console.print(
                 f"    [green]->[/green] {safe(finding.proposed_reference)}  [dim]({alvo})[/dim]"
@@ -146,32 +146,31 @@ def _render(result: UpgradeBaseResult, *, apply: bool) -> None:
 
     resumo = []
     if result.outdated:
-        resumo.append(f"{len(result.outdated)} desatualizada(s)")
+        resumo.append(f"{len(result.outdated)} outdated")
     if result.unpinned:
-        resumo.append(f"{len(result.unpinned)} sem digest")
+        resumo.append(f"{len(result.unpinned)} without a digest")
     if resumo:
         console.print(f"[bold]{', '.join(resumo)}[/bold]\n")
 
     if result.applied:
         console.print(
-            f"[green]{result.applied} atualização(ões) escrita(s) em "
-            f"{safe(result.dockerfile)}.[/green]"
+            f"[green]{result.applied} update(s) written to {safe(result.dockerfile)}.[/green]"
         )
         console.print(
-            "[dim]Reconstrua e escaneie antes de publicar: trocar o digest da base "
-            "muda a imagem, e nada além de um scan diz se para melhor.[/dim]"
+            "[dim]Rebuild and scan before publishing: changing the base digest "
+            "changes the image, and only a scan tells you whether for the better.[/dim]"
         )
     elif result.needs_action:
-        acao = "Nada foi escrito (--dry-run)." if not apply else "Nada pôde ser escrito."
+        acao = "Nothing was written (--dry-run)." if not apply else "Nothing could be written."
         console.print(f"[yellow]{acao}[/yellow]")
     else:
-        console.print("[green]Todas as bases estão no digest que a tag aponta hoje.[/green]")
+        console.print("[green]Every base is at the digest its tag points to today.[/green]")
 
     if result.unresolved:
         console.print(
-            f"[yellow]{len(result.unresolved)} base(s) não puderam ser consultadas no "
-            "registry — isso é ausência de resposta, não confirmação de que estão em "
-            "dia.[/yellow]"
+            f"[yellow]{len(result.unresolved)} base(s) could not be queried on the "
+            "registry -- that is an absent answer, not confirmation that they are "
+            "up to date.[/yellow]"
         )
 
 
@@ -194,9 +193,9 @@ async def _alternatives_for(result: UpgradeBaseResult) -> list[Alternative]:
         return []
 
     console.print(
-        "\n[dim]Medindo alternativas: cada base é escaneada junto das candidatas, "
-        "porque uma comparação entre uma medição e uma reputação não é "
-        "comparação.[/dim]"
+        "\n[dim]Measuring alternatives: each base is scanned alongside the "
+        "candidates, because a comparison between a measurement and a reputation is "
+        "not a comparison.[/dim]"
     )
     analyzer = await build_analyze_use_case()
     recommender = await build_recommend_use_case()
@@ -209,7 +208,7 @@ async def _alternatives_for(result: UpgradeBaseResult) -> list[Alternative]:
 def _render_alternatives(suggestions: list[Alternative]) -> None:
     from dockerls.application.services.alternatives_lookup import AlternativeFailure
 
-    console.print("\n[bold]Alternativas medidas[/bold]\n")
+    console.print("\n[bold]Measured alternatives[/bold]\n")
     for item in suggestions:
         if isinstance(item, AlternativeFailure):
             # Não medir nunca vira "não há nada melhor": são frases diferentes
@@ -230,14 +229,14 @@ def _render_alternatives(suggestions: list[Alternative]) -> None:
             console.print(f"      [yellow]![/yellow] [dim]{safe(troca)}[/dim]")
         if not item.improves:
             console.print(
-                "      [dim]a candidata melhor colocada não melhora o que foi medido; "
-                "reportada assim mesmo, porque esconder o que ficou pior "
-                "transformaria a lista num argumento.[/dim]"
+                "      [dim]the best-placed candidate does not improve on what was "
+                "measured; reported anyway, because hiding what came out worse would "
+                "turn the list into an argument.[/dim]"
             )
         console.print()
 
     console.print(
-        "[dim]Nada aqui é aplicado: trocar a família da base é decisão de "
-        "arquitetura, não atualização de digest. O `base` escreve digest; a "
-        "troca de imagem é sua.[/dim]"
+        "[dim]Nothing here is applied: switching base family is an architecture "
+        "decision, not a digest refresh. `base` writes digests; swapping the image "
+        "is yours.[/dim]"
     )

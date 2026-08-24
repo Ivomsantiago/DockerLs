@@ -112,14 +112,14 @@ class TestNonroot:
         violations = evaluate(policy, PolicyFacts(nonroot=Tristate.FALSE))
 
         assert violations[0].rule is PolicyRule.REQUIRE_NONROOT
-        assert "roda como root" in violations[0].message
+        assert "the image runs as root" in violations[0].message
 
     def test_desconhecido_viola_e_diz_que_e_ausencia_de_medida(self) -> None:
         policy = BuildPolicy(require_nonroot=True)
         violations = evaluate(policy, PolicyFacts(nonroot=Tristate.UNKNOWN))
 
         assert violations[0].rule is PolicyRule.REQUIRE_NONROOT
-        assert "não foi possível determinar" in violations[0].message
+        assert "could not be determined" in violations[0].message
 
     def test_nao_root_cumpre(self) -> None:
         assert not evaluate(BuildPolicy(require_nonroot=True), PolicyFacts(nonroot=Tristate.TRUE))
