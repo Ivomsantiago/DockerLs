@@ -120,6 +120,30 @@ class TestExportFileWriting:
             result = runner.invoke(app, ["export", "node", "--format", "bogus"])
         assert result.exit_code == 1
 
+    def test_rejects_an_image_tag_with_a_clear_message(self):
+        """`node:18` used to be searched as a literal repository name."""
+        captured: dict = {}
+        with patch(
+            "dockerls.cli.commands.export.build_recommend_use_case", _fake_use_case(captured)
+        ):
+            result = runner.invoke(app, ["export", "node:18"])
+        collapsed = " ".join(result.stdout.split())
+        assert result.exit_code == 1
+        assert "dockerls export node" in collapsed
+        assert "dockerls analyze node:18" in collapsed
+        assert captured == {}
+
+    def test_private_registry_with_port_still_works(self):
+        captured: dict = {}
+        with patch(
+            "dockerls.cli.commands.export.build_recommend_use_case", _fake_use_case(captured)
+        ):
+            result = runner.invoke(
+                app, ["export", "registry.internal:5000/app", "--format", "json"]
+            )
+        assert result.exit_code == 0
+        assert captured != {}
+
 
 class TestCacheCommands:
     """These had no tests at all."""

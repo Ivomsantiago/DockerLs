@@ -93,6 +93,50 @@ class TestRecommendExitCodes:
             r = runner.invoke(app, ["recommend", "node"])
         assert r.exit_code == 1
 
+    def test_rejects_an_image_tag_with_a_clear_message(self):
+        """`node:18` used to be searched as a literal repository name."""
+        with patch(
+            "dockerls.cli.commands.recommend.build_recommend_use_case",
+            _mock_use_case(
+                AnalysisResult(query="node:18", total_tags_scanned=0, baseline_met=False)
+            ),
+        ) as build:
+            r = runner.invoke(app, ["recommend", "node:18"])
+        collapsed = " ".join(r.stdout.split())
+        assert r.exit_code == 1
+        assert "dockerls recommend node" in collapsed
+        assert "dockerls analyze node:18" in collapsed
+        build.assert_not_called()
+
+    def test_bare_name_still_works(self):
+        result = AnalysisResult(
+            query="node",
+            total_tags_scanned=1,
+            baseline_met=True,
+            recommendations=[_analysis()],
+        )
+        with patch(
+            "dockerls.cli.commands.recommend.build_recommend_use_case",
+            _mock_use_case(result),
+        ):
+            r = runner.invoke(app, ["recommend", "node"])
+        assert r.exit_code == 0
+
+    def test_private_registry_with_port_still_works(self):
+        result = AnalysisResult(
+            query="registry.internal:5000/app",
+            total_tags_scanned=1,
+            baseline_met=True,
+            recommendations=[_analysis()],
+        )
+        with patch(
+            "dockerls.cli.commands.recommend.build_recommend_use_case",
+            _mock_use_case(result),
+        ) as build:
+            r = runner.invoke(app, ["recommend", "registry.internal:5000/app"])
+        assert r.exit_code == 0
+        build.assert_called_once()
+
     def test_fail_on_critical_forces_error_exit(self):
         result = AnalysisResult(
             query="node",

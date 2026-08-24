@@ -67,14 +67,22 @@ class AnalyzeImageUseCase:
         is_eol = eol_status.is_true
         is_lts = await self._eol_checker.is_lts(product, version)
 
-        score = SecurityScore(image, scan, is_eol=is_eol, is_lts=is_lts)
-        tier = SecurityTier(scan, score.value, is_eol=is_eol)
+        # `SecurityScore` requires a completed scan and raises on anything
+        # else. A failed scan is not scored at all here: the tier falls back
+        # to F (0.0), and `finalize_verdict` below reads `scan.is_verified`
+        # to keep that from ever being reported as a verdict rather than a
+        # measurement failure -- the same gate `recommend` applies before it
+        # will construct a `SecurityScore` in the first place.
+        security_score = 0.0
+        if scan.is_verified:
+            security_score = SecurityScore(image, scan, is_eol=is_eol, is_lts=is_lts).value
+        tier = SecurityTier(scan, security_score, is_eol=is_eol)
         rem_score = RemediationScore(scan)
 
         analysis = ImageAnalysis(
             image=image,
             scan=scan,
-            security_score=score.value,
+            security_score=security_score,
             tier=tier.tier.value,
             remediation_score=rem_score.value,
             is_eol=is_eol,

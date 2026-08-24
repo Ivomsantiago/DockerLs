@@ -18,7 +18,7 @@ from dockerls.cli.dependencies import (
     enable_console_logging,
     resolve_tag_limit,
 )
-from dockerls.cli.image_names import display_reference
+from dockerls.cli.image_names import display_reference, reject_tagged_reference
 from dockerls.cli.options import OutputFormat, parse_output_format
 from dockerls.cli.progress import RichScanObserver
 from dockerls.cli.text import safe
@@ -69,7 +69,12 @@ _FAIL_ON_COUNT: dict[FailOn, Callable[[ImageAnalysis], int]] = {
 
 
 def recommend(
-    image: str = typer.Argument(help="Docker image name (e.g., node, python, nginx)"),
+    image: str = typer.Argument(
+        help=(
+            "Docker image name only, without a tag (e.g. 'node', not 'node:18'). "
+            "Use 'analyze' or 'advisor' for a specific tag."
+        )
+    ),
     max_critical: int | None = typer.Option(
         None, "--max-critical", help="Max critical vulns allowed [config: max_critical, default 0]"
     ),
@@ -147,6 +152,11 @@ def recommend(
     # than validated: the resolver, not the flag, decides what it becomes.
     if workers:
         workers = check_workers(workers)
+
+    error = reject_tagged_reference(image, "recommend")
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(EXIT_ERROR_CODE)
 
     try:
         asyncio.run(

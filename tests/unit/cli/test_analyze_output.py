@@ -160,6 +160,65 @@ class TestUnverifiedScanNeverPasses:
         assert "DB_INIT_FAILED" in result.stdout
 
 
+class TestNonexistentTagShowsAClassifiedMessage:
+    """End-to-end through the real `AnalyzeImageUseCase`: a scan that fails
+    with Trivy's actual "image not found" stderr must never reach the CLI as
+    a raw `SecurityScore` ValueError (which used to happen because
+    `execute()` unconditionally scored every scan, verified or not).
+    """
+
+    def test_a_real_not_found_scan_is_reported_by_kind_not_as_a_raw_crash(self):
+        from dockerls.application.use_cases.analyze_image import AnalyzeImageUseCase
+        from dockerls.domain.entities.scan_result import ScanResult
+        from dockerls.integrations.scan_errors import classify_scanner_error
+
+        raw_stderr = (
+            "FATAL image scan error: unable to find the specified image "
+            '"node:does-not-exist": unable to find the specified image'
+        )
+        kind = classify_scanner_error(raw_stderr)
+
+        class _NotFoundScanner:
+            async def scan(self, image_reference):
+                return ScanResult(
+                    image_reference=image_reference,
+                    status=ScanStatus.ERROR,
+                    error_message=raw_stderr,
+                    error_kind=kind,
+                )
+
+            async def is_available(self):
+                return True
+
+        class _EmptyRepo:
+            async def search_tags(self, image_name, limit=100):
+                return []
+
+            async def get_image_metadata(self, image_name, tag):
+                return None
+
+        class _NoEOL:
+            async def is_eol(self, product, version):
+                return False
+
+            async def is_lts(self, product, version):
+                return False
+
+        use_case = AnalyzeImageUseCase(
+            repository=_EmptyRepo(), scanner=_NotFoundScanner(), eol_checker=_NoEOL()
+        )
+        with patch(
+            "dockerls.cli.commands.analyze.build_analyze_use_case",
+            AsyncMock(return_value=use_case),
+        ):
+            result = runner.invoke(app, ["analyze", "node:does-not-exist"])
+
+        assert result.exit_code == EXIT_ERROR
+        assert "NOT_FOUND" in result.stdout
+        assert "Traceback" not in result.stdout
+        assert "Cannot score" not in result.stdout
+
+
 class TestFixEmitsADockerfilePatch:
     """`--fix` transforma o scanner em motor de remediação: a saída é
     aplicável, não descritiva."""
