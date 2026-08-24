@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK
+from dockerls.integrations.exploitdb.client import EXPLOITDB_CSV_URL
 
 console = Console()
 
@@ -29,7 +30,13 @@ ENDPOINTS = {
     "endoflife.date": "https://endoflife.date/api/python.json",
     "CISA KEV": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
     "EPSS (FIRST)": "https://api.first.org/data/v1/epss?cve=CVE-2021-44228",
+    "Exploit-DB catalogue": EXPLOITDB_CSV_URL,
 }
+
+#: Endpoints grandes demais para baixar num probe de saúde. O CSV do
+#: Exploit-DB tem cerca de 10 MB, e `health` pergunta se a fonte responde --
+#: não quer o conteúdo dela. Um HEAD responde exatamente isso.
+_HEAD_ONLY = frozenset({EXPLOITDB_CSV_URL})
 
 
 def health() -> None:
@@ -48,7 +55,7 @@ async def _health() -> int:
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         for name, url in ENDPOINTS.items():
             try:
-                resp = await client.get(url)
+                resp = await client.head(url) if url in _HEAD_ONLY else await client.get(url)
             except httpx.HTTPError as e:
                 # Unreachable is a failure, not a curiosity: DNS, TLS,
                 # proxy and timeout errors all land here.
