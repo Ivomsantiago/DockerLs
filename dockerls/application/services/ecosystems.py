@@ -251,7 +251,7 @@ def get_ecosystem_insights(image_reference: str) -> EcosystemInsight:
                 "Copy '/etc/ssl/certs/ca-certificates.crt' from the builder for HTTPS calls.",
             ],
             security_guidelines=[
-                "Compile com 'CGO_ENABLED=0 GOOS=linux go build -ldflags=\"-s -w\" -o app .'.",
+                "Build with 'CGO_ENABLED=0 GOOS=linux go build -ldflags=\"-s -w\" -o app .'.",
                 "On 'scratch', use 'USER 65534:65534' (nobody): there is no /etc/passwd.",
             ],
             common_pitfalls=[
@@ -277,7 +277,7 @@ def get_ecosystem_insights(image_reference: str) -> EcosystemInsight:
                 "drops over 300MB of tooling the runtime does not need.",
             ],
             security_guidelines=[
-                "Configure 'JAVA_OPTS=\"-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 "
+                "Set 'JAVA_OPTS=\"-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 "
                 "-Djava.security.egd=file:/dev/./urandom\"'.",
                 "Run as the non-root user 'appuser' (UID 10001).",
             ],

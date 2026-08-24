@@ -79,8 +79,20 @@ async def _advisor(image: str, workers: int | None, output_format: OutputFormat)
         raise typer.Exit(EXIT_ERROR)
 
     best = items[0]
-    rec = best.recommendation or build_recommendation(best)
-    insights = get_ecosystem_insights(best.image.full_reference or image)
+    # O plano de remediação é sobre a imagem que o usuário roda **hoje**,
+    # sempre que ele nomeou uma. Montá-lo sobre `best` -- a candidata que a
+    # busca elegeu -- descrevia as CVEs de outra imagem sob o título da que
+    # foi pedida: `advisor eclipse-temurin:21-jre-alpine` respondia com
+    # "Update stdlib (go1.26.5 -> 1.25.13)" e IDs `GO-...`, que não existem
+    # dentro de um JRE. Corrigir a saída não bastaria: os passos precisam
+    # nascer das vulnerabilidades que o scanner devolveu para *aquela*
+    # imagem, e é isso que a escolha do alvo aqui garante.
+    #
+    # Sem tag na linha de comando não há imagem atual, e o plano sobre a
+    # melhor candidata é o comportamento correto (e o original).
+    target = current if current is not None else best
+    rec = target.recommendation or build_recommendation(target)
+    insights = get_ecosystem_insights(target.image.full_reference or image)
     # Only when the target is genuinely a different image: a "migration"
     # from an image to itself is noise, and printing a checklist for it
     # would suggest work that does not exist.
@@ -93,6 +105,10 @@ async def _advisor(image: str, workers: int | None, output_format: OutputFormat)
     if output_format == OutputFormat.JSON:
         payload = best.model_dump()
         payload["remediation"] = rec.model_dump()
+        # Qual imagem o plano endereça, dito explicitamente: o documento
+        # carrega `best` na raiz, e sem este campo um consumidor não teria
+        # como saber que a remediação é sobre outra imagem.
+        payload["remediation_target"] = target.image.full_reference
         payload["ecosystem_insights"] = {
             "ecosystem": insights.ecosystem,
             "version": insights.version,
@@ -154,7 +170,11 @@ async def _advisor(image: str, workers: int | None, output_format: OutputFormat)
 
     if rec.steps:
         console.print()
-        console.print("[bold]Remediation Plan[/bold]")
+        # A imagem nomeada no cabeçalho: um plano cujos passos citam versões
+        # de pacote precisa dizer de qual imagem essas versões vieram.
+        console.print(
+            f"[bold]Remediation Plan[/bold] [dim]for {safe(target.image.full_reference)}[/dim]"
+        )
         console.print()
         for step in rec.steps:
             desc = step.description
