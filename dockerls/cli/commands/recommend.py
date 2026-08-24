@@ -21,6 +21,7 @@ from dockerls.cli.dependencies import (
 from dockerls.cli.image_names import display_reference, reject_tagged_reference
 from dockerls.cli.options import OutputFormat, parse_output_format
 from dockerls.cli.progress import RichScanObserver
+from dockerls.cli.scan_failure import short_reason
 from dockerls.cli.text import safe
 from dockerls.cli.validators import check_limit, check_threshold, check_workers
 from dockerls.domain.value_objects.confidence import Confidence
@@ -557,21 +558,6 @@ def _print_divergences(analyses: list[ImageAnalysis]) -> None:
         console.print(f"  {safe(a.image.full_reference)}: [dim]{safe(a.scan_divergence)}[/dim]")
 
 
-REASON_MAX_LEN = 90
-
-
-def _short_reason(reason: str) -> str:
-    """Collapse a multi-line scanner stderr dump into one readable line.
-
-    The untruncated text is in the log file and in `--format json`; the
-    terminal only needs enough to tell failures apart.
-    """
-    collapsed = " ".join(reason.split())
-    if len(collapsed) <= REASON_MAX_LEN:
-        return collapsed
-    return collapsed[: REASON_MAX_LEN - 3] + "..."
-
-
 def _print_unverified(result: AnalysisResult) -> None:
     """List the tags that could not be scanned, grouped by classified cause.
 
@@ -597,7 +583,7 @@ def _print_unverified(result: AnalysisResult) -> None:
     for item in result.unverified[:10]:
         console.print(
             f"  {safe(item.image_reference)}  "
-            f"[dim]{safe(item.kind)}: {safe(_short_reason(item.reason))}[/dim]"
+            f"[dim]{safe(item.kind)}: {safe(short_reason(item.reason))}[/dim]"
         )
     remaining = len(result.unverified) - 10
     if remaining > 0:

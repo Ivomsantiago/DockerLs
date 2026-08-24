@@ -110,7 +110,7 @@ recebe nível e não entra na recomendação.
 | [`advisor`](#advisor) | Plano de correção completo para a melhor imagem (e migração, se você passar uma tag) | `0` / `1` |
 | [`alternatives`](#alternatives) | Alternativas mais seguras para a imagem que você já roda, com trade-offs | `0` `1` `2` |
 | [`analyze`](#analyze) | Análise profunda de uma tag: CVEs, CVSS, origem, correção | `0` `1` `2` |
-| [`compare`](#compare) | Compara duas ou mais imagens lado a lado | `0` / `1` |
+| [`compare`](#compare) | Compara duas ou mais imagens lado a lado | `0` `1` `2` `3` |
 | [`sbom`](#sbom) | Gera SBOM (CycloneDX ou SPDX) via Trivy | `0` / `1` |
 | [`export`](#export) | Exporta o relatório em JSON/CSV/HTML/Markdown/SARIF | `0` / `1` |
 | [`analyze-dockerfile`](#analyze-dockerfile) | Valida um Dockerfile contra regras de hardening | `0` `1` `2` |
@@ -638,6 +638,25 @@ Comparação lado a lado de duas ou mais imagens.
 ```bash
 dockerls compare node:22-alpine node:22-bookworm-slim
 ```
+
+Uma imagem que não pôde ser escaneada **nunca** aparece na tabela com score
+ou tier. Ela sai numa seção `Failed (not compared)` à parte, com a causa
+classificada (`NOT_FOUND`, `AUTH_REQUIRED`, ...), e a comparação segue com
+as que foram medidas. O motivo é o de sempre: um scan que não rodou produz
+score `0.0` e tier `F` por construção, e imprimir esses valores numa linha
+da tabela afirma que a imagem foi medida e foi mal -- que é precisamente a
+substituição que esta ferramenta existe para não fazer.
+
+| Exit code | Significado |
+|---|---|
+| `0` | comparação completa: toda imagem pedida foi escaneada |
+| `1` | erro rígido: menos de duas imagens na linha de comando, ou nenhuma pôde ser escaneada |
+| `2` | comparação parcial: duas ou mais foram escaneadas, uma ou mais falharam |
+| `3` | dado insuficiente: só uma imagem pôde ser escaneada, não há o que comparar |
+
+`2` é o código a observar num pipeline que exige comparação completa: ele
+distingue "comparei tudo" de "comparei o que deu", coisa que o `0` anterior
+não permitia -- a comparação parcial saía silenciosamente como sucesso.
 
 ### export
 

@@ -15,6 +15,7 @@ from dockerls.application.services.remediation import (
     render_dockerfile_patch,
 )
 from dockerls.cli.dependencies import build_analyze_use_case
+from dockerls.cli.scan_failure import describe_scan_failure
 from dockerls.cli.text import safe
 from dockerls.cli.vulnerability_view import (
     count_by_origin,
@@ -135,9 +136,14 @@ async def _analyze(
     if not result.scan.is_verified:
         # Sem scan não há veredito. Sair 0 aqui deixaria um portão de CI
         # passar uma imagem que ninguém mediu.
+        #
+        # A causa vai resumida: o stderr cru do Trivy para uma tag
+        # inexistente ocupa várias linhas e menciona o socket do Docker,
+        # que este modo de scan nem usa. O texto completo continua no
+        # arquivo de log e em `--format json`.
         console.print(
-            f"[red]Scan did not complete for {result.image.full_reference}:[/red] "
-            f"{result.scan.error_kind.value} -- {result.scan.error_message or 'no details'}"
+            f"[red]Scan did not complete for {safe(result.image.full_reference)}:[/red] "
+            f"{safe(describe_scan_failure(result.scan.error_kind, result.scan.error_message))}"
         )
         raise typer.Exit(EXIT_ERROR)
 

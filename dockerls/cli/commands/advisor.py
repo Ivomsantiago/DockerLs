@@ -14,6 +14,7 @@ from dockerls.application.services.migration import MigrationPlan, plan_migratio
 from dockerls.application.use_cases.recommend_images import build_recommendation
 from dockerls.cli.dependencies import build_analyze_use_case, build_recommend_use_case
 from dockerls.cli.options import OutputFormat, parse_output_format
+from dockerls.cli.scan_failure import describe_scan_failure
 from dockerls.cli.text import safe
 from dockerls.cli.validators import check_workers
 from dockerls.exit_codes import EXIT_ERROR
@@ -192,10 +193,21 @@ async def _analyze_current(reference: str) -> ImageAnalysis | None:
     """
     use_case = await build_analyze_use_case()
     try:
-        return await use_case.execute(reference)
+        analysis = await use_case.execute(reference)
     except (ValueError, RuntimeError) as e:
         diagnostics.print(f"[yellow]Could not analyze {reference} for comparison: {e}[/yellow]")
         return None
+
+    # Um scan que não completou devolve score 0.0 e tier F por construção.
+    # Aceitá-lo como medição faria o plano de migração afirmar uma melhora
+    # sobre um número que não mede nada.
+    if not analysis.scan.is_verified:
+        cause = describe_scan_failure(analysis.scan.error_kind, analysis.scan.error_message)
+        diagnostics.print(
+            f"[yellow]Could not analyze {safe(reference)} for comparison: {safe(cause)}[/yellow]"
+        )
+        return None
+    return analysis
 
 
 def _print_migration(plan: MigrationPlan) -> None:
