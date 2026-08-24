@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dockerls.application.dto.analysis import ComparisonResult, ImageAnalysis
+from dockerls.application.dto.analysis import (
+    ComparisonResult,
+    ImageAnalysis,
+    UnverifiedImage,
+)
 from dockerls.application.services.teardown import close_quietly
 
 if TYPE_CHECKING:
@@ -24,13 +28,29 @@ class CompareImagesUseCase:
             await close_quietly(self._analyze)
 
     async def _compare(self, references: list[str]) -> ComparisonResult:
+        # A separação acontece aqui, antes de qualquer conta: uma imagem que
+        # não pôde ser escaneada não tem score para comparar, e deixá-la
+        # entrar no `max()` abaixo permitia que ela fosse *escolhida* como
+        # vencedora contra um campo de imagens igualmente não medidas -- ou,
+        # pior, que servisse de piso para o delta de quem foi medido.
         analyses: list[ImageAnalysis] = []
+        unverified: list[UnverifiedImage] = []
         for ref in references:
             analysis = await self._analyze.execute(ref)
-            analyses.append(analysis)
+            if analysis.scan.is_verified:
+                analyses.append(analysis)
+                continue
+            unverified.append(
+                UnverifiedImage(
+                    image_reference=analysis.image.full_reference or ref,
+                    status=analysis.scan.status.value,
+                    reason=analysis.scan.error_message or "no details",
+                    kind=analysis.scan.error_kind.value,
+                )
+            )
 
         if not analyses:
-            return ComparisonResult(images=[])
+            return ComparisonResult(images=[], unverified=unverified)
 
         winner = max(analyses, key=lambda a: a.security_score)
 
@@ -67,4 +87,5 @@ class CompareImagesUseCase:
             ),
             common_vulns=common_vulns,
             unique_vulns=unique_vulns,
+            unverified=unverified,
         )

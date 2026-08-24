@@ -36,6 +36,7 @@ from dockerls.cli.dependencies import build_analyze_use_case, build_recommend_us
 from dockerls.cli.image_names import display_reference
 from dockerls.cli.options import OutputFormat, parse_output_format
 from dockerls.cli.progress import RichScanObserver
+from dockerls.cli.scan_failure import describe_scan_failure
 from dockerls.cli.text import safe
 from dockerls.cli.validators import check_workers
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK
@@ -173,13 +174,27 @@ async def _alternatives(
 
 
 async def _analyze_current(reference: str) -> ImageAnalysis | None:
-    """Scan the image the user runs today, or return None if it cannot be."""
+    """Scan the image the user runs today, or return None if it cannot be.
+
+    A falha do scan chega de duas formas, e as duas significam a mesma
+    coisa aqui. Uma exceção é o caso antigo; o caso comum é um
+    `ImageAnalysis` cujo scan não completou, que carrega score 0.0 e tier F
+    por construção. Tratar o segundo como medição faria a baseline desta
+    comparação valer zero, e toda alternativa apareceria como uma melhoria
+    enorme sobre uma imagem que ninguém mediu.
+    """
     use_case = await build_analyze_use_case()
     try:
-        return await use_case.execute(reference)
+        analysis = await use_case.execute(reference)
     except (ValueError, RuntimeError) as e:
         diagnostics.print(f"[yellow]Could not analyze {reference}: {e}[/yellow]")
         return None
+
+    if not analysis.scan.is_verified:
+        cause = describe_scan_failure(analysis.scan.error_kind, analysis.scan.error_message)
+        diagnostics.print(f"[yellow]Could not analyze {safe(reference)}: {safe(cause)}[/yellow]")
+        return None
+    return analysis
 
 
 def _report_unmeasurable(reference: str, output_format: OutputFormat) -> None:

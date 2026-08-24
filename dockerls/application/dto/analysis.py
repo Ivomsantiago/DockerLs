@@ -208,8 +208,22 @@ class AnalysisResult(BaseModel):
 
 
 class ComparisonResult(BaseModel):
+    """O que a comparação mediu, e o que ela não conseguiu medir.
+
+    `images` carrega **apenas** as imagens cujo scan completou. Uma imagem
+    que ninguém conseguiu escanear não entra aqui em hipótese alguma: ela
+    tem `security_score` 0.0 e tier F por construção (o fallback de
+    `AnalyzeImageUseCase`), e uma linha na tabela de comparação com esses
+    valores afirma que a imagem foi medida e foi mal -- que é exatamente a
+    substituição que esta ferramenta existe para não fazer. As que
+    falharam ficam em `unverified`, com a causa classificada.
+    """
+
     images: list[ImageAnalysis]
     winner: str = ""
     summary: str = ""
     common_vulns: list[Vulnerability] = []
     unique_vulns: dict[str, list[Vulnerability]] = {}
+    #: As referências pedidas que não puderam ser medidas, na ordem em que
+    #: foram pedidas. Nunca recebem score nem tier.
+    unverified: list[UnverifiedImage] = []
