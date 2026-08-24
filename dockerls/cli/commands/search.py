@@ -8,6 +8,7 @@ from rich.table import Table
 
 from dockerls.application.services.source_registry import UnknownSourceError
 from dockerls.cli.dependencies import build_search_use_case
+from dockerls.cli.image_names import reject_tagged_reference
 from dockerls.cli.validators import check_limit
 from dockerls.exit_codes import EXIT_ERROR
 
@@ -15,7 +16,12 @@ console = Console()
 
 
 def search(
-    image: str = typer.Argument(help="Docker image name (e.g., node, python, nginx)"),
+    image: str = typer.Argument(
+        help=(
+            "Docker image name only, without a tag (e.g. 'node', not 'node:18'). "
+            "Use 'analyze' or 'advisor' for a specific tag."
+        )
+    ),
     limit: int = typer.Option(100, "--limit", "-l", help="Maximum tags to retrieve"),
     source: list[str] = typer.Option(
         [],
@@ -32,6 +38,10 @@ def search(
 ) -> None:
     """Search for available tags of an image, on Docker Hub or any configured source."""
     limit = check_limit(limit)
+    error = reject_tagged_reference(image, "search")
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(EXIT_ERROR)
     try:
         asyncio.run(_search(image, limit, list(source) or None, all_sources))
     except UnknownSourceError as e:

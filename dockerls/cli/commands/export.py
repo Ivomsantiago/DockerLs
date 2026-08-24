@@ -7,6 +7,7 @@ import typer
 from rich.console import Console
 
 from dockerls.cli.dependencies import build_recommend_use_case, resolve_tag_limit
+from dockerls.cli.image_names import reject_tagged_reference
 from dockerls.cli.validators import check_limit, check_workers
 from dockerls.exit_codes import EXIT_ERROR
 from dockerls.exporters.factory import ExporterFactory
@@ -15,7 +16,12 @@ console = Console()
 
 
 def export(
-    image: str = typer.Argument(help="Docker image name"),
+    image: str = typer.Argument(
+        help=(
+            "Docker image name only, without a tag (e.g. 'node', not 'node:18'). "
+            "Use 'analyze' or 'advisor' for a specific tag."
+        )
+    ),
     output_format: str = typer.Option(
         "json", "--format", "-f", help="Export format: json, csv, html, markdown, sarif"
     ),
@@ -34,6 +40,10 @@ def export(
         workers = check_workers(workers)
     if limit is not None:
         limit = check_limit(limit)
+    error = reject_tagged_reference(image, "export")
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(EXIT_ERROR)
     try:
         asyncio.run(_export(image, output_format, output, workers, limit))
     except ValueError as e:

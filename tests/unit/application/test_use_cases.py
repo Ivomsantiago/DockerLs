@@ -222,6 +222,23 @@ class TestAnalyzeImage:
         assert uc._parse_reference("node:22-alpine") == ("node", "22-alpine")
         assert uc._parse_reference("python") == ("python", "latest")
 
+    @pytest.mark.asyncio
+    async def test_a_failed_scan_never_raises_the_raw_securityscore_error(self, tags):
+        """`SecurityScore` raises on anything but an OK/PARTIAL scan; that
+        used to bubble straight out of `execute` and land on the CLI as
+        'Scan failed: {raw error_message}', bypassing the classified
+        error_kind messaging entirely. A failed scan must instead come back
+        as an ImageAnalysis the caller can inspect via `scan.is_verified`."""
+        uc = AnalyzeImageUseCase(
+            repository=MockRepo(tags),
+            scanner=MockScanner(status=ScanStatus.ERROR),
+            eol_checker=MockEOL(),
+        )
+        result = await uc.execute("node:does-not-exist")
+        assert result.scan.is_verified is False
+        assert result.security_score == 0.0
+        assert result.production_ready is False
+
 
 class TestCompareImages:
     @pytest.mark.asyncio

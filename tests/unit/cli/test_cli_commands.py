@@ -65,6 +65,29 @@ class TestSearchCommand:
             result = runner.invoke(app, ["search", "nope"])
         assert result.exit_code == 1
 
+    def test_search_rejects_an_image_tag_with_a_clear_message(self):
+        """`node:18` used to be looked up as a literal (nonexistent)
+        repository name and fail with an opaque "No tags found"."""
+        result = runner.invoke(app, ["search", "node:18"])
+        collapsed = " ".join(result.stdout.split())
+        assert result.exit_code == 1
+        assert "dockerls search node" in collapsed
+        assert "dockerls analyze node:18" in collapsed
+        assert "No tags found" not in collapsed
+
+    def test_search_still_accepts_a_private_registry_with_a_port(self):
+        repo = AsyncMock()
+        repo.search_tags = AsyncMock(
+            return_value=[DockerImage(name="registry.internal:5000/app", tag="1.0")]
+        )
+        with patch(
+            "dockerls.cli.commands.search.build_search_use_case",
+            AsyncMock(return_value=SearchImagesUseCase(repo)),
+        ):
+            result = runner.invoke(app, ["search", "registry.internal:5000/app"])
+        assert result.exit_code == 0
+        repo.search_tags.assert_awaited_once()
+
 
 class TestAnalyzeCommand:
     def test_analyze_prints_results(self):

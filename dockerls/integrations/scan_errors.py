@@ -36,7 +36,7 @@ _RULES: tuple[tuple[ScanErrorKind, re.Pattern[str]], ...] = (
         ScanErrorKind.NOT_FOUND,
         re.compile(
             r"manifest unknown|not found|no such image|repository does not exist"
-            r"|name unknown|could not find the image",
+            r"|name unknown|could not find the image|unable to find the specified image",
             re.IGNORECASE,
         ),
     ),
