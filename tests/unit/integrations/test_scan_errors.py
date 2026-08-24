@@ -32,7 +32,7 @@ _REAL_WORLD = {
     "MANIFEST_UNKNOWN: manifest unknown": ScanErrorKind.NOT_FOUND,
     "no such image: node:does-not-exist": ScanErrorKind.NOT_FOUND,
     "unable to find the specified image": ScanErrorKind.NOT_FOUND,
-    "FATAL image scan error: unable to find the specified image \"node:does-not-exist\": "
+    'FATAL image scan error: unable to find the specified image "node:does-not-exist": '
     "unable to find the specified image": ScanErrorKind.NOT_FOUND,
     "something nobody has ever seen": ScanErrorKind.UNKNOWN,
     "": ScanErrorKind.UNKNOWN,

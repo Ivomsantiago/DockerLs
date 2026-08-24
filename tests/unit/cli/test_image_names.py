@@ -41,14 +41,10 @@ class TestSplitRepositoryAndTag:
         assert split_repository_and_tag("myregistry.local/app") == ("myregistry.local/app", "")
 
     def test_digest_suffix_is_stripped_and_not_mistaken_for_a_tag(self):
-        assert split_repository_and_tag(
-            "node@sha256:" + "a" * 64
-        ) == ("node", "")
+        assert split_repository_and_tag("node@sha256:" + "a" * 64) == ("node", "")
 
     def test_tag_and_digest_together(self):
-        assert split_repository_and_tag(
-            "node:18@sha256:" + "a" * 64
-        ) == ("node", "18")
+        assert split_repository_and_tag("node:18@sha256:" + "a" * 64) == ("node", "18")
 
 
 class TestRejectTaggedReference:

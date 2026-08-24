@@ -173,7 +173,7 @@ class TestNonexistentTagShowsAClassifiedMessage:
         from dockerls.integrations.scan_errors import classify_scanner_error
 
         raw_stderr = (
-            'FATAL image scan error: unable to find the specified image '
+            "FATAL image scan error: unable to find the specified image "
             '"node:does-not-exist": unable to find the specified image'
         )
         kind = classify_scanner_error(raw_stderr)
