@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
     from dockerls.domain.interfaces.scanner import ScannerInterface
     from dockerls.infrastructure.evidence import EvidenceStore
+    from dockerls.integrations.exploitdb.client import ExploitDBClient, ExploitEntry
     from dockerls.integrations.threat_intel.client import ThreatIntelClient
 
 # How many ranked candidates are surfaced to the user.
@@ -83,6 +84,7 @@ class RecommendImagesUseCase:
         cache_ttl_seconds: int = 86400,
         hardening: HardeningAnalyzer | None = None,
         resolve_digests: bool = True,
+        exploitdb: ExploitDBClient | None = None,
     ):
         # Guarded at construction rather than only at the CLI boundary: the
         # use case is the last place that can refuse a value which would
@@ -100,6 +102,7 @@ class RecommendImagesUseCase:
         self._workers = validate_workers(workers)
         self._ignored_cves = active_ignored_cve_ids(load_ignore_rules(ignore_path))
         self._threat_intel = threat_intel
+        self._exploitdb = exploitdb
         self._observer: ScanObserver = observer or NullObserver()
         self._cross_validator = cross_validator
         self._evidence = evidence
@@ -131,6 +134,9 @@ class RecommendImagesUseCase:
             [
                 ",".join(sorted(self._ignored_cves)),
                 "threat-intel" if self._threat_intel is not None else "no-threat-intel",
+                # Uma análise enriquecida com Exploit-DB carrega campos que a
+                # anterior não tinha; servir a antiga esconderia a coluna.
+                "exploitdb" if self._exploitdb is not None else "no-exploitdb",
                 # Which tool, at which version, produced the cached numbers.
                 # Without this the cache served a Trivy result to a run using
                 # Grype, and kept serving results from before a scanner
@@ -419,7 +425,9 @@ class RecommendImagesUseCase:
                 if self._ignored_cves:
                     scan = _apply_ignore_rules(scan, self._ignored_cves)
                 if self._threat_intel is not None:
-                    scan = await _enrich_with_threat_intel(scan, self._threat_intel)
+                    scan = await _enrich_with_threat_intel(
+                        scan, self._threat_intel, self._exploitdb
+                    )
 
                 product, version = _extract_product_version(image)
                 eol_status = await _eol_status(self._eol_checker, product, version)
@@ -689,8 +697,50 @@ def _assert_verified(analyses: list[ImageAnalysis]) -> None:
         )
 
 
-async def _enrich_with_threat_intel(scan: Any, threat_intel: ThreatIntelClient) -> Any:
-    """Tag CRITICAL/HIGH vulnerabilities with CISA KEV / EPSS signal.
+async def _exploitdb_lookup(
+    exploitdb: ExploitDBClient | None, cve_ids: list[str]
+) -> dict[str, list[ExploitEntry]]:
+    """Consulta o Exploit-DB sem deixar a falha dela derrubar o resto.
+
+    O cliente já degrada sozinho, mas este comando enriquece dezenas de tags
+    em paralelo e uma exceção inesperada aqui abortaria a análise inteira de
+    uma imagem por causa de uma fonte que é, por definição, opcional.
+    """
+    if exploitdb is None:
+        return {}
+    try:
+        return await exploitdb.exploits_for(cve_ids)
+    except Exception as e:  # pragma: no cover - o cliente já trata o previsível
+        logger.warning(f"Exploit-DB lookup failed, exploit status stays UNKNOWN: {e}")
+        return {}
+
+
+def _exploitdb_fields(entries: list[ExploitEntry] | None, *, available: bool) -> dict[str, Any]:
+    """Os três campos de explorabilidade, ou nada quando nada foi consultado.
+
+    Com a fonte indisponível os campos não são tocados: o default do modelo
+    é UNKNOWN, e escrever FALSE aqui transformaria uma consulta que não
+    aconteceu numa afirmação de que não existe exploit publicado.
+    """
+    if not available:
+        return {}
+    if not entries:
+        return {"exploitdb_status": Tristate.FALSE}
+    return {
+        "exploitdb_status": Tristate.TRUE,
+        "exploitdb_ids": [e.edb_id for e in entries],
+        # Um único exploit verificado já basta: a pergunta é se existe prova
+        # reproduzida, não se todas as entradas foram reproduzidas.
+        "exploitdb_verified": any(e.verified for e in entries),
+    }
+
+
+async def _enrich_with_threat_intel(
+    scan: Any,
+    threat_intel: ThreatIntelClient,
+    exploitdb: ExploitDBClient | None = None,
+) -> Any:
+    """Tag CRITICAL/HIGH vulnerabilities with CISA KEV / EPSS / Exploit-DB signal.
 
     The enrichment records *whether the feeds answered*, not just what they
     said. With the KEV catalogue unreachable every lookup returns the empty
@@ -699,6 +749,13 @@ async def _enrich_with_threat_intel(scan: Any, threat_intel: ThreatIntelClient) 
     state that the image had no known-exploited vulnerabilities. So a
     CVE now carries `kev_status`: TRUE (listed), FALSE (catalogue answered
     and does not list it), UNKNOWN (nothing was consulted).
+
+    Exploit-DB rides the same entry point rather than a second pass: it is
+    the same question about the same CVEs, and a separate flow would mean
+    two places to keep the "absent lookup is never a negative" rule in.
+    KEV and Exploit-DB are not redundant -- KEV means observed exploitation
+    in the wild, Exploit-DB means published exploit code -- so a CVE can
+    carry one and not the other.
 
     Enrichment is attempted only for CRITICAL/HIGH findings, so anything
     below stays UNKNOWN by construction -- which is correct: it was not
@@ -714,9 +771,13 @@ async def _enrich_with_threat_intel(scan: Any, threat_intel: ThreatIntelClient) 
 
     kev_ids = await threat_intel.known_exploited(notable_ids)
     epss = await threat_intel.epss_scores(notable_ids)
+    # A falha desta fonte não pode custar o enriquecimento das outras: sem
+    # ela os CVEs ficam com `exploitdb_status` UNKNOWN e KEV/EPSS seguem.
+    exploits = await _exploitdb_lookup(exploitdb, notable_ids)
+    exploitdb_available = exploitdb is not None and bool(exploitdb.available)
     kev_available = _answered(threat_intel.kev_available, bool(kev_ids))
     epss_available = _answered(threat_intel.epss_available, bool(epss))
-    if not kev_available and not epss_available:
+    if not kev_available and not epss_available and not exploitdb_available:
         # Nothing was learned. Returning the scan untouched leaves every
         # `kev_status` at UNKNOWN, which is exactly what happened.
         logger.warning(
@@ -744,6 +805,7 @@ async def _enrich_with_threat_intel(scan: Any, threat_intel: ThreatIntelClient) 
                     "epss_known": epss_available and score is not None,
                     "epss_percentile": threat_intel.percentile_of(key),
                     "threat_intel_timestamp": timestamp,
+                    **_exploitdb_fields(exploits.get(key), available=exploitdb_available),
                 }
             )
         )

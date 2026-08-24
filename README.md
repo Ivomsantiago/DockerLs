@@ -626,6 +626,35 @@ todas as vulnerabilidades de `node:22-alpine` estão em
 npm que a imagem embute. Quando esse é o caso, a saída sugere as duas
 remediações concretas.
 
+**A coluna `Threat` diz se há exploração conhecida.** Dois sinais dividem a
+célula porque respondem à mesma pergunta por ângulos diferentes -- e uma CVE
+pode estar num e não no outro:
+
+| Valor | Significado |
+|---|---|
+| `KEV` | a CISA observou exploração real desta CVE em produção |
+| `EDB` | há exploit publicado no Exploit-DB, ainda não verificado |
+| `EDB*` | há exploit publicado **e verificado** (alguém reproduziu) |
+| `KEV+EDB` / `KEV+EDB*` | os dois |
+| `No` | as fontes responderam e nenhuma lista esta CVE |
+| `-` | nada foi consultado -- fonte fora do ar, ou `DOCKERLS_ENABLE_THREAT_INTEL=false` |
+
+O `-` e o `No` **não** são a mesma coisa, e essa é a razão de a coluna existir
+em três estados. Com a fonte indisponível, imprimir `No` afirmaria que não
+existe exploit conhecido a partir de uma consulta que nunca aconteceu.
+
+O Exploit-DB é consultado pelo `files_exploits.csv` que o próprio projeto
+publica -- o mesmo arquivo que o `searchsploit` lê --, cacheado por 24h. Não há
+scraping do site, e o match é **estritamente CVE-ID contra CVE-ID**: buscar por
+nome de pacote produziria falsos positivos, porque um exploit de 2015 para uma
+versão antiga de um pacote não diz nada sobre a CVE que o scanner achou nesta
+imagem hoje. Os EDB-IDs saem linkados abaixo da tabela, e em `--format json`
+como `exploitdb_status`, `exploitdb_ids` e `exploitdb_verified`.
+
+Nesta versão a explorabilidade é **informação exibida, não fator de
+pontuação**: o Security Score, o Tier e o Remediation Score não mudam por causa
+dela.
+
 O ID da CVE nunca é truncado: ele é a chave primária do achado, e `CVE-2026…`
 não pode ser consultado em lugar nenhum. Num terminal estreito quem cede
 largura são as colunas de pacote e versão. Use `--wide` para renderizar a

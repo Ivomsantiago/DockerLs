@@ -24,6 +24,7 @@ from dockerls.integrations.dhi.catalog import DHICatalogClient
 from dockerls.integrations.dhi.repository import DHI, DHIRepository
 from dockerls.integrations.dockerhub.client import DockerHubClient
 from dockerls.integrations.endoflife.checker import EndOfLifeChecker
+from dockerls.integrations.exploitdb.client import ExploitDBClient
 from dockerls.integrations.registry.hardened import (
     CHAINGUARD,
     DISTROLESS,
@@ -171,6 +172,22 @@ def _threat_intel() -> ThreatIntelClient | None:
     if not s.enable_threat_intel:
         return None
     return ThreatIntelClient(timeout=s.http_timeout)
+
+
+@lru_cache(maxsize=1)
+def _exploitdb() -> ExploitDBClient | None:
+    """O catálogo do Exploit-DB, atrás da mesma chave que KEV/EPSS.
+
+    Segue `enable_threat_intel` porque responde à mesma pergunta -- quão
+    explorável é isto -- e quem desliga o enriquecimento não quer que este
+    fique de fora. Ao contrário do `ThreatIntelClient`, recebe o cache em
+    disco: o CSV tem cerca de 10 MB, e rebaixá-lo a cada invocação seria
+    pagar o download inteiro para reler o mesmo dia de catálogo.
+    """
+    s = _settings()
+    if not s.enable_threat_intel:
+        return None
+    return ExploitDBClient(timeout=s.http_timeout, cache=build_cache(), guard=build_host_guard())
 
 
 def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
@@ -356,6 +373,7 @@ async def build_recommend_use_case(
         max_medium=max_medium,
         workers=workers,
         threat_intel=_threat_intel(),
+        exploitdb=_exploitdb(),
         observer=observer,
         cross_validator=CrossValidator(
             secondary,
@@ -420,6 +438,7 @@ async def build_analyze_use_case() -> AnalyzeImageUseCase:
         scanner=scanner,
         eol_checker=eol,
         threat_intel=_threat_intel(),
+        exploitdb=_exploitdb(),
         hardening=build_hardening_analyzer(),
     )
 

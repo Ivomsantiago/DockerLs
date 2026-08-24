@@ -19,9 +19,12 @@ from dockerls.cli.scan_failure import describe_scan_failure
 from dockerls.cli.text import safe
 from dockerls.cli.vulnerability_view import (
     count_by_origin,
+    exploit_urls,
     npm_remediation_hint,
     origin_label,
     sort_by_severity,
+    threat_label,
+    threat_style,
 )
 from dockerls.domain.entities.vulnerability import PackageOrigin, Vulnerability
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_POLICY
@@ -299,6 +302,11 @@ def _render_table(result: ImageAnalysis, wide: bool) -> None:
         # too narrow, they are what shrinks.
         vtable.add_column("Package", overflow="ellipsis", ratio=1)
         vtable.add_column("Origin", style="magenta", overflow="ellipsis")
+        # Explorabilidade: KEV e Exploit-DB numa coluna só. Ambos os sinais
+        # já existiam no modelo e nunca chegavam à tabela -- ver
+        # `threat_label` para o motivo de dividirem uma célula, e para o
+        # motivo de "não consultado" nunca virar "No".
+        vtable.add_column("Threat", justify="center", no_wrap=True)
         vtable.add_column("Installed", overflow="ellipsis", ratio=1)
         vtable.add_column("Fixed", overflow="ellipsis", ratio=1)
         vtable.add_column("Status")
@@ -318,6 +326,8 @@ def _render_table(result: ImageAnalysis, wide: bool) -> None:
             # from inside the image being analysed. Rich would interpret
             # bracket markup in any of them, so a crafted package name could
             # style a CRITICAL row to look benign.
+            threat = threat_label(v)
+            tstyle = threat_style(v)
             vtable.add_row(
                 safe(v.cve_id),
                 f"[{st}]{v.severity.value}[/{st}]" if st else v.severity.value,
@@ -325,12 +335,14 @@ def _render_table(result: ImageAnalysis, wide: bool) -> None:
                 safe(v.cvss_source) if v.cvss_source else "-",
                 safe(v.package_name),
                 origin_label(v),
+                f"[{tstyle}]{threat}[/{tstyle}]",
                 safe(v.installed_version),
                 safe(v.fixed_version) if v.fixed_version else "-",
                 f"[{status_style}]{status}[/{status_style}]",
             )
         _print_vulnerabilities(vtable, wide)
         _print_origin_summary(result.scan.vulnerabilities)
+        _print_exploit_links(result.scan.vulnerabilities)
 
 
 def _fixable_pct(scan: ScanResult) -> str:
@@ -384,3 +396,29 @@ def _print_origin_summary(vulns: list[Vulnerability]) -> None:
     hint = npm_remediation_hint(vulns)
     if hint:
         console.print(f"\n[bold yellow]Remediation[/bold yellow]\n{hint}")
+
+
+def _print_exploit_links(vulns: list[Vulnerability]) -> None:
+    """Onde ler o exploit, para quem quer julgar a fonte em vez de confiar
+    na coluna.
+
+    Abaixo da tabela, e não dentro dela: uma URL não cabe numa célula, e a
+    decisão que a coluna sustenta ("isto tem exploit publicado?") é anterior
+    à de abrir o link.
+    """
+    linked = [(v, exploit_urls(v)) for v in sort_by_severity(vulns)]
+    linked = [(v, urls) for v, urls in linked if urls]
+    if not linked:
+        return
+
+    console.print("\n[bold]Published exploits[/bold]")
+    for vuln, urls in linked[:10]:
+        mark = " [red](verified)[/red]" if vuln.exploitdb_verified else ""
+        console.print(f"  {safe(vuln.cve_id)}{mark}")
+        for url in urls[:5]:
+            # soft_wrap: uma URL quebrada na largura do terminal deixa de ser
+            # copiável, que é a única coisa que se faz com ela.
+            console.print(f"    [link={url}]{url}[/link]", soft_wrap=True)
+    remaining = len(linked) - 10
+    if remaining > 0:
+        console.print(f"  [dim]... and {remaining} more (see --format json)[/dim]")

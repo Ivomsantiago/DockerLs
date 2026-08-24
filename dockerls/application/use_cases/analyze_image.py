@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from dockerls.domain.interfaces.eol_checker import EOLCheckerInterface
     from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
     from dockerls.domain.interfaces.scanner import ScannerInterface
+    from dockerls.integrations.exploitdb.client import ExploitDBClient
     from dockerls.integrations.threat_intel.client import ThreatIntelClient
 
 
@@ -35,6 +36,7 @@ class AnalyzeImageUseCase:
         ignore_path: Path | None = None,
         threat_intel: ThreatIntelClient | None = None,
         hardening: HardeningAnalyzer | None = None,
+        exploitdb: ExploitDBClient | None = None,
     ):
         self._repository = repository
         self._scanner = scanner
@@ -42,6 +44,7 @@ class AnalyzeImageUseCase:
         self._ignored_cves = active_ignored_cve_ids(load_ignore_rules(ignore_path))
         self._threat_intel = threat_intel
         self._hardening = hardening
+        self._exploitdb = exploitdb
 
     async def execute(self, image_reference: str) -> ImageAnalysis:
         name, tag = self._parse_reference(image_reference)
@@ -57,7 +60,7 @@ class AnalyzeImageUseCase:
             if len(filtered) != len(scan.vulnerabilities):
                 scan = scan.model_copy(update={"vulnerabilities": filtered})
         if self._threat_intel is not None:
-            scan = await _enrich_with_threat_intel(scan, self._threat_intel)
+            scan = await _enrich_with_threat_intel(scan, self._threat_intel, self._exploitdb)
 
         product = name.split("/")[-1]
         match = re.match(r"^\d+(?:\.\d+){0,3}", tag)

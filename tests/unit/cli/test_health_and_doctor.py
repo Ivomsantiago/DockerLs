@@ -71,6 +71,7 @@ class TestHealthDetectsOutages:
             "endoflife.date",
             "cisa.gov",
             "first.org",
+            "gitlab.com",
         )
         result = _run_health(monkeypatch, _responder(dict.fromkeys(all_hosts, "error")))
 

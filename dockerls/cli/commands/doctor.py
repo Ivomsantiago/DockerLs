@@ -49,6 +49,28 @@ def _print_sources() -> None:
     console.print(f"  [dim]accepted: {', '.join(available_source_names())}, all[/dim]")
 
 
+def _print_threat_sources() -> None:
+    """As fontes de explorabilidade que enriquecem cada achado.
+
+    Listadas aqui porque nenhuma delas é obrigatória e todas degradam para
+    "não consultado" em silêncio: sem esta linha, um usuário atrás de um
+    proxy vê a coluna Threat cheia de `-` sem nada dizendo por quê.
+    `dockerls health` é quem testa se respondem.
+    """
+    console.print("\n[bold]Threat intelligence[/bold] [dim](optional enrichment)[/dim]")
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Source", style="bold cyan")
+    table.add_column("Detail")
+    table.add_row("CISA KEV", "vulnerabilities observed being exploited in the wild")
+    table.add_row("EPSS (FIRST)", "predicted probability of exploitation")
+    table.add_row("Exploit-DB", "published exploit code, matched by CVE id")
+    console.print(table)
+    console.print(
+        "  [dim]All three degrade to 'not consulted' when unreachable, never to "
+        "'no exploit known'. Run `dockerls health` to test them.[/dim]"
+    )
+
+
 async def _doctor() -> int:
     console.print("[bold]DockerLs System Check[/bold]\n")
 
@@ -84,6 +106,7 @@ async def _doctor() -> int:
 
     console.print(checks)
     _print_sources()
+    _print_threat_sources()
 
     # The requirement is *a* scanner, not Trivy specifically: `ScannerFactory`
     # runs on Grype alone. Flagging a Grype-only machine as broken would have
