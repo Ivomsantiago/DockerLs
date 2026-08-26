@@ -1,0 +1,22 @@
+{
+  "_comment": "Tabela compartilhada entre as duas implementações do classificador de stderr: dockerls/integrations/scan_errors.py e engine/internal/scan/errors.go. Uma classificação que divirja entre os caminhos faria a mesma falha aparecer com causas diferentes conforme a engine Go estivesse instalada ou não -- e é justamente por causa não poder mudar conforme o caminho que este arquivo existe em vez de duas listas de casos.",
+  "cases": [
+    {"message": "", "kind": "UNKNOWN"},
+    {"message": "   ", "kind": "UNKNOWN"},
+    {"message": "toomanyrequests: retry later", "kind": "RATE_LIMITED"},
+    {"message": "429 Too Many Requests", "kind": "RATE_LIMITED"},
+    {"message": "You have reached your pull rate limit", "kind": "RATE_LIMITED"},
+    {"message": "UNAUTHORIZED: authentication required", "kind": "AUTH_REQUIRED"},
+    {"message": "denied: requested access to the resource is denied", "kind": "AUTH_REQUIRED"},
+    {"message": "unexpected status: 403 Forbidden", "kind": "AUTH_REQUIRED"},
+    {"message": "MANIFEST_UNKNOWN: manifest unknown", "kind": "NOT_FOUND"},
+    {"message": "could not find the image", "kind": "NOT_FOUND"},
+    {"message": "name unknown: repository does not exist", "kind": "NOT_FOUND"},
+    {"message": "DB error: failed to download vulnerability DB", "kind": "DB_INIT_FAILED"},
+    {"message": "cache may be in use by another process: timeout", "kind": "DB_INIT_FAILED"},
+    {"message": "database is locked", "kind": "DB_INIT_FAILED"},
+    {"message": "context deadline exceeded", "kind": "TIMEOUT"},
+    {"message": "operation timed out", "kind": "TIMEOUT"},
+    {"message": "something nobody has seen before", "kind": "UNKNOWN"}
+  ]
+}

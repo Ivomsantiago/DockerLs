@@ -39,6 +39,7 @@ from dockerls.utils.ignore_file import active_ignored_cve_ids, load_ignore_rules
 from dockerls.utils.validation import validate_threshold, validate_workers
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from dockerls.application.services.cross_validation import CrossValidator
@@ -379,6 +380,16 @@ class RecommendImagesUseCase:
         self._metrics.unique_digests = len({_dedup_key(tag) for tag in tags})
         self._metrics.workers = self._workers
 
+        # Caminho em lote: quando a engine Go está disponível, todos os
+        # scans que faltam saem numa travessia de processo só, e
+        # `scan_cache` chega aqui já preenchido. `get_scan` abaixo então
+        # não dispara scan nenhum -- ele encontra tudo pela chave.
+        #
+        # `prefetched` são as análises que já estavam no cache do disco: o
+        # lote tem de perguntar por elas *antes* de medir, ou um run
+        # inteiramente cacheado voltaria a escanear cem imagens.
+        prefetched, batched = await self._prescan(tags, scan_cache, _dedup_key)
+
         async def get_scan(image: DockerImage) -> Any:
             key = _dedup_key(image)
             lock = scan_locks.setdefault(key, asyncio.Lock())
@@ -409,7 +420,13 @@ class RecommendImagesUseCase:
             self._observer.scanning(image.full_reference)
             analysis: ImageAnalysis | None = None
             try:
-                cached = await self._get_cached(image)
+                # Já perguntado pelo lote; perguntar de novo seria uma
+                # segunda leitura do cache por imagem.
+                cached = (
+                    prefetched.get(image.full_reference)
+                    if batched
+                    else await self._get_cached(image)
+                )
                 if cached:
                     self._metrics.cache_hits += 1
                     analysis = cached
@@ -464,6 +481,71 @@ class RecommendImagesUseCase:
         self._observer.start(len(tags))
         results = await asyncio.gather(*[analyze_tag(tag) for tag in tags])
         return [r for r in results if r is not None], unverified, errors
+
+    async def _prescan(
+        self,
+        tags: list[DockerImage],
+        scan_cache: dict[str, Any],
+        dedup_key: Callable[[DockerImage], str],
+    ) -> tuple[dict[str, ImageAnalysis], bool]:
+        """Mede o lote inteiro de uma vez, quando a engine Go existe.
+
+        O que muda em relação ao caminho de sempre não é o scan: o Trivy
+        continua sendo o Trivy e continua custando o que custa. O que muda
+        é o entorno -- criar e colher N processos, revezar o diretório de
+        cache, coordenar o dedup por digest -- que sai de N travessias
+        Python<->processo para uma.
+
+        Devolve `(análises já em cache, se o lote aconteceu)`. Quando o
+        lote não acontece -- engine ausente, versão incompatível, qualquer
+        falha -- devolve `({}, False)` e o pipeline segue exatamente como
+        antes. A engine é uma otimização, e uma otimização que pode
+        derrubar o comando não vale o ganho.
+        """
+        batch = getattr(self._scanner, "batch", None)
+        if batch is None:
+            return {}, False
+
+        # O cache do disco vem primeiro: um run inteiramente cacheado tem
+        # de continuar fazendo zero scans, e medir para depois descobrir
+        # que a resposta já estava guardada seria o pior dos dois mundos.
+        cached_analyses = await asyncio.gather(*[self._get_cached(tag) for tag in tags])
+        prefetched = {
+            tag.full_reference: analysis
+            for tag, analysis in zip(tags, cached_analyses, strict=True)
+            if analysis is not None
+        }
+
+        pending: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for tag in tags:
+            if tag.full_reference in prefetched:
+                continue
+            key = dedup_key(tag)
+            if key in seen:
+                continue
+            seen.add(key)
+            pending.append((tag.full_reference, key))
+
+        if not pending:
+            return prefetched, True
+
+        outcome = await batch.scan_batch(pending)
+        if outcome is None:
+            # A engine recusou o lote. As análises já lidas do cache não se
+            # perdem, mas o caminho individual precisa reler -- devolver
+            # `batched=True` aqui faria toda imagem não cacheada ser
+            # tratada como sem cache *e* sem scan.
+            return {}, False
+
+        for (_, key), result in zip(pending, outcome.results, strict=True):
+            scan_cache[key] = result
+        self._metrics.scans_performed += outcome.scans_performed
+        logger.info(
+            f"Go engine measured {len(pending)} targets in {outcome.wall_seconds:.1f}s "
+            f"({outcome.scans_performed} scans, {outcome.duplicates_collapsed} collapsed)"
+        )
+        return prefetched, True
 
     async def _finalize(
         self, pool: list[ImageAnalysis], unverified: list[UnverifiedImage]
