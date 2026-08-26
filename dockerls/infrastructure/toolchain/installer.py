@@ -12,7 +12,12 @@ O caminho aqui faz o que aquele script faria, verificando:
 3. confere o SHA-256 do arquivo contra a linha correspondente;
 4. confere também a assinatura, *se* receber um verificador de blob -- o
    gancho existe (`verify_blob`), e hoje nada o implementa, então o checksum
-   publicado é toda a verificação;
+   publicado é toda a verificação. O caminho para implementá-lo está aberto:
+   o Grype publica `checksums.txt.sig` e `checksums.txt.pem` ao lado do
+   `checksums.txt` (ver `install.sh`, `github_release_asset_url ...
+   "checksums.txt.sig"`), que é o que `cosign verify-blob` consome. O
+   `CosignClient` deste projeto só sabe verificar referência de imagem, e
+   por isso não serve aqui;
 5. extrai **apenas** o binário, para um diretório do usuário.
 
 Nada baixado é executado. A extração é feita pelo `tarfile`/`zipfile` do
