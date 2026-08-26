@@ -11,6 +11,7 @@ from dockerls.application.use_cases.recommend_images import (
     _eol_status,
 )
 from dockerls.domain.entities.image import DockerImage
+from dockerls.domain.value_objects.image_reference import split_repository_and_tag
 from dockerls.domain.value_objects.remediation_score import RemediationScore
 from dockerls.domain.value_objects.security_score import SecurityScore
 from dockerls.domain.value_objects.security_tier import SecurityTier
@@ -51,6 +52,12 @@ class AnalyzeImageUseCase:
         image = await self._repository.get_image_metadata(name, tag)
         if not image:
             image = DockerImage(name=name, tag=tag)
+            if "@" in image_reference:
+                # Um digest é a identidade exata de um conjunto de bytes, e
+                # `name:tag` não o reproduz: reconstruir mandaria o scanner
+                # medir `node:latest` no lugar do digest que foi pedido --
+                # outra imagem, apresentada com o nome desta.
+                image.full_reference = image_reference
 
         scan = await self._scanner.scan(image.full_reference)
         if self._ignored_cves:
@@ -117,7 +124,16 @@ class AnalyzeImageUseCase:
         await close_quietly(self._scanner, self._hardening, *sources_of(self._repository))
 
     def _parse_reference(self, reference: str) -> tuple[str, str]:
-        if ":" in reference:
-            parts = reference.rsplit(":", 1)
-            return parts[0], parts[1]
-        return reference, "latest"
+        """Repositório e tag, sem confundir a porta do registry com uma tag.
+
+        O `rsplit(":", 1)` que morava aqui lia `registry.internal:5000/app`
+        como ("registry.internal", "5000/app") e `node@sha256:...` como
+        ("node@sha256", "..."). O alvo do scan sobrevivia por acidente --
+        `full_reference` reconstrói a string original a partir dos dois
+        pedaços errados --, mas o produto e a versão não: a consulta de
+        EOL/LTS recebia o produto "registry.internal" na versão "5000", e
+        `registry_host` perdia a porta. É a mesma regra que `search`,
+        `recommend`, `export`, `advisor` e `alternatives` já usam.
+        """
+        repository, tag = split_repository_and_tag(reference)
+        return repository, tag or "latest"

@@ -223,6 +223,30 @@ class TestAnalyzeImage:
         assert uc._parse_reference("python") == ("python", "latest")
 
     @pytest.mark.asyncio
+    async def test_a_registry_port_is_not_read_as_a_tag(self):
+        """`rsplit(":", 1)` lia `registry.internal:5000/app` como o produto
+        "registry.internal" na versão "5000", e a consulta de EOL/LTS
+        recebia isso. O alvo do scan sobrevivia por acidente."""
+        uc = AnalyzeImageUseCase(MockRepo(), MockScanner(), MockEOL())
+        assert uc._parse_reference("registry.internal:5000/app") == (
+            "registry.internal:5000/app",
+            "latest",
+        )
+        assert uc._parse_reference("localhost:5000/api:2.1") == ("localhost:5000/api", "2.1")
+
+    @pytest.mark.asyncio
+    async def test_a_digest_reference_is_scanned_as_asked(self):
+        """Reconstruir `name:tag` a partir de `node@sha256:...` mandaria o
+        scanner medir `node:latest` -- outra imagem, sob o nome desta."""
+        digest = "sha256:" + "a" * 64
+        scanner = MockScanner()
+        uc = AnalyzeImageUseCase(MockRepo(), scanner, MockEOL())
+
+        await uc.execute(f"node@{digest}")
+
+        assert scanner.calls == [f"node@{digest}"]
+
+    @pytest.mark.asyncio
     async def test_a_failed_scan_never_raises_the_raw_securityscore_error(self, tags):
         """`SecurityScore` raises on anything but an OK/PARTIAL scan; that
         used to bubble straight out of `execute` and land on the CLI as

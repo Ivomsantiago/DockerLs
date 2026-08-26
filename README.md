@@ -800,10 +800,13 @@ faria, verificando:
 1. resolve a versão publicada mais recente pela API de releases do projeto;
 2. baixa o arquivo compactado **e** o `checksums.txt` do mesmo release;
 3. confere o SHA-256 antes de qualquer extração;
-4. quando o `cosign` está no PATH, confere também a assinatura — uma assinatura
-   **inválida** aborta, e a ausência do cosign apenas deixa a verificação de
-   assinatura de fora;
-5. extrai **apenas** o binário, com `tarfile`/`zipfile` do Python, sem shell.
+4. extrai **apenas** o binário, com `tarfile`/`zipfile` do Python, sem shell.
+
+O SHA-256 publicado é toda a verificação. A assinatura cosign do release
+**não** é conferida: o `CosignClient` deste projeto verifica assinatura de
+*imagem*, e um release é um blob — o instalador tem o gancho (`verify_blob`),
+e ainda não há implementação por trás dele. Anunciar a verificação seria um
+controle de segurança que existe só no texto de ajuda.
 
 **Nada baixado é executado**, e nenhum script de instalação é buscado ou
 rodado. Um `.tar.gz` pode conter caminhos como `../../.ssh/authorized_keys`, e

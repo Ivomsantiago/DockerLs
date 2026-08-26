@@ -10,7 +10,9 @@ O caminho aqui faz o que aquele script faria, verificando:
 1. resolve a versão publicada mais recente pela API de releases do projeto;
 2. baixa o arquivo compactado **e** o `checksums.txt` do mesmo release;
 3. confere o SHA-256 do arquivo contra a linha correspondente;
-4. quando o cosign está disponível, confere também a assinatura;
+4. confere também a assinatura, *se* receber um verificador de blob -- o
+   gancho existe (`verify_blob`), e hoje nada o implementa, então o checksum
+   publicado é toda a verificação;
 5. extrai **apenas** o binário, para um diretório do usuário.
 
 Nada baixado é executado. A extração é feita pelo `tarfile`/`zipfile` do
@@ -38,6 +40,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 from loguru import logger
+
+from dockerls.infrastructure.network.host_guard import host_of_url
 
 if TYPE_CHECKING:
     from dockerls.domain.value_objects.tool_release import ReleaseAsset, ToolSpec
@@ -130,7 +134,10 @@ class ToolInstaller:
         return tag
 
     def _check_policy(self, url: str) -> None:
-        if self._guard is not None and not self._guard.allows(url):
+        # O guard decide sobre `host[:porta]`, nunca sobre a URL inteira:
+        # `hostname_of` cortaria no dois-pontos do esquema e perguntaria ao
+        # DNS por `https`, recusando todo download como se fosse política.
+        if self._guard is not None and not self._guard.allows(host_of_url(url)):
             raise InstallError(f"the network policy refuses {url}")
 
     async def install(self, plan: InstallPlan, *, cosign: object | None = None) -> InstallOutcome:
@@ -167,6 +174,17 @@ class ToolInstaller:
                 return InstallOutcome(plan.tool, installed=False, detail=str(e))
             except (OSError, httpx.HTTPError) as e:
                 return InstallOutcome(plan.tool, installed=False, detail=str(e))
+            except (tarfile.TarError, zipfile.BadZipFile, EOFError) as e:
+                # Um arquivo que o checksum aprovou mas que não abre como o
+                # formato que o nome promete. Raro, e ainda assim um
+                # resultado: sem isto a exceção escapava de um método cuja
+                # única promessa é não levantar, e `doctor --install`
+                # terminava em traceback em vez de "FAILED".
+                return InstallOutcome(
+                    plan.tool,
+                    installed=False,
+                    detail=f"{plan.asset.archive_name} could not be opened: {e}",
+                )
 
         return InstallOutcome(
             plan.tool,
@@ -188,13 +206,23 @@ class ToolInstaller:
                     fh.write(chunk)
 
     async def _fetch_text(self, url: str, limit: int) -> str:
-        async with self._client() as client:
-            resp = await client.get(url)
+        """O texto de uma resposta pequena, com o teto valendo durante.
+
+        `client.get` já teria bufferizado o corpo inteiro antes de qualquer
+        checagem, então cortar `resp.content` depois media um limite que já
+        havia sido excedido: o teto existe para bound o que uma resposta
+        inesperada faz este processo alocar, e só um stream o aplica.
+        """
+        chunks: list[bytes] = []
+        total = 0
+        async with self._client() as client, client.stream("GET", url) as resp:
             resp.raise_for_status()
-            content = resp.content[: limit + 1]
-            if len(content) > limit:
-                raise InstallError(f"{url} exceeded {limit} bytes; refusing it")
-            return content.decode("utf-8", errors="replace")
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if total > limit:
+                    raise InstallError(f"{url} exceeded {limit} bytes; refusing it")
+                chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8", errors="replace")
 
     @staticmethod
     def _expected_digest(checksums: str, archive_name: str) -> str:

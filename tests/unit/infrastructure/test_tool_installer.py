@@ -276,6 +276,32 @@ class TestNetworkFailuresAreContained:
         assert outcome.installed is False
         assert "network policy" in outcome.detail
 
+    async def test_the_real_guard_does_not_refuse_the_release_urls(self, tmp_path):
+        """Regressão: o guard julga `host[:porta]`, e recebia a URL inteira.
+
+        `hostname_of("https://github.com/...")` corta no dois-pontos do
+        esquema e devolve `https`, que não resolve para endereço nenhum, e
+        `doctor --install` recusava a si mesmo em toda máquina com política
+        de rede ligada -- que é o padrão. A allowlist evita DNS no teste.
+        """
+        from dockerls.domain.value_objects.network_policy import NetworkPolicy
+        from dockerls.infrastructure.network.host_guard import HostGuard
+
+        archive = _tarball({"trivy": BINARY})
+        plan = _plan(tmp_path)
+        installer = _installer(
+            {
+                plan.asset.archive_name: (200, archive),
+                "checksums.txt": (200, _checksums(plan.asset.archive_name, archive).encode()),
+            }
+        )
+        installer._guard = HostGuard(  # type: ignore[assignment]
+            NetworkPolicy(allowed_hosts=frozenset({"github.com"}))
+        )
+
+        outcome = await installer.install(plan)
+        assert outcome.installed is True
+
 
 class TestSignatureVerification:
     async def test_an_invalid_signature_aborts_the_install(self, tmp_path):
