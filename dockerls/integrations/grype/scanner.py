@@ -11,6 +11,7 @@ from loguru import logger
 from dockerls.domain.entities.scan_result import ScanErrorKind, ScanResult, ScanStatus
 from dockerls.domain.entities.vulnerability import Severity, Vulnerability
 from dockerls.domain.interfaces.scanner import ScannerInterface
+from dockerls.integrations.engine.batch import EngineBatchScanner
 from dockerls.integrations.scan_errors import classify_scanner_error
 from dockerls.integrations.scan_target import blocked_scan_result, blocked_target_reason
 from dockerls.utils.executables import ExecutableNotFoundError, resolve_executable
@@ -32,14 +33,51 @@ class GrypeScanner(ScannerInterface):
         timeout: int = 300,
         evidence: EvidenceStore | None = None,
         guard: HostGuard | None = None,
+        workers: int = 1,
     ):
         self._timeout = timeout
         self._evidence = evidence
         self._version: str | None = None
         self._skip_db_update = False
+        self._batch: EngineBatchScanner | None = None
+        self._workers = max(1, workers)
         # Grype pulls the image itself, so the reference has to clear the
         # network policy here or it never clears it at all.
         self._guard = guard
+
+    @property
+    def batch(self) -> EngineBatchScanner:
+        """O caminho em lote, quando a engine Go estiver disponível.
+
+        O Grype não tem `--cache-dir`: a base dele mora num diretório único
+        e o que desliga a atualização automática são variáveis de ambiente.
+        Por isso o lote vai sem diretórios de cache e com o mesmo par de
+        variáveis que o caminho individual usa -- e a engine sabe que, sem
+        o lock BoltDB do Trivy, não há motivo para serializar.
+        """
+        if self._batch is None:
+            self._batch = EngineBatchScanner(
+                scanner="grype",
+                timeout_seconds=float(self._timeout),
+                skip_db_update=self._skip_db_update,
+                workers=self._workers,
+                guard=self._guard,
+                evidence=self._evidence,
+                raw_dir=None,
+                # Só o par que interessa, e nunca `_scan_env()`: aquele
+                # devolve `os.environ.copy()` inteiro, e mandá-lo pela
+                # fronteira escreveria DOCKERHUB_TOKEN e companhia dentro
+                # de um documento JSON. A engine soma o que recebe ao
+                # ambiente que ela própria herdou.
+                env=self._batch_env(),
+            )
+        return self._batch
+
+    def _batch_env(self) -> dict[str, str]:
+        """As variáveis que o lote precisa, e só elas."""
+        if not self._skip_db_update:
+            return {}
+        return {"GRYPE_DB_AUTO_UPDATE": "false", "GRYPE_CHECK_FOR_APP_UPDATE": "false"}
 
     async def is_available(self) -> bool:
         return shutil.which("grype") is not None

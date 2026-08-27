@@ -5,9 +5,15 @@ Orquestração de scans em Go, dirigida pela CLI Python.
 ## O que ela é
 
 Um binário que recebe um lote de referências de imagem por stdin (JSON),
-dispara o Trivy sobre elas com paralelismo limitado e rodízio de diretório
-de cache, e devolve um documento JSON pelo stdout. Uma execução por run,
-não uma por scan.
+dispara o **Trivy ou o Grype** sobre elas com paralelismo limitado e
+rodízio de diretório de cache, e devolve um documento JSON pelo stdout. Uma
+execução por run, não uma por scan.
+
+O que difere entre os dois scanners fica inteiramente aqui dentro: o argv, a
+forma do JSON, e o fato de que o Trivy toma um lock BoltDB no cache (e por
+isso serializa sem `--cache-dir` isolado) enquanto o Grype não tem esse lock
+e desliga a atualização da base por variável de ambiente. Do lado Python os
+dois são o mesmo lote.
 
     echo '{"version":1,"scanner":"trivy","scanner_path":"/usr/bin/trivy",
            "workers":8,"timeout_seconds":300,

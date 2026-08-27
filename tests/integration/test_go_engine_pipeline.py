@@ -220,3 +220,104 @@ def test_the_test_module_itself_would_notice_a_missing_binary():
             f"\nNOTE: {ENGINE_BINARY} is absent; the Go engine tests did not run.",
             file=sys.stderr,
         )
+
+
+GRYPE_REPORT = """{
+  "distro": {"name": "alpine", "version": "3.21.0"},
+  "matches": [
+    {
+      "vulnerability": {
+        "id": "CVE-2024-0001", "severity": "High",
+        "description": "openssl issue",
+        "fix": {"versions": ["3.1.4"]},
+        "cvss": [{"source": "nvd", "metrics": {"baseScore": 7.5}}]
+      },
+      "artifact": {"name": "openssl", "version": "3.1.0", "type": "apk",
+                   "locations": [{"path": "/lib/apk/db/installed"}]}
+    }
+  ]
+}"""
+
+
+class TestGrypeGoesThroughTheSameEngine:
+    """A engine dirige os dois scanners, e o Python não precisa saber qual.
+
+    O que difere -- argv, forma do JSON, cache dir versus variável de
+    ambiente -- fica inteiramente do lado Go. Estes testes provam que a
+    diferença termina ali: os dois caminhos entregam o mesmo `ScanResult`.
+    """
+
+    @pytest.fixture
+    def fake_grype(self, tmp_path: Path, monkeypatch) -> Path:
+        path = tmp_path / "grype"
+        path.write_text(f"#!/bin/sh\ncat <<'REPORT'\n{GRYPE_REPORT}\nREPORT\n", encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        monkeypatch.setattr(
+            "dockerls.integrations.engine.batch.resolve_executable",
+            lambda name: str(path) if name == "grype" else f"/usr/bin/{name}",
+        )
+        return path
+
+    @pytest.mark.asyncio
+    async def test_a_grype_batch_produces_domain_results(self, tmp_path, fake_grype, monkeypatch):
+        from dockerls.integrations.grype.scanner import GrypeScanner
+
+        monkeypatch.setenv("DOCKERLS_ENGINE_PATH", str(ENGINE_BINARY))
+        scanner = GrypeScanner(timeout=30, workers=4)
+
+        outcome = await scanner.batch.scan_batch(
+            [("node:22-alpine", "sha256:aaa"), ("node:20-alpine", "sha256:bbb")]
+        )
+
+        assert outcome is not None
+        assert outcome.scans_performed == 2
+        for result in outcome.results:
+            assert result.scanner == "grype"
+            assert result.is_verified is True
+            assert result.os_family == "alpine"
+            assert result.high_count == 1
+            assert result.vulnerabilities[0].cvss_score == 7.5
+            assert result.vulnerabilities[0].fixed_version == "3.1.4"
+
+    @pytest.mark.asyncio
+    async def test_the_batch_and_the_single_scan_agree(self, tmp_path, fake_grype, monkeypatch):
+        """Se os dois caminhos discordassem, a cross-validação passaria a
+        depender de qual deles rodou -- e ela existe justamente para não
+        depender de quem mediu."""
+        from dockerls.integrations.grype.scanner import GrypeScanner
+
+        monkeypatch.setattr(
+            "dockerls.integrations.grype.scanner.resolve_executable", lambda name: str(fake_grype)
+        )
+        monkeypatch.setenv("DOCKERLS_ENGINE_PATH", str(ENGINE_BINARY))
+        scanner = GrypeScanner(timeout=30, workers=2)
+
+        batched = await scanner.batch.scan_batch([("node:22-alpine", "")])
+        single = await scanner.scan("node:22-alpine")
+
+        assert batched is not None
+        measured = batched.results[0]
+        assert measured.scanner == single.scanner
+        assert measured.os_family == single.os_family
+        assert measured.high_count == single.high_count
+        assert [v.cve_id for v in measured.vulnerabilities] == [
+            v.cve_id for v in single.vulnerabilities
+        ]
+        assert measured.vulnerabilities[0].cvss_score == single.vulnerabilities[0].cvss_score
+        assert measured.vulnerabilities[0].target == single.vulnerabilities[0].target
+
+    @pytest.mark.asyncio
+    async def test_the_whole_environment_never_crosses_the_boundary(self, tmp_path, monkeypatch):
+        """O ambiente do processo carrega DOCKERHUB_TOKEN e companhia.
+        Mandá-lo inteiro pela fronteira escreveria segredo dentro de um
+        documento JSON -- só o par do Grype atravessa."""
+        from dockerls.integrations.grype.scanner import GrypeScanner
+
+        monkeypatch.setenv("DOCKERHUB_TOKEN", "nao-pode-atravessar")
+        scanner = GrypeScanner(timeout=30, workers=1)
+        scanner._skip_db_update = True
+
+        env = scanner._batch_env()
+
+        assert set(env) == {"GRYPE_DB_AUTO_UPDATE", "GRYPE_CHECK_FOR_APP_UPDATE"}
+        assert "nao-pode-atravessar" not in str(env)

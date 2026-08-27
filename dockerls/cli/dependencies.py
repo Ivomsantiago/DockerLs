@@ -333,7 +333,13 @@ async def build_recommend_use_case(
     secondary = None
     if s.cross_validate if cross_validate is None else cross_validate:
         secondary = await ScannerFactory.create_secondary(
-            scanner, timeout=s.scanner_timeout, evidence=evidence, guard=build_host_guard()
+            scanner,
+            timeout=s.scanner_timeout,
+            evidence=evidence,
+            guard=build_host_guard(),
+            # O mesmo teto do passo principal: a cross-validação roda depois
+            # dele e herda o orçamento, em vez de abrir um segundo maior.
+            workers=min(resolve_workers(s.cross_validate_workers or None), workers),
         )
 
     return RecommendImagesUseCase(

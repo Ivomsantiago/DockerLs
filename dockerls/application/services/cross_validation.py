@@ -120,19 +120,49 @@ class CrossValidator:
         if callable(refresh_db):
             await refresh_db()
 
+        prefetched = await self._prescan(analyses)
+
         semaphore = asyncio.Semaphore(self._workers)
 
         async def guarded(analysis: ImageAnalysis) -> None:
             async with semaphore:
-                await self._validate_one(analysis)
+                await self._validate_one(analysis, prefetched)
 
         await asyncio.gather(*[guarded(a) for a in analyses])
 
-    async def _validate_one(self, analysis: ImageAnalysis) -> None:
+    async def _prescan(self, analyses: list[ImageAnalysis]) -> dict[str, ScanResult]:
+        """Mede os finalistas de uma vez, quando a engine Go existe.
+
+        São poucos scans -- os finalistas, não as cem candidatas --, então o
+        ganho aqui é menor que no passo principal. Vale mesmo assim: é o
+        mesmo caminho, e mantê-lo fora criaria uma segunda forma de
+        orquestrar scans para o projeto manter.
+
+        `{}` quando não há engine, e o caminho de sempre responde.
+        """
+        batch = getattr(self._scanner, "batch", None)
+        if batch is None:
+            return {}
+        # A chave é a referência: o dedup por digest não se aplica aqui,
+        # porque os finalistas já vieram deduplicados do passo principal.
+        targets = [(a.image.full_reference, a.image.digest or "") for a in analyses]
+        outcome = await batch.scan_batch(targets)
+        if outcome is None:
+            return {}
+        return {
+            reference: result
+            for (reference, _), result in zip(targets, outcome.results, strict=True)
+        }
+
+    async def _validate_one(
+        self, analysis: ImageAnalysis, prefetched: dict[str, ScanResult] | None = None
+    ) -> None:
         if self._scanner is None:
             return
         reference = analysis.image.full_reference
-        secondary = await self._scanner.scan(reference)
+        secondary = (prefetched or {}).get(reference)
+        if secondary is None:
+            secondary = await self._scanner.scan(reference)
 
         if not secondary.is_verified:
             logger.warning(

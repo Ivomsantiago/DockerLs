@@ -40,7 +40,7 @@ class ScannerFactory:
             evidence=evidence,
             guard=guard,
         )
-        grype = GrypeScanner(timeout=timeout, evidence=evidence, guard=guard)
+        grype = GrypeScanner(timeout=timeout, evidence=evidence, guard=guard, workers=workers)
         has_trivy = await trivy.is_available()
         has_grype = await grype.is_available()
 
@@ -63,6 +63,7 @@ class ScannerFactory:
         timeout: int = 300,
         evidence: EvidenceStore | None = None,
         guard: HostGuard | None = None,
+        workers: int = 1,
     ) -> ScannerInterface | None:
         """Return an *independent* scanner for cross-validation.
 
@@ -77,10 +78,10 @@ class ScannerFactory:
             primary = primary.primary
 
         if isinstance(primary, GrypeScanner):
-            trivy = TrivyScanner(timeout=timeout, evidence=evidence, guard=guard)
+            trivy = TrivyScanner(timeout=timeout, evidence=evidence, guard=guard, workers=workers)
             return trivy if await trivy.is_available() else None
 
-        grype = GrypeScanner(timeout=timeout, evidence=evidence, guard=guard)
+        grype = GrypeScanner(timeout=timeout, evidence=evidence, guard=guard, workers=workers)
         if await grype.is_available():
             return grype
         logger.info("Grype not installed; cross-validation disabled")

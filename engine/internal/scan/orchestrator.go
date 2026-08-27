@@ -25,6 +25,10 @@ type Orchestrator struct {
 	scanner   *Scanner
 	workers   int
 	cacheDirs []string
+	// serialize diz se a falta de diretórios isolados obriga a rodar um
+	// scan por vez. Vale para o Trivy e não vale para o Grype -- ver
+	// `NewOrchestrator`.
+	serialize bool
 }
 
 // NewOrchestrator normaliza os limites: um pool de tamanho zero não é uma
@@ -33,19 +37,31 @@ func NewOrchestrator(scanner *Scanner, workers int, cacheDirs []string) *Orchest
 	if workers < 1 {
 		workers = 1
 	}
-	// O teto real é o número de slots de cache, e nenhuma lista de slots
-	// vazia é exceção: sem `--cache-dir` todos os scans compartilham o
-	// cache padrão do Trivy, que é um lock BoltDB exclusivo -- rodar dois
-	// em paralelo ali não é paralelismo, é a contenção que faz o perdedor
-	// estourar o timeout. Um slot, um scan por vez.
-	slots := len(cacheDirs)
-	if slots == 0 {
-		slots = 1
+
+	// O teto do Trivy é o número de slots de cache, e uma lista vazia não é
+	// exceção: sem `--cache-dir` todos os scans compartilham o cache padrão,
+	// que é um lock BoltDB exclusivo -- rodar dois em paralelo ali não é
+	// paralelismo, é a contenção que faz o perdedor estourar o timeout.
+	//
+	// O Grype não tem esse lock e não aceita `--cache-dir`: serializá-lo
+	// por falta de diretórios seria aplicar a ele o remédio de uma doença
+	// que ele não tem, e transformar `--workers 8` em 1 sem dizer nada.
+	serialize := scanner == nil || scanner.name != "grype"
+	if serialize {
+		slots := len(cacheDirs)
+		if slots == 0 {
+			slots = 1
+		}
+		if workers > slots {
+			workers = slots
+		}
 	}
-	if workers > slots {
-		workers = slots
+	return &Orchestrator{
+		scanner:   scanner,
+		workers:   workers,
+		cacheDirs: cacheDirs,
+		serialize: serialize,
 	}
-	return &Orchestrator{scanner: scanner, workers: workers, cacheDirs: cacheDirs}
 }
 
 // Workers é o paralelismo efetivo depois da normalização.
@@ -54,7 +70,13 @@ func (o *Orchestrator) Workers() int { return o.workers }
 // CacheSlots é quantos diretórios isolados estão em rodízio.
 func (o *Orchestrator) CacheSlots() int {
 	if len(o.cacheDirs) == 0 {
-		return 1
+		// Sem diretórios, há um "slot" nominal (o cache padrão do
+		// scanner). Para o Trivy ele é o gargalo; para o Grype é só um
+		// lugar, e o paralelismo é o de workers.
+		if o.serialize {
+			return 1
+		}
+		return o.workers
 	}
 	return len(o.cacheDirs)
 }
@@ -72,9 +94,14 @@ func (o *Orchestrator) Run(ctx context.Context, targets []protocol.Target) ([]pr
 	// Um slot de cache por worker, em rodízio por canal. Canal e não
 	// mutex porque o que se quer aqui é bloquear até haver slot livre,
 	// que é exatamente o que uma leitura de canal vazio faz.
-	slots := make(chan string, o.CacheSlots())
+	slots := make(chan string, max(1, o.CacheSlots()))
 	if len(o.cacheDirs) == 0 {
-		slots <- ""
+		// Um "slot" vazio por worker: o valor é a string vazia (nenhum
+		// `--cache-dir`), e o que ele controla é só quantos scans podem
+		// estar em voo.
+		for range o.CacheSlots() {
+			slots <- ""
+		}
 	} else {
 		for _, dir := range o.cacheDirs {
 			slots <- dir

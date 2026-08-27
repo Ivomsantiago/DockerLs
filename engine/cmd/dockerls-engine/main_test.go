@@ -43,9 +43,20 @@ func TestTheEngineDoesNotResolvePATHItself(t *testing.T) {
 }
 
 func TestAnUnsupportedScannerIsRefused(t *testing.T) {
-	body := fmt.Sprintf(`{"version": %d, "scanner": "grype", "scanner_path": "/x", "timeout_seconds": 5}`, protocol.Version)
+	body := fmt.Sprintf(
+		`{"version": %d, "scanner": "snyk", "scanner_path": "/x", "timeout_seconds": 5}`,
+		protocol.Version)
 	if _, err := readRequest(strings.NewReader(body)); err == nil {
-		t.Fatal("esta engine só dirige o trivy")
+		t.Fatal("esta engine dirige trivy e grype, e mais nada")
+	}
+}
+
+func TestGrypeIsAccepted(t *testing.T) {
+	body := fmt.Sprintf(
+		`{"version": %d, "scanner": "grype", "scanner_path": "/x", "timeout_seconds": 5}`,
+		protocol.Version)
+	if _, err := readRequest(strings.NewReader(body)); err != nil {
+		t.Fatalf("grype recusado: %v", err)
 	}
 }
 
