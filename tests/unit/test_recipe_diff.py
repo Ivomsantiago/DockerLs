@@ -32,8 +32,8 @@ class TestPackages:
     def test_pacote_fora_do_catalogo_e_descrito_como_desconhecido(self) -> None:
         """O diff não é lugar de levantar: descrever o desconhecido é mais útil."""
         delta = PackageDelta.of("pacote-inventado")
-        assert delta.purpose == "não catalogado"
-        assert delta.cost == "desconhecido"
+        assert delta.purpose == "not catalogued"
+        assert delta.cost == "unknown"
 
 
 class TestNotes:
@@ -54,7 +54,7 @@ class TestNotes:
 
         assert diff.family_changed
         assert not diff.libc_changed
-        assert any("mesma libc" in n for n in diff.notes())
+        assert any("same libc" in n for n in diff.notes())
 
     def test_distroless_avisa_que_nada_pode_ser_instalado_depois(self) -> None:
         left = BaseRecipe(family=OsFamily.ALPINE, runtime=Runtime.NODE)
@@ -62,7 +62,7 @@ class TestNotes:
 
         notas = compare(left, right).notes()
 
-        assert any("gerenciador de pacotes nem shell" in n for n in notas)
+        assert any("no package manager and no shell" in n for n in notas)
 
     def test_distroless_nao_gera_nota_sobre_remover_gerenciador_embutido(self) -> None:
         """Não há gerenciador embutido numa distroless: dizer que um lado
@@ -72,7 +72,7 @@ class TestNotes:
 
         notas = compare(left, right).notes()
 
-        assert not any("gerenciador embutido" in n for n in notas)
+        assert not any("package manager the official image ships" in n for n in notas)
 
     def test_remocao_do_gerenciador_embutido_e_dita_quando_ambas_instalam(self) -> None:
         left = BaseRecipe(family=OsFamily.ALPINE, runtime=Runtime.NODE, strip_bundled_manager=True)
@@ -81,7 +81,7 @@ class TestNotes:
         diff = compare(left, right)
 
         assert diff.manager_strip_changed
-        assert any("gerenciador embutido" in n for n in diff.notes())
+        assert any("package manager the official image ships" in n for n in diff.notes())
 
     def test_tag_movel_de_um_dos_lados_e_apontada(self) -> None:
         left = BaseRecipe(family=OsFamily.ALPINE, digest="sha256:aaa")
@@ -90,7 +90,7 @@ class TestNotes:
         diff = compare(left, right)
 
         assert diff.pinning_changed
-        assert any("tag móvel" in n for n in diff.notes())
+        assert any("moving tag" in n for n in diff.notes())
 
 
 class TestVerdict:
@@ -99,8 +99,8 @@ class TestVerdict:
         medido o que não foi medido."""
         diff = compare(BaseRecipe(family=OsFamily.ALPINE), BaseRecipe(family=OsFamily.DEBIAN))
 
-        assert "não de vulnerabilidade" in diff.verdict()
-        assert "escanear" in diff.verdict()
+        assert "not a vulnerability diff" in diff.verdict()
+        assert "scanning both" in diff.verdict()
 
     def test_documento_traz_os_dois_lados_e_as_notas(self) -> None:
         diff = compare(

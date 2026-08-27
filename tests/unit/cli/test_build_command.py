@@ -455,7 +455,7 @@ class TestPublishFlow:
         with patch("dockerls.cli.commands.build.BuildImageUseCase") as use_case:
             result = self._run(tmp_path, ["-t", "app:1.0", "--registry", "dhi.io/app", "--push"])
         assert result.exit_code == EXIT_ERROR
-        assert "não aceita push" in result.output
+        assert "does not accept pushes" in result.output
         # O build nunca chegou a ser instanciado.
         use_case.assert_not_called()
 
@@ -906,7 +906,7 @@ class TestSignFlag:
 
         assert result is not None
         assert result.status is SignatureStatus.FAILED
-        assert "sem digest" in result.detail
+        assert "no manifest digest" in result.detail
 
     def test_assina_o_digest_e_nao_a_tag(self):
         from unittest.mock import AsyncMock, patch

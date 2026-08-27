@@ -91,21 +91,21 @@ class SignatureResult:
 
     def explain(self) -> str:
         if self.status is SignatureStatus.VERIFIED:
-            quem = ", ".join(self.identities) if self.identities else "identidade não revelada"
-            return f"assinatura válida ({quem})"
+            quem = ", ".join(self.identities) if self.identities else "identity not disclosed"
+            return f"valid signature ({quem})"
         if self.status is SignatureStatus.SIGNED:
-            return "assinatura publicada no registry"
+            return "signature published in the registry"
         if self.status is SignatureStatus.UNSIGNED:
             return (
-                "o cosign não encontrou assinatura válida para esta imagem: ninguém "
-                "atestou publicamente que a publicou"
+                "cosign found no valid signature for this image: nobody publicly "
+                "attested to publishing it"
             )
         if self.status is SignatureStatus.SIGNER_MISSING:
             return (
-                "cosign não está instalado: isto é ausência de resposta, e não "
-                "confirmação de que a imagem não está assinada"
+                "cosign is not installed: this is an absence of an answer, not "
+                "confirmation that the image is unsigned"
             )
-        return f"a verificação não pôde ser concluída: {self.detail or 'motivo desconhecido'}"
+        return f"the check could not be completed: {self.detail or 'reason unknown'}"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -135,8 +135,8 @@ class CosignClient:
                 reference=reference,
                 status=SignatureStatus.FAILED,
                 detail=(
-                    "só se assina por digest: uma tag pode mover, e a assinatura "
-                    "continuaria válida cobrindo bytes que ninguém mediu"
+                    "only digests get signed: a tag can move, and the signature would "
+                    "stay valid over bytes nobody measured"
                 ),
             )
 
@@ -191,8 +191,8 @@ class CosignClient:
         detail = ""
         if not certificate_identity_regexp and not certificate_oidc_issuer:
             detail = (
-                "verificado sem restringir identidade nem emissor: isto confirma que "
-                "*alguém* assinou, não que quem você espera assinou"
+                "verified without constraining identity or issuer: this confirms that "
+                "*someone* signed, not that whoever you expect signed"
             )
         return SignatureResult(
             reference=reference,

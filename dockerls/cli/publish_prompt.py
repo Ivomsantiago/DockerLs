@@ -60,11 +60,11 @@ def resolve_destination(
     if not answer:
         if not interactive_available(non_interactive=non_interactive):
             return None
-        console.print("\n[bold]Para onde esta imagem vai?[/bold]")
+        console.print("\n[bold]Where is this image going?[/bold]")
         for example in DESTINATION_EXAMPLES:
             console.print(f"  [dim]{example}[/dim]")
         answer = Prompt.ask(
-            "Destino (vazio = não publicar)",
+            "Destination (empty = do not publish)",
             default="",
             show_default=False,
             console=console,
@@ -76,7 +76,7 @@ def resolve_destination(
     target.validate()
     console.print(
         f"[dim]Destino: {target.reference}  ({target.provider})\n"
-        f"Autenticação: {target.login_hint}[/dim]"
+        f"Authentication: {target.login_hint}[/dim]"
     )
     return target
 
@@ -101,10 +101,10 @@ def resolve_identity(
 
     prompts = dict(REQUIRED_FIELDS)
     answers: dict[str, str] = {}
-    console.print("\n[bold]Quem responde por esta imagem?[/bold]")
+    console.print("\n[bold]Who answers for this image?[/bold]")
     console.print(
-        "[dim]Vira rótulo OCI no manifesto. É o que alguém lê às três da manhã "
-        "para saber de onde a imagem veio e para quem ligar.[/dim]"
+        "[dim]Becomes an OCI label on the manifest. It is what someone reads at three "
+        "in the morning to find out where the image came from and who to call.[/dim]"
     )
     for name in missing:
         answers[name] = Prompt.ask(f"  {prompts[name]}", console=console).strip()

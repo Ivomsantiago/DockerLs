@@ -74,7 +74,7 @@ def test_contexto_alterado_durante_o_build_reprova(tmp_path: Path):
     result = runner.invoke(app, ["provenance", _write(tmp_path, adulterado), "--no-color"])
 
     assert result.exit_code == EXIT_POLICY
-    assert "contexto de build" in result.output
+    assert "the build context" in result.output
 
 
 def test_documento_sem_digest_do_artefato_nao_e_atestavel(tmp_path: Path):

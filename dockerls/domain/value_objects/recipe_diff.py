@@ -47,7 +47,7 @@ class PackageDelta:
             # Pacote fora do catálogo não deveria chegar aqui (a receita
             # valida antes), mas o diff não é lugar de levantar: descrever o
             # que não se conhece como desconhecido é mais útil que estourar.
-            return PackageDelta(key=key, purpose="não catalogado", cost="desconhecido")
+            return PackageDelta(key=key, purpose="not catalogued", cost="unknown")
         return PackageDelta(key=choice.key, purpose=choice.purpose, cost=choice.cost)
 
     def to_dict(self) -> dict[str, str]:
@@ -101,49 +101,49 @@ class RecipeDiff:
         both_install = self.left.family.installs_packages and self.right.family.installs_packages
         if self.libc_changed:
             lines.append(
-                f"libc muda de {self.left.family.libc} para {self.right.family.libc}: "
-                "dependências compiladas precisam de roda para a nova, ou serão "
-                "compiladas do zero no build -- e algumas simplesmente não compilam"
+                f"libc changes from {self.left.family.libc} to "
+                f"{self.right.family.libc}: compiled dependencies need a wheel for the "
+                "new one, or they get built from source -- and some simply do not build"
             )
         elif self.family_changed:
             lines.append(
-                f"família muda de {self.left.family} para {self.right.family}, "
-                "mantendo a mesma libc"
+                f"family changes from {self.left.family} to {self.right.family}, "
+                "keeping the same libc"
             )
         if self.runtime_changed:
-            lines.append(f"runtime muda de {self.left.runtime} para {self.right.runtime}")
+            lines.append(f"runtime changes from {self.left.runtime} to {self.right.runtime}")
         if not both_install:
             distroless = (
                 self.right.family if not self.right.family.installs_packages else self.left.family
             )
             lines.append(
-                f"{distroless} não tem gerenciador de pacotes nem shell: nada pode ser "
-                "instalado nela depois, e nenhum `docker exec` vai funcionar"
+                f"{distroless} has no package manager and no shell: nothing can be "
+                "installed into it afterwards, and no `docker exec` will work"
             )
         # Numa distroless não há gerenciador embutido para remover: dizer que
         # um lado "remove e o outro não" descreveria uma diferença que não
         # existe, e a nota do distroless logo acima já cobre o caso.
         if self.manager_strip_changed and both_install:
-            quem = "a direita" if self.right.strip_bundled_manager else "a esquerda"
+            quem = "the right" if self.right.strip_bundled_manager else "the left"
             lines.append(
-                f"só {quem} remove o gerenciador embutido na imagem oficial -- é a "
-                "maior diferença de superfície entre as duas, e ela não aparece na "
-                "contagem de pacotes"
+                f"only {quem} removes the package manager the official image ships -- "
+                "the largest surface difference between the two, and it does not show "
+                "up in a package count"
             )
         if self.pinning_changed:
-            solta = "a direita" if not self.right.digest else "a esquerda"
+            solta = "the right" if not self.right.digest else "the left"
             lines.append(
-                f"{solta} fica numa tag móvel, sem digest: dois builds do mesmo "
-                "arquivo podem produzir imagens diferentes"
+                f"{solta} sits on a moving tag, with no digest: two builds of the same "
+                "file can produce different images"
             )
         return lines
 
     def verdict(self) -> str:
         """Por que este diff não elege uma vencedora."""
         return (
-            "este é um diff de conteúdo, não de vulnerabilidade: contar pacotes não "
-            "mede CVE, e a única resposta para qual das duas é mais segura vem de "
-            "escanear as duas. Construa e rode `dockerls scan` em cada uma"
+            "this is a content diff, not a vulnerability diff: counting packages does "
+            "not measure CVEs, and the only answer to which of the two is safer comes "
+            "from scanning both. Build them and run `dockerls scan` on each"
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -176,7 +176,7 @@ def _describe(recipe: BaseRecipe) -> dict[str, object]:
     except Exception:
         # Combinação sem imagem publicada: o diff ainda descreve o resto, e
         # `validate()` é quem recusa a receita impossível.
-        reference = f"{recipe.runtime} sobre {recipe.family} (sem imagem publicada)"
+        reference = f"{recipe.runtime} on {recipe.family} (no published image)"
     return {
         "family": str(recipe.family),
         "runtime": str(recipe.runtime),

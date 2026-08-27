@@ -120,16 +120,12 @@ class UpgradeBaseUseCase:
         if path.is_dir():
             path = path / "Dockerfile"
         if not path.is_file():
-            return UpgradeBaseResult(
-                dockerfile=str(path), error=f"Dockerfile não encontrado em {path}"
-            )
+            return UpgradeBaseResult(dockerfile=str(path), error=f"Dockerfile not found at {path}")
 
         content = path.read_text(encoding="utf-8")
         bases = parse_bases(content)
         if not bases:
-            return UpgradeBaseResult(
-                dockerfile=str(path), error="nenhuma instrução FROM encontrada"
-            )
+            return UpgradeBaseResult(dockerfile=str(path), error="no FROM instruction found")
 
         findings: list[BaseFinding] = []
         histories: dict[str, TagHistory] = {}
@@ -153,7 +149,7 @@ class UpgradeBaseUseCase:
             except OSError as e:
                 # Não conseguir escrever não invalida o diagnóstico: o
                 # relatório continua válido e a pessoa aplica à mão.
-                result.error = f"não foi possível escrever {path}: {e}"
+                result.error = f"could not write {path}: {e}"
                 return result
             result.applied = would_apply
         return result
@@ -167,5 +163,5 @@ class UpgradeBaseUseCase:
         try:
             return await self._inspector.resolve_digest(DockerImage(name=name, tag=tag))
         except Exception as e:  # pragma: no cover - rede é o caminho instável
-            logger.debug(f"Não foi possível resolver o digest de {name}:{tag}: {e}")
+            logger.debug(f"Could not resolve the digest of {name}:{tag}: {e}")
             return ""

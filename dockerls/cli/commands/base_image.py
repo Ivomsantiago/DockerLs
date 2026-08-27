@@ -91,7 +91,7 @@ def base_image(
         help="Packages on the compared side, comma-separated (default: the same ones)",
     ),
 ) -> None:
-    """Gera o Dockerfile de uma imagem base a partir de um menu de escolhas."""
+    """Generate the Dockerfile for a base image from a menu of choices."""
     try:
         family = _resolve_family(os_family)
         chosen_runtime = _resolve_runtime(runtime, family)

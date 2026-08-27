@@ -93,7 +93,7 @@ def build(
     ),
     validate_only: bool = typer.Option(False, "--validate-only", help="Apenas valida Dockerfile"),
     suggest_hardening: bool = typer.Option(
-        False, "--suggest-hardening", help="Sugere melhorias sem build"
+        False, "--suggest-hardening", help="Suggest improvements without building"
     ),
     push: bool = typer.Option(False, "--push", help="docker push the tag after a successful build"),
     registry: str | None = typer.Option(
@@ -109,7 +109,7 @@ def build(
         None, "--owner", help="Owning team or person (becomes maintainer and vendor)"
     ),
     security_contact: str | None = typer.Option(
-        None, "--security-contact", help="Contato para vulnerabilidades nesta imagem"
+        None, "--security-contact", help="Contact for vulnerabilities in this image"
     ),
     source_url: str | None = typer.Option(
         None, "--source", help="URL of the repository that produces this image"
@@ -163,7 +163,7 @@ def build(
     output: str | None = typer.Option(None, "--output", "-o", help="Report output file"),
     force: bool = typer.Option(False, "--force", help="Build even when validation fails"),
 ) -> None:
-    """Constrói imagens Docker seguras com validação, scanning e auto-remediação."""
+    """Build secure Docker images with validation, scanning and auto-remediation."""
     if verbose:
         enable_console_logging()
 
@@ -350,7 +350,7 @@ def _sign_if_requested(
         return SignatureResult(
             reference=reference,
             status=SignatureStatus.FAILED,
-            detail="sem digest do manifesto",
+            detail="no manifest digest",
         )
 
     alvo = _digest_reference(reference, digest)
@@ -375,8 +375,8 @@ def _announce_production(declared: BuildPolicy | None) -> BuildPolicy:
             console.print(f"  [cyan]{regra}[/cyan]  [dim]{safe(_describe_rule(valor))}[/dim]")
     if declared is not None:
         console.print(
-            "  [dim]somado ao .dockerls-policy.yaml do contexto, sempre pelo lado "
-            "mais estrito[/dim]"
+            "  [dim]combined with the context .dockerls-policy.yaml, always by the "
+            "stricter side[/dim]"
         )
     console.print()
     return perfil
@@ -422,9 +422,10 @@ def _print_inheritance(report: InheritanceReport | None) -> None:
 
     if report.inherited_share >= 0.5 and report.inherited:
         console.print(
-            f"\n[yellow]{report.inherited_share:.0%} das vulnerabilidades desta imagem "
+            f"\n[yellow]{report.inherited_share:.0%} of this image vulnerabilities "
             "came from the base.[/yellow]\n[dim]Changing your Dockerfile does not "
-            "parte: rode `dockerls base --alternatives` para medir outra base.[/dim]"
+            "address that part: run `dockerls base --alternatives` to measure another "
+            "base.[/dim]"
         )
 
 
@@ -452,7 +453,7 @@ def _print_plan(report: InheritanceReport) -> None:
         # rolagem, e quem quer todos usa --format json.
         amostra = ", ".join(f"{f.cve_id} ({f.package_name})" for f in bucket.findings[:3])
         if amostra:
-            resto = f" e mais {bucket.count - 3}" if bucket.count > 3 else ""
+            resto = f" and {bucket.count - 3} more" if bucket.count > 3 else ""
             console.print(f"        [dim]{safe(amostra)}{resto}[/dim]")
 
 
@@ -575,7 +576,7 @@ def _print_templates(template_provider: HardeningTemplates, ci_mode: bool = Fals
 _STANDALONE_OS = frozenset({"alpine", "debian", "ubuntu", "distroless"})
 
 _STACK_TITLES = {
-    "so": "Sistema operacional puro (sem runtime)",
+    "so": "The operating system alone (no runtime)",
     "node": "Node.js",
     "python": "Python",
     "java": "Java (runtime)",
@@ -593,7 +594,7 @@ _TEMPLATE_HINTS = {
     "alpine": "musl, ~5 MB, com shell",
     "debian": "glibc, stable, has a shell",
     "ubuntu": "glibc, more packages available",
-    "distroless": "sem shell nem gerenciador de pacotes",
+    "distroless": "no shell and no package manager",
     "node": "Debian slim",
     "node-alpine": "musl -- watch out for native modules (sharp, bcrypt)",
     "node-debian": "glibc",
@@ -616,7 +617,7 @@ _TEMPLATE_HINTS = {
     "go": "Debian slim",
     "go-alpine": "static musl",
     "go-debian": "glibc",
-    "go-distroless": "sem shell",
+    "go-distroless": "no shell",
     "go-scratch": "the static binary alone -- the smallest surface there is",
     "rust": "Debian slim",
     "rust-alpine": "musl",
@@ -699,7 +700,7 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
         "alpine (Alpine Linux - Ultra-lightweight musl)",
         "debian (Debian Bookworm Slim - glibc)",
         "ubuntu (Ubuntu 24.04 LTS - Alta compatibilidade)",
-        "distroless (Google Distroless - Sem shell, zero CVEs de SO)",
+        "distroless (Google Distroless - no shell, zero OS CVEs)",
         "scratch (plain scratch, for static binaries)",
     ]
     for i, d in enumerate(distros, 1):
@@ -749,12 +750,12 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
     # 8. Ciclo de auto-remediação até zero vulnerabilidades
     console.print("\n[bold yellow]? 8. Loop until ZERO vulnerabilities?[/bold yellow]")
     console.print("  1. yes (patches until the CVEs are gone)")
-    console.print("  2. no (Apenas relata vulnerabilidades encontradas)")
+    console.print("  2. no (only report the vulnerabilities found)")
     zero_vulns = _prompt_choice(["yes", "no"], "1") == "yes"
 
     # 9. Tag da imagem
     tag_input = (
-        console.input("\n[bold yellow]? 9. Tag da imagem Docker [app:latest]: [/bold yellow]")
+        console.input("\n[bold yellow]? 9. Docker image tag [app:latest]: [/bold yellow]")
         or "app:latest"
     )
 
@@ -1180,11 +1181,11 @@ def _print_provenance(provenance: BuildProvenance) -> None:
     console.print(f"  [dim]{safe(provenance.explain())}[/dim]\n")
 
     source = provenance.source
-    console.print("[bold]ENTRADA[/bold] [dim](medida antes do build)[/dim]")
+    console.print("[bold]INPUT[/bold] [dim](measured before the build)[/dim]")
     console.print(f"  Dockerfile  {safe(source.dockerfile) or '[dim]not digested[/dim]'}")
     console.print(
         f"  Contexto    {safe(source.context) or '[dim]not digested[/dim]'}"
-        f"  [dim]({source.context_files} arquivos)[/dim]"
+        f"  [dim]({source.context_files} files)[/dim]"
     )
     if source.git_revision:
         dirty = " [yellow](dirty tree)[/yellow]" if source.git_dirty else ""
@@ -1195,7 +1196,7 @@ def _print_provenance(provenance: BuildProvenance) -> None:
 
     artifact = provenance.artifact
     console.print("\n[bold]OUTPUT[/bold] [dim](measured after the build)[/dim]")
-    console.print(f"  Imagem      {safe(artifact.image_id) or '[dim]desconhecida[/dim]'}")
+    console.print(f"  Image       {safe(artifact.image_id) or '[dim]unknown[/dim]'}")
     if artifact.repo_digest:
         console.print(f"  Manifesto   {safe(artifact.repo_digest)}")
     if artifact.published_reference:

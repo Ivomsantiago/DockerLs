@@ -52,7 +52,7 @@ class TestMissingSigner:
         assert result.status is SignatureStatus.SIGNER_MISSING
         assert not result.trustworthy
         assert not result.status.is_conclusive
-        assert "ausência de resposta" in result.explain()
+        assert "absence of an answer" in result.explain()
 
     async def test_cosign_ausente_na_assinatura_tambem(self) -> None:
         with _absent():
@@ -70,7 +70,7 @@ class TestSigning:
         result = await CosignClient().sign("reg.io/app:1.0")
 
         assert result.status is SignatureStatus.FAILED
-        assert "só se assina por digest" in result.detail
+        assert "only digests get signed" in result.detail
 
     async def test_assinatura_bem_sucedida(self) -> None:
         with _resolves(), _run(0):
@@ -110,7 +110,7 @@ class TestVerification:
             result = await CosignClient().verify(_DIGEST)
 
         assert result.status is SignatureStatus.VERIFIED
-        assert "não que quem você espera assinou" in result.detail
+        assert "not that whoever you expect signed" in result.detail
 
     async def test_ausencia_de_assinatura_e_veredito_conclusivo(self) -> None:
         with _resolves(), _run(1, err=b"error: no signatures found for image"):

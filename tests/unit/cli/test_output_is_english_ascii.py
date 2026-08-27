@@ -17,6 +17,7 @@ traduzidos (`build`, `base-image`, `provenance`, `verify`, `registry-audit`)
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING
 
@@ -130,15 +131,105 @@ class TestTagRejectionMessage:
         _assert_clean(result, f"{command} node:18")
 
 
+def _command_names() -> list[str]:
+    """Todo subcomando da CLI, tirado da tabela que os registra.
+
+    Listar à mão deixava cinco comandos de fora -- os cinco que ainda
+    respondiam em português. Tirar a lista da própria tabela faz o guard
+    crescer sozinho: um comando novo já nasce conferido.
+    """
+    from dockerls.cli.app import COMMANDS
+
+    return [spec.name for spec in COMMANDS]
+
+
 class TestHelpText:
     """`--help` é a primeira saída que qualquer pessoa vê de um comando."""
 
-    @pytest.mark.parametrize(
-        "command",
-        ["fleet", "policy", "analyze-dockerfile", "controls", "advisor", "base", "search"],
-    )
+    @pytest.mark.parametrize("command", _command_names())
     def test_help_is_english(self, command: str):
         _assert_clean(runner.invoke(app, [command, "--help"]), f"{command} --help")
+
+    def test_the_root_help_is_english(self):
+        """A listagem de comandos vem da tabela de `app.py`, e o resumo de
+        cada um é copiado da docstring -- dois lugares para o português
+        voltar sem ninguém notar."""
+        _assert_clean(runner.invoke(app, ["--help"]), "--help")
+
+
+class TestTheCommandsThatWereTranslatedLast:
+    """`build`, `base-image`, `provenance`, `verify` e `registry-audit`
+    respondiam em português e estavam fora do guard por isenção declarada.
+    Estes exercícios são o que substitui a isenção: saída de verdade, não
+    só `--help`."""
+
+    def test_build_listing_templates(self):
+        _assert_clean(runner.invoke(app, ["build", "--list-templates"]), "build --list-templates")
+
+    def test_build_refusing_an_unknown_base(self, project: Path):
+        result = runner.invoke(app, ["build", str(project), "-t", "a:1", "--base", "nao-existe"])
+        _assert_clean(result, "build --base desconhecida")
+
+    def test_build_refusing_to_publish_without_a_scan(self, project: Path):
+        result = runner.invoke(app, ["build", str(project), "-t", "a:1", "--push", "--no-scan"])
+        _assert_clean(result, "build --push --no-scan")
+
+    def test_base_image_refusing_an_unknown_os(self, tmp_path: Path):
+        result = runner.invoke(
+            app, ["base-image", "--os", "nao-existe", "--output", str(tmp_path / "D")]
+        )
+        _assert_clean(result, "base-image --os desconhecido")
+
+    def test_base_image_refusing_a_refused_package(self, tmp_path: Path):
+        result = runner.invoke(
+            app,
+            [
+                "base-image",
+                "--os",
+                "alpine",
+                "--runtime",
+                "none",
+                "--with",
+                "sudo",
+                "--no-pin",
+                "--output",
+                str(tmp_path / "D"),
+            ],
+        )
+        _assert_clean(result, "base-image --with sudo")
+
+    def test_provenance_reading_a_broken_document(self, tmp_path: Path):
+        broken = tmp_path / "provenance.json"
+        broken.write_text("{not json", encoding="utf-8")
+        _assert_clean(runner.invoke(app, ["provenance", str(broken)]), "provenance")
+
+    def test_provenance_reading_a_verified_document(self, tmp_path: Path):
+        document = tmp_path / "provenance.json"
+        document.write_text(
+            json.dumps(
+                {
+                    "tag": "app:1.0",
+                    "status": "VERIFIED",
+                    "source": {
+                        "dockerfile": "sha256:aa",
+                        "context": "sha256:bb",
+                        "context_files": 12,
+                        "git_revision": "abc123",
+                        "git_dirty": False,
+                        "base_images": {"alpine:3.21": "sha256:cc"},
+                    },
+                    "source_after": {"dockerfile": "sha256:aa", "context": "sha256:bb"},
+                    "artifact": {
+                        "image_id": "sha256:dd",
+                        "repo_digest": "sha256:ee",
+                        "published_reference": "ghcr.io/org/app@sha256:ee",
+                        "scanner": "trivy 0.58.1",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        _assert_clean(runner.invoke(app, ["provenance", str(document)]), "provenance verificada")
 
 
 class TestEcosystemInsights:
@@ -190,16 +281,26 @@ class TestValidationReportSymbols:
             assert status in rendered
 
 
-#: Comandos ainda em português, fora do escopo desta mudança. A lista é
-#: explícita para que ninguém leia a ausência deles acima como aprovação --
-#: e para que o dia em que forem traduzidos, o guard os receba por remoção
-#: daqui em vez de por invenção de um teste novo.
-_NOT_YET_TRANSLATED = ("build", "base-image", "provenance", "verify", "registry-audit")
+#: Vazio, e é para continuar assim. Aqui ficavam `build`, `base-image`,
+#: `provenance`, `verify` e `registry-audit` -- os cinco comandos que ainda
+#: respondiam em português. A lista existia para que ninguém lesse a
+#: ausência deles do guard como aprovação; agora ela existe para que
+#: ninguém acrescente um sexto sem que isso seja uma decisão explícita.
+_NOT_YET_TRANSLATED: tuple[str, ...] = ()
+
+
+def test_no_command_is_exempt_from_the_language_guard():
+    """A lista de isenções está vazia, e cada nome que voltar a ela é um
+    comando que deixou de ser conferido -- o que tem de doer para ser
+    notado."""
+    assert _NOT_YET_TRANSLATED == (), (
+        f"commands exempted from the English/no-emoji guard: {list(_NOT_YET_TRANSLATED)}"
+    )
 
 
 def test_the_untranslated_commands_are_declared():
-    """Trava a lista acima contra o esquecimento: se um destes for traduzido
-    e sair de `_NOT_YET_TRANSLATED`, o guard passa a exigi-lo."""
+    """Trava a lista acima contra o esquecimento: um nome que sobre nela
+    tem de nomear um comando que existe de verdade."""
     from dockerls.cli.app import COMMANDS
 
     # Os subcomandos são carregados sob demanda, então a fonte da verdade é

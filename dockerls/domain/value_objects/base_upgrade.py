@@ -137,17 +137,17 @@ class BaseFinding:
     def explain(self) -> str:
         if self.status is BaseStatus.PINNED_STALE:
             return (
-                "fixada num digest que a tag não aponta mais: a base foi republicada "
-                "e esta imagem continua construindo a partir da versão antiga"
+                "pinned to a digest the tag no longer points at: the base was "
+                "republished and this image keeps building from the old version"
             )
         if self.status is BaseStatus.UNPINNED:
             return (
-                "tag móvel, sem digest: o que você testou e o que vai para produção "
-                "podem ser bytes diferentes sem nenhuma mudança da sua parte"
+                "moving tag, no digest: what you tested and what goes to production "
+                "can be different bytes with no change on your part"
             )
         if self.status is BaseStatus.UNRESOLVED:
-            return "não foi possível perguntar ao registry qual digest esta tag aponta"
-        return "fixada no digest que a tag aponta hoje"
+            return "the registry could not be asked which digest this tag points at"
+        return "pinned to the digest the tag points at today"
 
 
 def parse_bases(content: str) -> list[DeclaredBase]:
