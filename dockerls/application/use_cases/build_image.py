@@ -232,8 +232,8 @@ class BuildImageUseCase:
                 if response.policy_violations and response.exit_code == EXIT_OK:
                     response.success = False
                     response.error = (
-                        f"{len(response.policy_violations)} regra(s) de política não "
-                        "cumprida(s) no que dá para conferir sem construir"
+                        f"{len(response.policy_violations)} policy rule(s) not met among what can "
+                        "be checked without building"
                     )
                     response.exit_code = EXIT_POLICY
                 return response
@@ -438,9 +438,7 @@ class BuildImageUseCase:
                         analysis=validation_result.analysis,
                         policy_violations=violations,
                         inheritance=inheritance,
-                        error=(
-                            f"{len(violations)} regra(s) de .dockerls-policy.yaml não cumprida(s)"
-                        ),
+                        error=(f"{len(violations)} .dockerls-policy.yaml rule(s) not met"),
                         exit_code=EXIT_POLICY,
                     )
 
@@ -459,9 +457,9 @@ class BuildImageUseCase:
                         validation=validation,
                         analysis=validation_result.analysis,
                         error=(
-                            "publicação recusada: o Dockerfile ou o contexto mudaram "
-                            "durante o build, então a imagem não corresponde à entrada "
-                            "que foi medida. Reconstrua a partir de uma árvore estável."
+                            "publish refused: the Dockerfile or the context changed "
+                            "during the build, so the image does not correspond to the "
+                            "input that was measured. Rebuild from a stable tree."
                         ),
                         exit_code=EXIT_POLICY,
                     )
@@ -517,7 +515,7 @@ class BuildImageUseCase:
             )
 
         except Exception as e:
-            logger.exception(f"Erro no build: {e}")
+            logger.exception(f"Build error: {e}")
             return BuildImageResponse(
                 success=False,
                 error=str(e),
@@ -693,7 +691,7 @@ class BuildImageUseCase:
             base_image=template,
             output_path=output_path,
         )
-        logger.debug(f"Dockerfile hardened gerado: {output_path}")
+        logger.debug(f"Hardened Dockerfile generated: {output_path}")
         return str(output_path)
 
     def _derive_and_write_remediated_dockerfile(
@@ -905,7 +903,7 @@ class BuildImageUseCase:
                 logs=logs,
             )
         except Exception as e:
-            logger.exception(f"Erro no build: {e}")
+            logger.exception(f"Build error: {e}")
             return BuildResult(
                 success=False,
                 error_message=str(e),
@@ -924,12 +922,12 @@ class BuildImageUseCase:
         target = destination.strip() or tag
         if target != tag:
             retag_error = self._run_docker(
-                ["tag", tag, target], timeout=60, action=f"Retag para {target}"
+                ["tag", tag, target], timeout=60, action=f"Retag to {target}"
             )
             if retag_error is not None:
                 return retag_error
 
-        logger.debug(f"Publicando imagem: {target}")
+        logger.debug(f"Publishing image: {target}")
         return self._run_docker(["push", target], timeout=1800, action=f"Push de {target}")
 
     @staticmethod
@@ -969,12 +967,12 @@ class BuildImageUseCase:
 
             return {}
         except Exception as e:
-            logger.warning(f"Não foi possível obter info da imagem: {e}")
+            logger.warning(f"Could not read the image info: {e}")
             return {}
 
     def _scan_image(self, image_tag: str) -> ScanResult | None:
         """Executa scan de segurança na imagem."""
-        logger.info(f"Iniciando scan da imagem: {image_tag}")
+        logger.info(f"Starting the image scan: {image_tag}")
         start_time = datetime.now()
 
         try:
@@ -1002,9 +1000,9 @@ class BuildImageUseCase:
             logger.warning(f"Trivy falhou (exit {result.returncode}), tentando Grype...")
 
         except ExecutableNotFoundError:
-            logger.warning("Trivy não encontrado, tentando Grype...")
+            logger.warning("Trivy not found, trying Grype...")
         except Exception as e:
-            logger.warning(f"Erro no scan com Trivy: {e}")
+            logger.warning(f"Trivy scan error: {e}")
 
         # Fallback: tentar Grype
         try:
@@ -1027,9 +1025,9 @@ class BuildImageUseCase:
                 return scan
 
         except Exception as e:
-            logger.warning(f"Grype também falhou: {e}")
+            logger.warning(f"Grype failed as well: {e}")
 
-        logger.warning("Nenhuma ferramenta de scan disponível")
+        logger.warning("No scanner available")
         return None
 
     @staticmethod
@@ -1191,7 +1189,7 @@ class BuildImageUseCase:
                 header
                 if total == 0
                 else f"{header}{_origin_hint(inheritance)} "
-                "(não retidos na amostra do relatório; rode o scanner para a lista)"
+                "(not kept in the report sample; run the scanner for the full list)"
             )
         listed = "; ".join(
             f"{v.get('cve_id') or '?'} ({v.get('severity')}) in "
@@ -1252,7 +1250,7 @@ class BuildImageUseCase:
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
-            logger.debug(f"Não foi possível reler {path}: {e}")
+            logger.debug(f"Could not re-read {path}: {e}")
             return ()
         return tuple(
             BaseFact(
@@ -1284,14 +1282,14 @@ class BuildImageUseCase:
         if not request.attribute_findings:
             return None
         if scan_result is None:
-            return unavailable("", "a imagem construída não pôde ser escaneada")
+            return unavailable("", "the built image could not be scanned")
 
         analysis = validation.analysis
         base_reference = (analysis.info.final_base_image or "") if analysis else ""
         if not base_reference:
             return unavailable(
                 "",
-                "não foi possível determinar a base do estágio final a partir do Dockerfile",
+                "the final stage base could not be determined from the Dockerfile",
             )
         if base_reference.lower() == "scratch":
             # `scratch` não é uma imagem: não há o que escanear, e tudo que a
@@ -1301,12 +1299,12 @@ class BuildImageUseCase:
                 _as_vulnerabilities(scan_result.vulnerabilities), [], base_reference=base_reference
             )
 
-        logger.info(f"Escaneando a base {base_reference} para atribuir os achados")
+        logger.info(f"Scanning the base {base_reference} to attribute the findings")
         base_scan = self._scan_image(base_reference)
         if base_scan is None:
             return unavailable(
                 base_reference,
-                f"a base {base_reference} não pôde ser escaneada",
+                f"the base {base_reference} could not be scanned",
             )
         return attribute(
             _as_vulnerabilities(scan_result.vulnerabilities),
@@ -1406,13 +1404,13 @@ class BuildImageUseCase:
                 dockerfile_digest = hash_file(dockerfile)
                 base_images = self._declared_bases(dockerfile)
             except OSError as e:
-                logger.warning(f"Não foi possível digerir {dockerfile}: {e}")
+                logger.warning(f"Could not digest {dockerfile}: {e}")
 
         context_digest, counted = "", 0
         try:
             context_digest, counted = hash_context(root)
         except (OSError, ContextTooLargeError) as e:
-            logger.warning(f"Não foi possível digerir o contexto {root}: {e}")
+            logger.warning(f"Could not digest the context {root}: {e}")
 
         revision, dirty = self._git_state(root)
         return SourceDigests(
@@ -1493,9 +1491,9 @@ class BuildImageUseCase:
             path.write_text(
                 json.dumps(provenance.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
             )
-            logger.info(f"Procedência arquivada em {path}")
+            logger.info(f"Provenance archived at {path}")
         except OSError as e:
-            logger.warning(f"Não foi possível arquivar a procedência: {e}")
+            logger.warning(f"Could not archive the provenance: {e}")
 
     def _generate_report(
         self,
@@ -1601,7 +1599,7 @@ class BuildImageUseCase:
 
     def _get_docker_version(self) -> str:
         """Obtém versão do Docker."""
-        return self._capture_output(["docker", "--version"], "versão do Docker") or "unknown"
+        return self._capture_output(["docker", "--version"], "the Docker version") or "unknown"
 
     @staticmethod
     def _capture_output(argv: list[str], what: str) -> str | None:
@@ -1621,11 +1619,11 @@ class BuildImageUseCase:
                 check=False,
             )
         except (ExecutableNotFoundError, OSError, subprocess.SubprocessError) as e:
-            logger.debug(f"Não foi possível obter {what}: {e}")
+            logger.debug(f"Could not read {what}: {e}")
             return None
 
         if result.returncode != 0:
-            logger.debug(f"Não foi possível obter {what}: exit {result.returncode}")
+            logger.debug(f"Could not read {what}: exit {result.returncode}")
             return None
         return result.stdout.strip()
 
@@ -1673,6 +1671,6 @@ def _origin_hint(inheritance: InheritanceReport | None) -> str:
         return ""
     corrigiveis = inheritance.fixable_inherited
     return (
-        f" [{herdadas} da base {inheritance.base_reference}"
-        f" ({corrigiveis} com correção publicada), {suas} das suas camadas]"
+        f" [{herdadas} from the base {inheritance.base_reference}"
+        f" ({corrigiveis} with a published fix), {suas} from your layers]"
     )

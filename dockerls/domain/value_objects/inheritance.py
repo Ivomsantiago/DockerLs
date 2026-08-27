@@ -54,16 +54,16 @@ class FindingOrigin(StrEnum):
 #: O que fazer com cada grupo, dito em uma linha.
 ACTIONS: dict[FindingOrigin, str] = {
     FindingOrigin.INHERITED: (
-        "veio da base e nenhuma linha do seu Dockerfile resolve: atualize a base "
-        "(`dockerls base`) ou troque-a (`dockerls base --alternatives`)"
+        "came from the base and no line of your Dockerfile fixes it: update the base "
+        "(`dockerls base`) or swap it (`dockerls base --alternatives`)"
     ),
     FindingOrigin.INTRODUCED: (
-        "veio do que este Dockerfile instala, copia ou constrói: é a parte sobre a "
-        "qual você tem poder direto"
+        "came from what this Dockerfile installs, copies or builds: the part you have "
+        "direct power over"
     ),
     FindingOrigin.REMOVED: (
-        "estava na base e não está mais na imagem final: é a medida do que o seu "
-        "endurecimento comprou"
+        "was in the base and is no longer in the final image: the measure of what your "
+        "hardening bought"
     ),
 }
 
@@ -128,24 +128,22 @@ class RemediationBucket:
         if self.origin is FindingOrigin.INHERITED:
             if self.fixable:
                 return (
-                    "há correção publicada upstream: atualizar a base pode "
-                    "resolver -- pode, porque a correção existir não significa que "
-                    "quem publica a base já reconstruiu com ela. `dockerls base` "
-                    "confere se a tag moveu"
+                    "a fix is published upstream: updating the base may resolve it -- "
+                    "may, because a fix existing does not mean whoever publishes the "
+                    "base has rebuilt with it. `dockerls base` checks whether the tag "
+                    "moved"
                 )
             return (
-                "não há correção publicada: atualizar a base não resolve nada aqui. "
-                "Trocar de base é o único caminho -- `dockerls base --alternatives` "
-                "mede as candidatas"
+                "no fix is published: updating the base resolves nothing here. "
+                "Swapping the base is the only path -- `dockerls base --alternatives` "
+                "measures the candidates"
             )
         if self.fixable:
-            return (
-                "há correção publicada: suba a versão da dependência no seu manifesto e reconstrua"
-            )
+            return "a fix is published: raise the dependency version in your manifest and rebuild"
         return (
-            "não há correção publicada e o pacote é seu: avalie remover, substituir "
-            "ou isolar. É o grupo em que uma isenção documentada em "
-            "`.dockerls-ignore.yaml` faz sentido -- com prazo"
+            "no fix is published and the package is yours: consider removing, "
+            "replacing or isolating it. This is the group where a documented exemption "
+            "in `.dockerls-ignore.yaml` makes sense -- with an expiry date"
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -234,8 +232,8 @@ class InheritanceReport:
         """A frase que responde "consertar o quê?"."""
         if not self.available:
             return (
-                f"não foi possível atribuir as vulnerabilidades: {self.unavailable_reason}. "
-                "Sem os dois scans, dizer que elas são suas ou da base seria inventar"
+                f"the vulnerabilities could not be attributed: {self.unavailable_reason}. "
+                "Without both scans, calling them yours or the base's would be inventing"
             )
         herdadas, suas = len(self.inherited), len(self.introduced)
         if not herdadas and not suas:
@@ -246,28 +244,30 @@ class InheritanceReport:
                 quantas = len(self.removed)
                 if quantas == 1:
                     return (
-                        "nenhuma vulnerabilidade nesta imagem, e a 1 que a base tinha "
-                        "não sobreviveu ao build"
+                        "no vulnerabilities in this image, and the 1 the base had did "
+                        "not survive the build"
                     )
                 return (
-                    f"nenhuma vulnerabilidade nesta imagem, e as {quantas} que a base "
-                    "tinha não sobreviveram ao build"
+                    f"no vulnerabilities in this image, and the {quantas} the base had "
+                    "did not survive the build"
                 )
-            return "nenhuma vulnerabilidade a atribuir nesta imagem"
+            return "no vulnerabilities to attribute in this image"
         partes = [
-            f"{herdadas} de {herdadas + suas} {_vir(herdadas)} da base {self.base_reference}",
-            f"{suas} {_vir(suas)} das camadas deste Dockerfile",
+            f"{herdadas} of {herdadas + suas} {_come(herdadas)} from the base "
+            f"{self.base_reference}",
+            f"{suas} {_come(suas)} from the layers of this Dockerfile",
         ]
         if self.removed:
             quantas = len(self.removed)
-            verbo = "foi removida" if quantas == 1 else "foram removidas"
-            partes.append(f"{quantas} que a base tinha {verbo} no build")
+            partes.append(
+                f"{quantas} the base had {'was' if quantas == 1 else 'were'} removed by the build"
+            )
         if herdadas:
             # A pergunta imediatamente seguinte a "41 vêm da base" é "e
             # atualizar a base resolve?". Responder junto poupa a viagem.
             corrigiveis = self.fixable_inherited
             partes.append(
-                f"{corrigiveis} das herdadas {_ter(corrigiveis)} correção publicada upstream"
+                f"{corrigiveis} of the inherited {_have(corrigiveis)} a fix published upstream"
             )
         return "; ".join(partes)
 
@@ -337,12 +337,12 @@ def _attributed(identity: str, vuln: Vulnerability, origin: FindingOrigin) -> At
     )
 
 
-def _vir(quantidade: int) -> str:
-    return "vem" if quantidade == 1 else "vêm"
+def _come(quantidade: int) -> str:
+    return "comes" if quantidade == 1 else "come"
 
 
-def _ter(quantidade: int) -> str:
-    return "tem" if quantidade == 1 else "têm"
+def _have(quantidade: int) -> str:
+    return "has" if quantidade == 1 else "have"
 
 
 def _by_severity(finding: AttributedFinding) -> tuple[int, str]:

@@ -48,8 +48,8 @@ console = Console()
 
 
 def build(
-    path: str = typer.Argument(".", help="Diretório com Dockerfile"),
-    tag: str | None = typer.Option(None, "--tag", "-t", help="Tag da imagem (obrigatório)"),
+    path: str = typer.Argument(".", help="Directory containing the Dockerfile"),
+    tag: str | None = typer.Option(None, "--tag", "-t", help="Image tag (required)"),
     base: str | None = typer.Option(
         None,
         "--base",
@@ -61,112 +61,107 @@ def build(
     ),
     hardened: bool = typer.Option(False, "--hardened", help="Usa templates Dockerfile hardened"),
     list_templates: bool = typer.Option(
-        False, "--list-templates", help="Lista os templates hardened disponíveis e sai"
+        False, "--list-templates", help="List the available hardened templates and exit"
     ),
     interactive: bool = typer.Option(
-        False, "--interactive", "-i", help="Wizard de segurança passo a passo"
+        False, "--interactive", "-i", help="Step-by-step security wizard"
     ),
-    scan: bool = typer.Option(True, "--scan/--no-scan", help="Executa Trivy/Grype após build"),
+    scan: bool = typer.Option(True, "--scan/--no-scan", help="Run Trivy/Grype after the build"),
     auto_remediate: bool = typer.Option(
         False,
         "--auto-fix",
         "--auto-remediate",
-        help="Executa ciclo de auto-remediação até zero vulnerabilidades",
+        help="Loop auto-remediation until zero vulnerabilities",
     ),
     zero_vulns: bool = typer.Option(
-        False, "--zero-vulns", help="Garante build e remediação até zero CVEs"
+        False, "--zero-vulns", help="Build and remediate until zero CVEs"
     ),
     max_iterations: int = typer.Option(
-        3, "--max-iterations", help="Número máximo de iterações de remediação"
+        3, "--max-iterations", help="Maximum number of remediation iterations"
     ),
     fail_on: str | None = typer.Option(
         None, "--fail-on", help="Reprova build se tiver critical/high"
     ),
     report: str | None = typer.Option(
-        None, "--report", "-r", help="Salva relatório de segurança (JSON/HTML)"
+        None, "--report", "-r", help="Save the security report (JSON/HTML)"
     ),
     no_cache: bool = typer.Option(False, "--no-cache", help="Desativa cache do Docker"),
     build_args: str | None = typer.Option(None, "--build-args", help="Argumentos de build (JSON)"),
-    labels: str | None = typer.Option(None, "--labels", help="Labels de segurança (JSON)"),
+    labels: str | None = typer.Option(None, "--labels", help="Security labels (JSON)"),
     ci_mode: bool = typer.Option(
-        False, "--ci-mode", help="Modo CI/CD (output JSON, sem interação)"
+        False, "--ci-mode", help="CI/CD mode (JSON output, no interaction)"
     ),
     validate_only: bool = typer.Option(False, "--validate-only", help="Apenas valida Dockerfile"),
     suggest_hardening: bool = typer.Option(
         False, "--suggest-hardening", help="Sugere melhorias sem build"
     ),
-    push: bool = typer.Option(
-        False, "--push", help="Faz docker push da tag após um build bem-sucedido"
-    ),
+    push: bool = typer.Option(False, "--push", help="docker push the tag after a successful build"),
     registry: str | None = typer.Option(
         None,
         "--registry",
         "--acr",
         help=(
-            "Destino da publicação, sem tag: meuacr.azurecr.io/apps/app, "
-            "us-central1-docker.pkg.dev/proj/repo/app, gcr.io/proj/app, minhaorg/app"
+            "Publish destination, without a tag: myacr.azurecr.io/apps/app, "
+            "us-central1-docker.pkg.dev/proj/repo/app, gcr.io/proj/app, myorg/app"
         ),
     ),
     owner: str | None = typer.Option(
-        None, "--owner", help="Time ou pessoa responsável (vira maintainer e vendor)"
+        None, "--owner", help="Owning team or person (becomes maintainer and vendor)"
     ),
     security_contact: str | None = typer.Option(
         None, "--security-contact", help="Contato para vulnerabilidades nesta imagem"
     ),
     source_url: str | None = typer.Option(
-        None, "--source", help="URL do repositório que gera a imagem"
+        None, "--source", help="URL of the repository that produces this image"
     ),
     provenance: str | None = typer.Option(
         None,
         "--provenance",
-        help="Arquiva o registro de supply chain (hashes de entrada e saída) em JSON",
+        help="Archive the supply-chain record (input and output hashes) as JSON",
     ),
     production: bool = typer.Option(
         False,
         "--production",
         help=(
-            "Perfil de produção: liga o portão em critical, exige scan, bases fixadas, "
-            "usuário sem privilégio, procedência verificada, rótulos de "
-            "responsabilidade e atribuição dos achados. Diz na saída o que ligou"
+            "Production profile: gate at critical, require a scan, pinned bases, an "
+            "unprivileged user, verified provenance, ownership labels and finding "
+            "attribution. Says in the output what it turned on"
         ),
     ),
     attribute: bool = typer.Option(
         False,
         "--attribute",
         help=(
-            "Escaneia também a base declarada e diz de quem é cada CVE: dela ou das "
-            "camadas deste Dockerfile. Custa um segundo scan"
+            "Also scan the declared base and say whose each CVE is: the base, or the "
+            "layers of this Dockerfile. Costs a second scan"
         ),
     ),
     sign: bool = typer.Option(
         False,
         "--sign",
         help=(
-            "Assina a imagem publicada com cosign (keyless/OIDC). Exige --push e "
-            "procedência verificada"
+            "Sign the published image with cosign (keyless/OIDC). Requires --push and "
+            "verified provenance"
         ),
     ),
     policy: str | None = typer.Option(
         None,
         "--policy",
-        help=(
-            "Arquivo de política a conferir (padrão: .dockerls-policy.yaml no "
-            "contexto, quando existir)"
-        ),
+        help=("Policy file to check (default: .dockerls-policy.yaml in the context, when present)"),
     ),
     no_policy: bool = typer.Option(
         False,
         "--no-policy",
-        help="Ignora o .dockerls-policy.yaml do contexto. Fica registrado na saída",
+        help="Ignore the context .dockerls-policy.yaml. Recorded in the output",
     ),
     non_interactive: bool = typer.Option(
         False,
         "--non-interactive",
-        help="Não pergunta nada: o que faltar vira erro, em vez de travar o pipeline",
+        help="Ask nothing: anything missing becomes an error instead of stalling the pipeline",
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Debug detalhado"),
-    output: str | None = typer.Option(None, "--output", "-o", help="Arquivo de saída do relatório"),
-    force: bool = typer.Option(False, "--force", help="Força build mesmo com erros de validação"),
+    output: str | None = typer.Option(None, "--output", "-o", help="Report output file"),
+    force: bool = typer.Option(False, "--force", help="Build even when validation fails"),
 ) -> None:
     """Constrói imagens Docker seguras com validação, scanning e auto-remediação."""
     if verbose:
@@ -180,14 +175,14 @@ def build(
 
     # Validar tag obrigatória (exceto em modos especiais)
     if not tag and not validate_only and not suggest_hardening and not interactive:
-        console.print("[red]Error:[/red] --tag é obrigatório para build")
+        console.print("[red]Error:[/red] --tag is required for build")
         raise typer.Exit(EXIT_ERROR)
 
     # Um limiar desconhecido não pode virar um portão que nunca reprova:
     # rejeita antes de construir qualquer coisa.
     if fail_on is not None and fail_on.strip().lower() not in BuildImageUseCase.FAIL_ON_THRESHOLDS:
         valid = ", ".join(BuildImageUseCase.FAIL_ON_THRESHOLDS)
-        console.print(f"[red]Error:[/red] --fail-on inválido: {fail_on!r}. Use um de: {valid}")
+        console.print(f"[red]Error:[/red] invalid --fail-on: {fail_on!r}. Use um de: {valid}")
         raise typer.Exit(EXIT_ERROR)
 
     # Uma base sem template não pode ser descoberta só depois do build ter
@@ -199,8 +194,8 @@ def build(
         # passava aqui (por conter "alpine") e explodia lá dentro, na geração.
         if base.strip().lower() not in known:
             console.print(
-                f"[red]Error:[/red] --base inválido: {base!r}.\n"
-                f"[dim]Disponíveis: {', '.join(known)}[/dim]"
+                f"[red]Error:[/red] invalid --base: {base!r}.\n"
+                f"[dim]Available: {', '.join(known)}[/dim]"
             )
             raise typer.Exit(EXIT_ERROR)
 
@@ -220,16 +215,16 @@ def build(
     publishing = push or bool(registry)
     if publishing and not scan:
         console.print(
-            "[red]Error:[/red] --push com --no-scan publicaria uma imagem que ninguém "
-            "mediu. Uma imagem não medida não é uma imagem segura; é uma imagem "
-            "desconhecida."
+            "[red]Error:[/red] --push with --no-scan would publish an image nobody "
+            "measured. An unmeasured image is not a secure image; it is an unknown "
+            "one."
         )
         raise typer.Exit(EXIT_ERROR)
     if publishing and fail_on is None:
         fail_on = "critical"
         console.print(
-            "[dim]Publicando: portão de segurança em `critical` por padrão "
-            "(use --fail-on para mudar o limiar).[/dim]"
+            "[dim]Publishing: security gate at `critical` by default "
+            "(use --fail-on to change the threshold).[/dim]"
         )
 
     # Destino e responsabilidade são resolvidos **antes** do build: descobrir
@@ -324,33 +319,33 @@ def _sign_if_requested(
         return None
     if not publishing or not response.success:
         console.print(
-            "[yellow]--sign ignorado: só se assina o que foi publicado, e este build "
-            "não chegou a publicar.[/yellow]"
+            "[yellow]--sign ignored: only what was published can be signed, and this "
+            "build never published.[/yellow]"
         )
         return None
 
     record = response.provenance
     if record is None or not record.is_verified:
-        motivo = record.explain() if record else "não houve registro de procedência"
+        reason = record.explain() if record else "no provenance was recorded"
         console.print(
-            f"[red]Assinatura recusada:[/red] {safe(motivo)}.\n"
-            "[dim]Assinar é afirmar que você publicou estes bytes; fazê-lo sobre um "
-            "artefato cuja entrada não fecha seria carimbar o desconhecido.[/dim]"
+            f"[red]Signing refused:[/red] {safe(reason)}.\n"
+            "[dim]Signing asserts that you published these bytes; doing it over an "
+            "artifact whose inputs do not add up would be stamping the unknown.[/dim]"
         )
         return SignatureResult(
             reference=response.image_tag or "",
             status=SignatureStatus.FAILED,
-            detail="procedência não verificada",
+            detail="provenance not verified",
         )
 
     digest = record.artifact.repo_digest
     reference = record.artifact.published_reference or response.image_tag or ""
     if not digest:
         console.print(
-            "[red]Assinatura recusada:[/red] o registry não devolveu o digest do "
-            "manifesto.\n[dim]Assinar a tag assinaria o que ela aponta agora, e ela "
-            "pode mover no instante seguinte -- a assinatura seguiria válida cobrindo "
-            "outros bytes.[/dim]"
+            "[red]Signing refused:[/red] the registry did not return the manifest "
+            "digest.\n[dim]Signing the tag would sign what it points at now, and it "
+            "can move an instant later -- the signature would stay valid over "
+            "different bytes.[/dim]"
         )
         return SignatureResult(
             reference=reference,
@@ -374,7 +369,7 @@ def _announce_production(declared: BuildPolicy | None) -> BuildPolicy:
     apertar: `--production` é um piso, não um teto.
     """
     perfil = BuildPolicy.production().merged_with(declared)
-    console.print("\n[bold]Perfil de produção[/bold]")
+    console.print("\n[bold]Production profile[/bold]")
     for regra, valor in perfil.to_dict().items():
         if valor:
             console.print(f"  [cyan]{regra}[/cyan]  [dim]{safe(_describe_rule(valor))}[/dim]")
@@ -405,11 +400,11 @@ def _print_inheritance(report: InheritanceReport | None) -> None:
         return
     if not report.available:
         console.print(
-            f"\n[yellow]Atribuição indisponível:[/yellow] [dim]{safe(report.explain())}[/dim]"
+            f"\n[yellow]Attribution unavailable:[/yellow] [dim]{safe(report.explain())}[/dim]"
         )
         return
 
-    console.print("\n[bold]De onde vêm as vulnerabilidades[/bold]")
+    console.print("\n[bold]Where the vulnerabilities come from[/bold]")
     console.print(f"[dim]{safe(report.explain())}[/dim]\n")
 
     linhas = (
@@ -428,7 +423,7 @@ def _print_inheritance(report: InheritanceReport | None) -> None:
     if report.inherited_share >= 0.5 and report.inherited:
         console.print(
             f"\n[yellow]{report.inherited_share:.0%} das vulnerabilidades desta imagem "
-            "vieram da base.[/yellow]\n[dim]Mexer no seu Dockerfile não resolve essa "
+            "came from the base.[/yellow]\n[dim]Changing your Dockerfile does not "
             "parte: rode `dockerls base --alternatives` para medir outra base.[/dim]"
         )
 
@@ -448,7 +443,7 @@ def _print_plan(report: InheritanceReport) -> None:
     console.print("\n[bold]Plano de trabalho[/bold]")
     for bucket in plano:
         de_onde = "da base" if bucket.origin is FindingOrigin.INHERITED else "suas"
-        com_correcao = "com correção" if bucket.fixable else "sem correção"
+        com_correcao = "fixable" if bucket.fixable else "no fix"
         criticas = f", {bucket.critical} CRITICAL" if bucket.critical else ""
         cor = "red" if bucket.critical else "yellow"
         console.print(f"  [{cor}]{bucket.count:>4}[/{cor}]  {de_onde}, {com_correcao}{criticas}")
@@ -494,7 +489,7 @@ def _load_policy(context: str, explicit: str | None, *, no_policy: bool) -> Buil
     """
     if no_policy:
         console.print(
-            "[yellow]--no-policy: o .dockerls-policy.yaml do contexto não será "
+            "[yellow]--no-policy: the context .dockerls-policy.yaml will not be "
             "conferido neste build.[/yellow]"
         )
         return None
@@ -503,7 +498,7 @@ def _load_policy(context: str, explicit: str | None, *, no_policy: bool) -> Buil
     if target is None:
         return None
     if explicit and not target.is_file():
-        console.print(f"[red]Error:[/red] arquivo de política não encontrado: {safe(explicit)}")
+        console.print(f"[red]Error:[/red] policy file not found: {safe(explicit)}")
         raise typer.Exit(EXIT_ERROR)
 
     try:
@@ -512,21 +507,21 @@ def _load_policy(context: str, explicit: str | None, *, no_policy: bool) -> Buil
         console.print(f"[red]Error:[/red] {safe(str(e))}")
         raise typer.Exit(EXIT_ERROR) from e
 
-    console.print(f"[dim]Política declarada em {safe(str(target))} será conferida.[/dim]")
+    console.print(f"[dim]Policy declared in {safe(str(target))} will be checked.[/dim]")
     return declared
 
 
 def _print_policy_violations(violations: list[PolicyViolation]) -> None:
     if not violations:
         return
-    console.print("\n[bold red]Política não cumprida[/bold red]")
+    console.print("\n[bold red]Policy not met[/bold red]")
     for violation in violations:
         console.print(f"  [red]x[/red] [bold]{violation.rule}[/bold]  {safe(violation.message)}")
     console.print(
-        "\n[dim]Estas regras vêm do perfil `--production` e/ou do "
-        ".dockerls-policy.yaml do contexto. O arquivo é versionado junto do código: "
-        "mudá-lo é uma alteração revisável, passar uma flag diferente na linha de "
-        "comando não é.[/dim]"
+        "\n[dim]These rules come from the `--production` profile and/or the context "
+        ".dockerls-policy.yaml. That file is versioned alongside the code: changing it "
+        "is a reviewable change, passing a different flag on the command line is "
+        "not.[/dim]"
     )
 
 
@@ -549,7 +544,7 @@ def _print_templates(template_provider: HardeningTemplates, ci_mode: bool = Fals
         typer.echo(json.dumps({"templates": templates}, indent=2))
         return
 
-    console.print(Panel("[bold cyan]Templates hardened disponíveis[/bold cyan]", expand=False))
+    console.print(Panel("[bold cyan]Available hardened templates[/bold cyan]", expand=False))
 
     # Agrupado por stack, com o sistema operacional visível. Uma lista plana de
     # quase quarenta nomes não responde a pergunta que a pessoa tem, que é
@@ -571,8 +566,8 @@ def _print_templates(template_provider: HardeningTemplates, ci_mode: bool = Fals
     for example in _BUILD_EXAMPLES:
         console.print(f"  [dim]{example}[/dim]")
     console.print(
-        "\n[dim]Sem --base nem --hardened, o build usa o Dockerfile que já está no "
-        "diretório -- os templates só entram quando você pede um.[/dim]"
+        "\n[dim]Without --base or --hardened, the build uses the Dockerfile already "
+        "in the directory -- templates only apply when you ask for one.[/dim]"
     )
 
 
@@ -596,37 +591,37 @@ _STACK_TITLES = {
 #: `node-distroless` é adivinhação.
 _TEMPLATE_HINTS = {
     "alpine": "musl, ~5 MB, com shell",
-    "debian": "glibc, estável, com shell",
-    "ubuntu": "glibc, mais pacotes disponíveis",
+    "debian": "glibc, stable, has a shell",
+    "ubuntu": "glibc, more packages available",
     "distroless": "sem shell nem gerenciador de pacotes",
     "node": "Debian slim",
-    "node-alpine": "musl -- atenção a módulos nativos (sharp, bcrypt)",
+    "node-alpine": "musl -- watch out for native modules (sharp, bcrypt)",
     "node-debian": "glibc",
     "node-ubuntu": "glibc",
-    "node-distroless": "sem shell; só o runtime",
+    "node-distroless": "no shell; runtime only",
     "python": "Debian slim",
     "python-alpine": "musl -- wheels precisam ser musllinux",
     "python-debian": "glibc",
     "python-ubuntu": "glibc",
-    "python-distroless": "sem shell; só o interpretador",
+    "python-distroless": "no shell; interpreter only",
     "java": "Temurin JRE",
     "java-alpine": "Temurin JRE Alpine",
     "java-debian": "Temurin JRE Debian",
     "java-ubuntu": "Temurin JRE Ubuntu",
-    "java-distroless": "sem shell; só a JVM",
-    "maven": "constrói com Maven, roda só com JRE",
-    "maven-alpine": "constrói com Maven, roda só com JRE Alpine",
-    "gradle": "constrói com Gradle, roda só com JRE",
-    "gradle-alpine": "constrói com Gradle, roda só com JRE Alpine",
+    "java-distroless": "no shell; JVM only",
+    "maven": "builds with Maven, runs on the JRE alone",
+    "maven-alpine": "builds with Maven, runs on the JRE alone Alpine",
+    "gradle": "builds with Gradle, runs on the JRE alone",
+    "gradle-alpine": "builds with Gradle, runs on the JRE alone Alpine",
     "go": "Debian slim",
-    "go-alpine": "musl estático",
+    "go-alpine": "static musl",
     "go-debian": "glibc",
     "go-distroless": "sem shell",
-    "go-scratch": "binário estático sozinho -- a menor superfície possível",
+    "go-scratch": "the static binary alone -- the smallest surface there is",
     "rust": "Debian slim",
     "rust-alpine": "musl",
     "rust-debian": "glibc",
-    "rust-scratch": "binário estático sozinho",
+    "rust-scratch": "the static binary alone",
     "php": "Debian slim",
     "php-alpine": "musl",
     "php-debian": "glibc",
@@ -640,19 +635,19 @@ _TEMPLATE_HINTS = {
 #: eu escrevo isso", que nenhuma lista de nomes responde sozinha.
 _BUILD_EXAMPLES = (
     "dockerls build -t minha-api:1.0 .",
-    "     ^ usa o Dockerfile que já existe no diretório",
+    "     ^ uses the Dockerfile already in the directory",
     "",
     "dockerls build --hardened --base node-alpine -t minha-api:1.0 .",
-    "     ^ gera um Dockerfile hardened de Node sobre Alpine e constrói com ele",
+    "     ^ generates a hardened Node-on-Alpine Dockerfile and builds with it",
     "",
     "dockerls build --hardened --base maven-alpine -t minha-api:1.0 --fail-on critical .",
-    "     ^ Java com Maven: constrói com a ferramenta, roda só com o JRE",
+    "     ^ Java with Maven: builds with the tool, runs on the JRE alone",
     "",
     "dockerls build --hardened --base go-scratch -t minha-api:1.0 .",
-    "     ^ binário estático sozinho: a menor superfície de ataque possível",
+    "     ^ the static binary alone: the smallest attack surface there is",
     "",
     "dockerls build --hardened --base ubuntu -t minha-base:1.0 .",
-    "     ^ só o sistema operacional, sem runtime de linguagem",
+    "     ^ the operating system only, with no language runtime",
 )
 
 
@@ -661,7 +656,7 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
     console.print(
         Panel(
             "[bold cyan]DockerLs Interactive Build Wizard[/bold cyan]\n"
-            "[dim]Configuração passo a passo com foco em segurança e zero vulnerabilidades[/dim]",
+            "[dim]Step-by-step setup aimed at security and zero vulnerabilities[/dim]",
             expand=False,
         )
     )
@@ -677,9 +672,7 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
     ]
 
     # 1. Ecossistema / Linguagem
-    console.print(
-        "[bold yellow]? 1. Qual é o ecossistema / linguagem da sua aplicação?[/bold yellow]"
-    )
+    console.print("[bold yellow]? 1. Which ecosystem / language is your application?[/bold yellow]")
     stacks = ["node", "python", "go", "java", "rust", "php", "other"]
     for i, s in enumerate(stacks, 1):
         console.print(f"  {i}. {s}")
@@ -695,21 +688,19 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
         "php": ["8.3 FPM/CLI", "8.2", "custom"],
     }
     opts = version_options.get(stack_choice, ["latest", "custom"])
-    console.print(
-        f"\n[bold yellow]? 2. Qual versão do {stack_choice} deseja utilizar?[/bold yellow]"
-    )
+    console.print(f"\n[bold yellow]? 2. Which version of {stack_choice} do you want?[/bold yellow]")
     for i, opt in enumerate(opts, 1):
         console.print(f"  {i}. {opt}")
     _ = _prompt_choice(opts, "1")
 
     # 3. Base distribution
-    console.print("\n[bold yellow]? 3. Qual distribuição base você prefere?[/bold yellow]")
+    console.print("\n[bold yellow]? 3. Which base distribution do you prefer?[/bold yellow]")
     distros = [
         "alpine (Alpine Linux - Ultra-lightweight musl)",
         "debian (Debian Bookworm Slim - glibc)",
         "ubuntu (Ubuntu 24.04 LTS - Alta compatibilidade)",
         "distroless (Google Distroless - Sem shell, zero CVEs de SO)",
-        "scratch (Scratch puro para binários estáticos)",
+        "scratch (plain scratch, for static binaries)",
     ]
     for i, d in enumerate(distros, 1):
         console.print(f"  {i}. {d}")
@@ -720,16 +711,16 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
     console.print(
         "\n[bold yellow]? 4. Utilizar template multi-stage com non-root user?[/bold yellow]"
     )
-    console.print("  1. yes (Recomendado - reduz superfície de ataque)")
-    console.print("  2. no (Usa Dockerfile padrão do diretório)")
+    console.print("  1. yes (recommended - reduces the attack surface)")
+    console.print("  2. no (use the directory default Dockerfile)")
     use_hardened = _prompt_choice(["yes", "no"], "1") == "yes"
 
     # 5. Dependências do SO / build nativo
     console.print(
-        "\n[bold yellow]? 5. Sua aplicação precisa de dependências nativas do SO?[/bold yellow]"
+        "\n[bold yellow]? 5. Does your application need native OS dependencies?[/bold yellow]"
     )
     deps_opts = [
-        "none (Apenas runtime padrão)",
+        "none (default runtime only)",
         "build-essential / gcc / make",
         "libpq (PostgreSQL client)",
         "openssl / ca-certificates",
@@ -747,19 +738,17 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
         else "8080"
     )
     port_input = (
-        console.input(f"\n[bold yellow]? 6. Porta da aplicação [{default_port}]: [/bold yellow]")
+        console.input(f"\n[bold yellow]? 6. Application port [{default_port}]: [/bold yellow]")
         or default_port
     )
 
     # 7. Scan pós-build
-    console.print("\n[bold yellow]? 7. Executar scan de vulnerabilidades pós-build?[/bold yellow]")
+    console.print("\n[bold yellow]? 7. Run a vulnerability scan after the build?[/bold yellow]")
     scan = _prompt_choice(["yes", "no"], "1") == "yes"
 
     # 8. Ciclo de auto-remediação até zero vulnerabilidades
-    console.print(
-        "\n[bold yellow]? 8. Ativar ciclo iterativo até ZERO vulnerabilidades?[/bold yellow]"
-    )
-    console.print("  1. yes (Corrige patches até eliminar CVEs)")
+    console.print("\n[bold yellow]? 8. Loop until ZERO vulnerabilities?[/bold yellow]")
+    console.print("  1. yes (patches until the CVEs are gone)")
     console.print("  2. no (Apenas relata vulnerabilidades encontradas)")
     zero_vulns = _prompt_choice(["yes", "no"], "1") == "yes"
 
@@ -770,7 +759,7 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
     )
 
     # 10. Push para registro
-    console.print("\n[bold yellow]? 10. Publicar (docker push) após aprovação?[/bold yellow]")
+    console.print("\n[bold yellow]? 10. Publish (docker push) once it passes?[/bold yellow]")
     push_choice = _prompt_choice(["no", "dockerhub", "ghcr", "harbor"], "1")
 
     # Determinar melhor template com base na combinação Stack + Distro
@@ -1192,20 +1181,20 @@ def _print_provenance(provenance: BuildProvenance) -> None:
 
     source = provenance.source
     console.print("[bold]ENTRADA[/bold] [dim](medida antes do build)[/dim]")
-    console.print(f"  Dockerfile  {safe(source.dockerfile) or '[dim]não digerido[/dim]'}")
+    console.print(f"  Dockerfile  {safe(source.dockerfile) or '[dim]not digested[/dim]'}")
     console.print(
-        f"  Contexto    {safe(source.context) or '[dim]não digerido[/dim]'}"
+        f"  Contexto    {safe(source.context) or '[dim]not digested[/dim]'}"
         f"  [dim]({source.context_files} arquivos)[/dim]"
     )
     if source.git_revision:
-        dirty = " [yellow](árvore suja)[/yellow]" if source.git_dirty else ""
+        dirty = " [yellow](dirty tree)[/yellow]" if source.git_dirty else ""
         console.print(f"  Commit      {safe(source.git_revision)}{dirty}")
     for reference, digest in source.base_images.items():
-        pinned = safe(digest) if digest else "[yellow]tag móvel, sem digest[/yellow]"
+        pinned = safe(digest) if digest else "[yellow]moving tag, no digest[/yellow]"
         console.print(f"  Base        {safe(reference)} -> {pinned}")
 
     artifact = provenance.artifact
-    console.print("\n[bold]SAÍDA[/bold] [dim](medida depois do build)[/dim]")
+    console.print("\n[bold]OUTPUT[/bold] [dim](measured after the build)[/dim]")
     console.print(f"  Imagem      {safe(artifact.image_id) or '[dim]desconhecida[/dim]'}")
     if artifact.repo_digest:
         console.print(f"  Manifesto   {safe(artifact.repo_digest)}")
