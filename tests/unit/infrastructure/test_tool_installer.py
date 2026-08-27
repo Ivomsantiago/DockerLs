@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import pathlib
 import tarfile
 import zipfile
 from typing import TYPE_CHECKING
@@ -19,7 +20,7 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 
-from dockerls.domain.value_objects.tool_release import OS, TRIVY, Arch
+from dockerls.domain.value_objects.tool_release import GRYPE, OS, TRIVY, Arch
 from dockerls.infrastructure.toolchain.installer import (
     InstallError,
     InstallPlan,
@@ -64,6 +65,19 @@ def _plan(tmp_path: Path, os_: OS = OS.LINUX) -> InstallPlan:
     return InstallPlan(
         tool="trivy",
         version="0.58.1",
+        asset=asset,
+        destination=tmp_path / "bin",
+        needs_privilege=False,
+    )
+
+
+def _signed_plan(tmp_path: Path) -> InstallPlan:
+    """Um plano do Grype -- o projeto que publica `checksums.txt.sig`."""
+    asset = GRYPE.asset_for("0.87.0", OS.LINUX, Arch.AMD64)
+    assert asset is not None
+    return InstallPlan(
+        tool="grype",
+        version="0.87.0",
         asset=asset,
         destination=tmp_path / "bin",
         needs_privilege=False,
@@ -304,32 +318,159 @@ class TestNetworkFailuresAreContained:
 
 
 class TestSignatureVerification:
+    """A assinatura cobre o `checksums.txt`, e o checksum cobre o arquivo.
+
+    A cadeia tem exatamente dois elos e nenhum a mais: não existe assinatura
+    por artefato para conferir diretamente. O que estes testes travam é a
+    diferença que decide se uma instalação aborta -- assinatura **inválida**
+    é uma afirmação; cosign ausente, projeto sem assinatura conhecida e
+    cosign inconclusivo são ausências, e nenhuma delas impede a instalação
+    nem é reportada como verificação.
+    """
+
+    @staticmethod
+    def _routes(plan: InstallPlan, archive: bytes) -> dict[str, tuple[int, bytes]]:
+        return {
+            plan.asset.archive_name: (200, archive),
+            "checksums.txt": (200, _checksums(plan.asset.archive_name, archive).encode()),
+            "checksums.txt.sig": (200, b"-----BEGIN SIGNATURE-----"),
+            "checksums.txt.pem": (200, b"-----BEGIN CERTIFICATE-----"),
+        }
+
     async def test_an_invalid_signature_aborts_the_install(self, tmp_path):
         """Assinatura inválida é uma afirmação, não uma ausência: aborta."""
 
         class _Cosign:
-            async def verify_blob(self, path: str, url: str) -> bool:
+            async def verify_blob(self, blob, **kwargs):
                 return False
 
-        archive = _tarball({"trivy": BINARY})
-        plan = _plan(tmp_path)
-        installer = _installer(
-            {
-                plan.asset.archive_name: (200, archive),
-                "checksums.txt": (200, _checksums(plan.asset.archive_name, archive).encode()),
-            }
-        )
+        archive = _tarball({"grype": BINARY})
+        plan = _signed_plan(tmp_path)
+        installer = _installer(self._routes(plan, archive))
 
         outcome = await installer.install(plan, cosign=_Cosign())
 
         assert outcome.installed is False
         assert "invalid signature" in outcome.detail
-        assert not (plan.destination / "trivy").exists()
+        assert not (plan.destination / "grype").exists()
 
     async def test_a_valid_signature_is_reported(self, tmp_path):
         class _Cosign:
-            async def verify_blob(self, path: str, url: str) -> bool:
+            async def verify_blob(self, blob, **kwargs):
                 return True
+
+        archive = _tarball({"grype": BINARY})
+        plan = _signed_plan(tmp_path)
+        installer = _installer(self._routes(plan, archive))
+
+        outcome = await installer.install(plan, cosign=_Cosign())
+
+        assert outcome.installed is True
+        assert outcome.signature_verified is True
+        assert "cosign signature" in outcome.detail
+
+    async def test_the_signature_covers_the_checksums_file(self, tmp_path):
+        """O blob assinado é o `checksums.txt`, e não o arquivo compactado:
+        é assim que o Grype publica, e é o único elo que existe."""
+        seen: dict[str, str] = {}
+
+        class _Cosign:
+            async def verify_blob(self, blob, **kwargs):
+                seen["blob"] = pathlib.Path(blob).read_text(encoding="utf-8")
+                seen.update({k: str(v) for k, v in kwargs.items()})
+                return True
+
+        archive = _tarball({"grype": BINARY})
+        plan = _signed_plan(tmp_path)
+        await _installer(self._routes(plan, archive)).install(plan, cosign=_Cosign())
+
+        assert plan.asset.archive_name in seen["blob"]
+        assert seen["signature"].endswith(".sig")
+        assert seen["certificate"].endswith(".pem")
+
+    async def test_the_identity_is_constrained_to_the_project(self, tmp_path):
+        """Sem restringir identidade, o cosign responde "alguém assinou" --
+        uma pergunta diferente da que importa."""
+        seen: dict[str, str] = {}
+
+        class _Cosign:
+            async def verify_blob(self, blob, **kwargs):
+                seen.update({k: str(v) for k, v in kwargs.items()})
+                return True
+
+        archive = _tarball({"grype": BINARY})
+        plan = _signed_plan(tmp_path)
+        await _installer(self._routes(plan, archive)).install(plan, cosign=_Cosign())
+
+        assert "anchore/grype" in seen["certificate_identity_regexp"]
+        assert seen["certificate_oidc_issuer"] == "https://token.actions.githubusercontent.com"
+
+    async def test_the_signature_is_checked_before_the_digest(self, tmp_path):
+        """Conferir o digest primeiro compararia o arquivo com uma lista que
+        ainda não se sabe de quem é -- e uma lista adulterada aprova um
+        arquivo adulterado."""
+        order: list[str] = []
+
+        class _Cosign:
+            async def verify_blob(self, blob, **kwargs):
+                order.append("signature")
+                return False
+
+        archive = _tarball({"grype": BINARY})
+        plan = _signed_plan(tmp_path)
+        routes = self._routes(plan, archive)
+        # Checksum propositalmente errado: se o digest fosse conferido
+        # primeiro, a mensagem seria "checksum mismatch" em vez da recusa
+        # por assinatura.
+        routes["checksums.txt"] = (
+            200,
+            _checksums(plan.asset.archive_name, archive, corrupt=True).encode(),
+        )
+
+        outcome = await _installer(routes).install(plan, cosign=_Cosign())
+
+        assert order == ["signature"]
+        assert "invalid signature" in outcome.detail
+
+    async def test_no_cosign_is_an_absence_and_not_a_refusal(self, tmp_path):
+        archive = _tarball({"grype": BINARY})
+        plan = _signed_plan(tmp_path)
+
+        outcome = await _installer(self._routes(plan, archive)).install(plan, cosign=None)
+
+        assert outcome.installed is True
+        assert outcome.signature_verified is None
+        # O tmp_path do pytest carrega o nome do teste, e "cosign" aparece
+        # nele; a asserção olha só o prefixo da frase, que é onde a
+        # verificação seria anunciada.
+        assert outcome.detail.startswith("verified sha256")
+
+    async def test_an_inconclusive_cosign_is_an_absence_and_not_an_approval(self, tmp_path):
+        """`None` do verificador é "não consegui concluir" -- rede fora,
+        Rekor indisponível. Nunca vira `True`."""
+
+        class _Cosign:
+            async def verify_blob(self, blob, **kwargs):
+                return None
+
+        archive = _tarball({"grype": BINARY})
+        plan = _signed_plan(tmp_path)
+
+        outcome = await _installer(self._routes(plan, archive)).install(plan, cosign=_Cosign())
+
+        assert outcome.installed is True
+        assert outcome.signature_verified is None
+
+    async def test_a_project_without_known_signatures_installs_on_the_checksum_alone(
+        self, tmp_path
+    ):
+        """`signs_checksums=False` significa "não confirmado por este
+        catálogo", e não "não assinado". A instalação segue, e
+        `signature_verified` fica `None`."""
+
+        class _Cosign:
+            async def verify_blob(self, blob, **kwargs):
+                raise AssertionError("não há assinatura declarada para pedir ao cosign")
 
         archive = _tarball({"trivy": BINARY})
         plan = _plan(tmp_path)
@@ -343,24 +484,32 @@ class TestSignatureVerification:
         outcome = await installer.install(plan, cosign=_Cosign())
 
         assert outcome.installed is True
-        assert outcome.signature_verified is True
+        assert outcome.signature_verified is None
 
-    async def test_without_cosign_the_checksum_still_installs(self, tmp_path):
-        """A assinatura é reforço; o checksum publicado é o requisito."""
-        archive = _tarball({"trivy": BINARY})
-        plan = _plan(tmp_path)
-        installer = _installer(
-            {
-                plan.asset.archive_name: (200, archive),
-                "checksums.txt": (200, _checksums(plan.asset.archive_name, archive).encode()),
-            }
-        )
+    async def test_missing_signature_material_does_not_block_the_install(self, tmp_path):
+        """O par `.sig`/`.pem` não veio (404, rede). É ausência de
+        verificação, e o checksum publicado continua valendo."""
 
-        outcome = await installer.install(plan, cosign=None)
+        class _Cosign:
+            async def verify_blob(self, blob, **kwargs):
+                raise AssertionError("não havia material de assinatura para verificar")
+
+        archive = _tarball({"grype": BINARY})
+        plan = _signed_plan(tmp_path)
+        routes = self._routes(plan, archive)
+        routes["checksums.txt.sig"] = (404, b"not found")
+
+        outcome = await _installer(routes).install(plan, cosign=_Cosign())
 
         assert outcome.installed is True
-        # None, não False: ninguém disse que a assinatura é ruim.
         assert outcome.signature_verified is None
+
+    def test_the_signature_urls_are_part_of_what_the_user_consents_to(self, tmp_path):
+        """Uma URL que a confirmação não mostrou é uma URL que ninguém
+        consentiu -- e que a política de rede não julgou."""
+        plan = _signed_plan(tmp_path)
+        assert plan.asset.checksums_signature_url in plan.sources
+        assert plan.asset.checksums_certificate_url in plan.sources
 
 
 class TestLatestVersion:

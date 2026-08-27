@@ -201,6 +201,54 @@ class CosignClient:
             detail=detail,
         )
 
+    async def verify_blob(
+        self,
+        blob: str,
+        *,
+        signature: str,
+        certificate: str,
+        certificate_identity_regexp: str = "",
+        certificate_oidc_issuer: str = "",
+    ) -> bool | None:
+        """Confere a assinatura keyless de um arquivo local.
+
+        `None` quer dizer **não foi possível conferir** -- cosign ausente, ou
+        o cosign falhando por um motivo que não é "assinatura inválida". Só
+        `False` é veredito: os bytes não são os que aquela identidade
+        assinou. A distinção é a mesma de sempre neste projeto, e aqui ela
+        decide se uma instalação é abortada ou apenas não é atestada.
+
+        Sem identidade e emissor declarados o cosign aceita qualquer
+        assinante, o que responderia "está assinado" sem responder "por
+        quem". Quem chama passa os dois; este método não inventa um padrão,
+        porque um padrão errado seria pior que nenhum.
+        """
+        argv = [
+            "verify-blob",
+            "--signature",
+            signature,
+            "--certificate",
+            certificate,
+            blob,
+        ]
+        if certificate_identity_regexp:
+            argv[1:1] = ["--certificate-identity-regexp", certificate_identity_regexp]
+        if certificate_oidc_issuer:
+            argv[1:1] = ["--certificate-oidc-issuer", certificate_oidc_issuer]
+
+        code, _, err = await self._run(argv)
+        if code is None:
+            return None
+        if code == 0:
+            return True
+        texto = _tail(err)
+        if _looks_like_a_bad_signature(texto):
+            return False
+        # Rede fora do ar, Rekor indisponível, certificado que o cosign não
+        # soube ler: nada disso diz que os bytes estão errados.
+        logger.debug(f"cosign verify-blob could not conclude: {texto}")
+        return None
+
     async def _run(self, argv: list[str]) -> tuple[int | None, bytes, bytes]:
         """Executa o cosign. `None` como código significa "não está instalado"."""
         try:
@@ -228,6 +276,28 @@ def _tail(stream: bytes, limit: int = 400) -> str:
     conter caminho local; o corte reduz o que vaza para um log de CI."""
     text = stream.decode("utf-8", errors="replace").strip()
     return text[-limit:] if len(text) > limit else text
+
+
+def _looks_like_a_bad_signature(message: str) -> bool:
+    """Se o cosign disse que a assinatura **não confere**.
+
+    Existe para separar veredito de indisponibilidade: o cosign devolve o
+    mesmo código de saída para "estes bytes não são os assinados" e para
+    "não consegui falar com o Rekor", e tratar o segundo como o primeiro
+    abortaria instalações por causa de uma rede instável.
+    """
+    texto = (message or "").lower()
+    return any(
+        marker in texto
+        for marker in (
+            "signature verification failed",
+            "invalid signature",
+            "failed to verify signature",
+            "error verifying blob",
+            "certificate identity",
+            "none of the expected identities matched",
+        )
+    )
 
 
 def _looks_unsigned(message: str) -> bool:
