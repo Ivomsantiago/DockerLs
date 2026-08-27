@@ -3268,6 +3268,42 @@ flag explícita sempre vence a configuração.
 | scan_budget (tags medidas) | 25 |
 | TTL do cache  | 24h     |
 
+### Isenções portáveis: OpenVEX
+
+O `.dockerls-ignore.yaml` já é um documento VEX em tudo menos no formato --
+tem o CVE, a justificativa e o prazo. `dockerls vex` o escreve num formato
+que o resto do mundo lê, para que uma exceção decidida uma vez valha no
+pipeline inteiro em vez de só dentro desta ferramenta (Trivy e Grype
+consomem OpenVEX nativamente).
+
+```bash
+dockerls vex ghcr.io/org/app:1.2.3 --author "Plataforma <sec@org.example>"
+```
+
+**O que ele não faz é transformar risco aceito em alegação técnica.** VEX
+tem quatro estados, e o que quase toda implementação emite para uma isenção
+é `not_affected` — mas `not_affected` é uma afirmação *técnica* (o código
+vulnerável não está presente, ou não é alcançável, ou já está mitigado), e
+o padrão exige dizer qual das cinco razões é.
+
+"A equipe aceitou o risco até o Q3" não é nenhuma das cinco. Então:
+
+| a regra diz | o documento diz |
+|---|---|
+| justificativa em texto livre | `affected`, com o texto no `action_statement` |
+| `vex_justification: vulnerable_code_not_present` | `not_affected`, com a justificativa do padrão |
+
+O consumidor vê a exceção e vê o motivo, sem receber uma alegação que
+ninguém fez — e VEX existe justamente para ser acreditado.
+
+O prazo entra no `action_statement`, porque VEX não tem campo para
+expiração e uma isenção sem prazo visível é uma isenção que ninguém revisa.
+Regras vencidas não entram no documento: ressuscitá-las diria ao mundo
+inteiro que continuam valendo.
+
+`--author` é obrigatório. Uma afirmação VEX é alguém afirmando alguma
+coisa; sem autor ela não responsabiliza ninguém.
+
 ### O portão olha exploração, não só severidade
 
 `--fail-on` aceita três tipos de portão, e eles respondem perguntas
