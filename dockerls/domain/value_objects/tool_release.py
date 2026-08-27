@@ -5,11 +5,23 @@ sobre nomes se testa exaustivamente sem rede, sem disco e sem instalar nada.
 O download, a verificação e a extração vivem em `infrastructure/toolchain`,
 que é onde o I/O pertence.
 
-Os nomes não são adivinhados: vêm da configuração de release de cada projeto
-(`goreleaser.yml` no Trivy, `.goreleaser.yaml` no Grype), que é o que de fato
-produz os arquivos publicados. Onde o Grype não declara `name_template`,
-vale o default do goreleaser -- `{ProjectName}_{Version}_{Os}_{Arch}` --, e o
-Trivy declara um template próprio com rótulos em CamelCase (`Linux-64bit`).
+Os nomes não são adivinhados, e foram confirmados por duas fontes
+independentes: a configuração de release de cada projeto (`goreleaser.yml` no
+Trivy, `.goreleaser.yaml` no Grype), que produz os arquivos, e o `install.sh`
+oficial de cada um, que os consome.
+
+    Trivy   contrib/install.sh:390
+            NAME=${PROJECT_NAME}_${VERSION}_${OS}-${ARCH}
+            CHECKSUM=${PROJECT_NAME}_${VERSION}_checksums.txt
+            adjust_os:   linux -> Linux, darwin -> macOS, windows inalterado
+            adjust_arch: amd64 -> 64bit, arm64 -> ARM64
+
+    Grype   install.sh:432 (search_for_asset)
+            asset_glob="${name}_.*_${os}_${arch}.${format}"
+            checksums:   "${name}_${version}_checksums.txt"
+            os/arch vêm de `uname` em minúsculas, sem tradução
+
+Os dois usam `zip` no Windows e `tar.gz` no resto.
 
 Uma plataforma sem artefato conhecido devolve None, e o comando recusa com
 uma mensagem em vez de tentar uma URL genérica que daria 404 depois do

@@ -57,3 +57,6 @@ coverage/
 Dockerfile.hardened
 logs/
 .dockerls/
+
+# Binário compilado da engine Go (opcional; `make engine` o reconstrói)
+engine/bin/

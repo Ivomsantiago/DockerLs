@@ -79,7 +79,10 @@ def doctor(
     For each tool it fetches the release archive and the `checksums.txt`
     published alongside it, verifies the SHA-256, and extracts only the
     binary. Nothing downloaded is ever executed, and no install script is
-    fetched or run. When `cosign` is on PATH the signature is checked too.
+    fetched or run. The published SHA-256 is the whole verification: the
+    cosign blob signature is *not* checked, because nothing here knows how
+    to check one yet, and claiming otherwise would be a security control
+    that exists only in the help text.
     """
     # `doctor` is the documented way for a pipeline to check its
     # prerequisites before a scan job, so it has to *gate*: it used to print
@@ -215,7 +218,10 @@ def default_install_dir() -> Path:
     aparecer na confirmação, e a forma de nunca precisar disso é não
     escolher um.
     """
-    if platform.system().strip().lower() == "windows":
+    # `detect_os`, e não uma comparação de string própria: a regra de qual
+    # SO é qual já mora em `tool_release`, e duas cópias dela divergem na
+    # primeira vez que uma for corrigida.
+    if detect_os(platform.system()) is OS.WINDOWS:
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "Programs" / "dockerls" / "bin"
     return Path.home() / ".local" / "bin"
@@ -370,17 +376,32 @@ def _install_guard() -> HostGuard | None:
 
 
 def _cosign_if_available() -> object | None:
-    """O cosign quando estiver no PATH; a assinatura é um reforço, não um
-    requisito -- o checksum publicado já é obrigatório."""
+    """O verificador de assinatura, quando existir um que sirva.
+
+    `ToolInstaller` pede `verify_blob`: um release de scanner é um *blob*
+    assinado, não uma imagem de container. `CosignClient` só sabe verificar
+    referência de imagem (`cosign verify`), então devolvê-lo aqui fazia o
+    instalador procurar `verify_blob`, não achar, e seguir em silêncio --
+    uma verificação anunciada que nunca acontecia. Enquanto não houver
+    `verify_blob`, esta função devolve None e o checksum publicado é a
+    verificação, dita como tal.
+    """
     if shutil.which("cosign") is None:
         return None
     try:
         from dockerls.integrations.signing.cosign import CosignClient
 
-        return CosignClient()
+        client: object = CosignClient()
     except Exception as e:  # pragma: no cover
         logger.debug(f"cosign client unavailable: {e}")
         return None
+    if not callable(getattr(client, "verify_blob", None)):
+        logger.debug(
+            "cosign is on PATH but no blob verifier is implemented; "
+            "the published SHA-256 remains the only verification"
+        )
+        return None
+    return client
 
 
 def _warn_if_not_on_path(destination: Path, outcomes: Sequence[InstallOutcome]) -> None:

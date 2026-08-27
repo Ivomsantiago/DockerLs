@@ -15,6 +15,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from loguru import logger
 
@@ -64,6 +65,28 @@ class HostGuard:
 
     def explain(self, host: str) -> str:
         return self._policy.explain(host, self.decide(host))
+
+
+def host_of_url(url: str) -> str:
+    """O `host[:porta]` que uma URL contataria, para o guard julgar.
+
+    `HostGuard` decide sobre hosts, nunca sobre URLs, e a diferença não é
+    cosmética: entregue a URL inteira, `hostname_of` corta no dois-pontos do
+    esquema e pergunta ao DNS por `https`, que não resolve para endereço
+    nenhum -- `BLOCKED_UNRESOLVABLE` para *toda* requisição. O efeito é uma
+    recusa que se parece com decisão de política e é bug. Quem tem uma URL
+    na mão converte aqui, uma vez, em vez de cada chamador repetir a regra.
+
+    Vive na infraestrutura, e não ao lado de `hostname_of`: o domínio é
+    testado sem rede nem disco e não importa `urllib`.
+    """
+    netloc = urlsplit(url).netloc
+    if not netloc:
+        # Já era um host: `gitlab.com`, `registry.internal:5000`.
+        return url.strip()
+    # Credenciais embutidas (`user:senha@host`) trariam um dois-pontos que
+    # não é porta; o host é o que vem depois do `@`.
+    return netloc.rpartition("@")[2]
 
 
 def _resolve(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:

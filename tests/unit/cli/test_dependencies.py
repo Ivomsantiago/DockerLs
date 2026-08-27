@@ -2,7 +2,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dockerls.cli import dependencies
+from dockerls.cli import dependencies, runtime
+
+# `configure_logging` e companhia moram em `cli/runtime.py` (o módulo leve
+# que o bootstrap importa) e são reexportados por `cli/dependencies.py`. O
+# patch de `setup_logging` tem que ir onde a chamada acontece; o resto
+# continua sendo lido de `dependencies`, que é de onde a CLI os importa.
 from dockerls.cli.dependencies import _settings, configure_logging, enable_console_logging
 
 
@@ -32,7 +37,7 @@ class TestConfigureLogging:
 
     def test_forces_setup_logging_to_run(self, monkeypatch):
         fake_setup = MagicMock(return_value=None)
-        monkeypatch.setattr(dependencies, "setup_logging", fake_setup)
+        monkeypatch.setattr(runtime, "setup_logging", fake_setup)
 
         configure_logging()
 
@@ -43,7 +48,7 @@ class TestConfigureLogging:
         across two commands in the same process) must not reconfigure
         logging a second time."""
         fake_setup = MagicMock(return_value=None)
-        monkeypatch.setattr(dependencies, "setup_logging", fake_setup)
+        monkeypatch.setattr(runtime, "setup_logging", fake_setup)
 
         configure_logging()
         configure_logging()
@@ -54,7 +59,7 @@ class TestConfigureLogging:
 class TestEnableConsoleLogging:
     def test_passes_console_true_and_the_configured_level_as_console_level(self, monkeypatch):
         fake_setup = MagicMock(return_value=None)
-        monkeypatch.setattr(dependencies, "setup_logging", fake_setup)
+        monkeypatch.setattr(runtime, "setup_logging", fake_setup)
         monkeypatch.setenv("DOCKERLS_LOG_LEVEL", "DEBUG")
 
         enable_console_logging()
@@ -65,7 +70,7 @@ class TestEnableConsoleLogging:
 
     def test_updates_the_shared_log_file_reference(self, monkeypatch, tmp_path):
         fake_log_file = tmp_path / "dockerls_test.log"
-        monkeypatch.setattr(dependencies, "setup_logging", MagicMock(return_value=fake_log_file))
+        monkeypatch.setattr(runtime, "setup_logging", MagicMock(return_value=fake_log_file))
 
         enable_console_logging()
 

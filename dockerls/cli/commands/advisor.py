@@ -13,6 +13,7 @@ from dockerls.application.services.ecosystems import get_ecosystem_insights
 from dockerls.application.services.migration import MigrationPlan, plan_migration
 from dockerls.application.use_cases.recommend_images import build_recommendation
 from dockerls.cli.dependencies import build_analyze_use_case, build_recommend_use_case
+from dockerls.cli.image_names import split_repository_and_tag
 from dockerls.cli.options import OutputFormat, parse_output_format
 from dockerls.cli.scan_failure import describe_scan_failure
 from dockerls.cli.text import safe
@@ -63,7 +64,11 @@ async def _advisor(image: str, workers: int | None, output_format: OutputFormat)
     # can be a migration rather than a standalone suggestion. A bare name
     # ("node") has no current image to move away from, and the command
     # behaves exactly as it always has.
-    repository, current_tag = _split_reference(image)
+    # O `rsplit(":", 1)` que morava aqui lia a porta do registry como tag:
+    # `advisor registry.internal:5000/app` procurava o repositório
+    # "registry.internal". A regra compartilhada só aceita dois-pontos no
+    # último segmento do caminho.
+    repository, current_tag = split_repository_and_tag(image)
     current = await _analyze_current(image) if current_tag else None
 
     use_case = await build_recommend_use_case(workers=workers)
@@ -110,6 +115,11 @@ async def _advisor(image: str, workers: int | None, output_format: OutputFormat)
         # como saber que a remediação é sobre outra imagem.
         payload["remediation_target"] = target.image.full_reference
         payload["ecosystem_insights"] = {
+            # As particularidades seguem o mesmo alvo do plano, e não a raiz
+            # do documento (que carrega `best`). Sem este campo um consumidor
+            # leria conselho sobre Debian ao lado de uma candidata Alpine sem
+            # nada dizendo que são imagens diferentes.
+            "for": target.image.full_reference,
             "ecosystem": insights.ecosystem,
             "version": insights.version,
             "runtime_features": insights.runtime_features,
@@ -189,19 +199,6 @@ async def _advisor(image: str, workers: int | None, output_format: OutputFormat)
         console.print(f"[bold]Summary:[/bold] {rec.summary}")
 
 
-def _split_reference(reference: str) -> tuple[str, str]:
-    """Split `node:22-alpine` into ("node", "22-alpine").
-
-    A reference with no tag yields an empty tag, which is what switches the
-    command back to its original "advise on this image family" behaviour.
-    """
-    head = reference.split("@", 1)[0]
-    if ":" in head:
-        repository, tag = head.rsplit(":", 1)
-        return repository, tag
-    return head, ""
-
-
 async def _analyze_current(reference: str) -> ImageAnalysis | None:
     """Scan the image named on the command line, or give up quietly.
 
@@ -215,6 +212,12 @@ async def _analyze_current(reference: str) -> ImageAnalysis | None:
     except (ValueError, RuntimeError) as e:
         diagnostics.print(f"[yellow]Could not analyze {reference} for comparison: {e}[/yellow]")
         return None
+    finally:
+        # O scanner e o pool de conexões do repositório ficam abertos até
+        # alguém fechá-los, e este comando abre um segundo conjunto logo
+        # abaixo para a busca. `analyze` fecha no mesmo ponto; não fechar
+        # aqui era o único caminho que vazava.
+        await use_case.close()
 
     # Um scan que não completou devolve score 0.0 e tier F por construção.
     # Aceitá-lo como medição faria o plano de migração afirmar uma melhora

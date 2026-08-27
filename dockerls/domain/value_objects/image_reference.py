@@ -54,3 +54,30 @@ def is_registry_host(segment: str) -> bool:
     "localhost" and lets the pull through to a service on this machine.
     """
     return "." in segment or ":" in segment or segment.lower() == "localhost"
+
+
+def split_repository_and_tag(reference: str) -> tuple[str, str]:
+    """Split an image reference into (repository, tag).
+
+    Unlike a plain `rsplit(":", 1)`, this never mistakes a `host:port`
+    registry prefix for a tag: only a colon in the *last* path segment
+    counts. A digest suffix (`@sha256:...`) is stripped first and never
+    treated as part of the tag.
+
+    Mora aqui, ao lado de `is_registry_host`, porque é a mesma regra sobre a
+    mesma string: o que conta como host. `application/` precisa dela para
+    não ler a porta do registry como versão na consulta de EOL, e a camada
+    de aplicação não pode importar da `cli/` -- `test_architecture` reprova,
+    e com razão.
+    """
+    ref = reference.split("@", 1)[0]
+    parts = ref.split("/")
+    prefix = ""
+    if len(parts) > 1 and is_registry_host(parts[0]):
+        prefix = parts[0] + "/"
+        parts = parts[1:]
+    tail = "/".join(parts)
+    if ":" in tail:
+        repo_tail, tag = tail.rsplit(":", 1)
+        return prefix + repo_tail, tag
+    return ref, ""

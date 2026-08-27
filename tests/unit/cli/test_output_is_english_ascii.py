@@ -200,10 +200,10 @@ _NOT_YET_TRANSLATED = ("build", "base-image", "provenance", "verify", "registry-
 def test_the_untranslated_commands_are_declared():
     """Trava a lista acima contra o esquecimento: se um destes for traduzido
     e sair de `_NOT_YET_TRANSLATED`, o guard passa a exigi-lo."""
-    from dockerls.cli.app import app as cli
+    from dockerls.cli.app import COMMANDS
 
-    registered = {
-        c.name or (c.callback.__name__ if c.callback else "") for c in cli.registered_commands
-    }
+    # Os subcomandos são carregados sob demanda, então a fonte da verdade é
+    # a tabela de `app.py` e não `registered_commands` (que está vazia).
+    registered = {spec.name for spec in COMMANDS}
     for command in _NOT_YET_TRANSLATED:
         assert command in registered or command.replace("-", "_") in registered
