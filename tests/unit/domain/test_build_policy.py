@@ -7,6 +7,8 @@ imagem não medida não é uma imagem em conformidade.
 
 from __future__ import annotations
 
+import pytest
+
 from dockerls.domain.value_objects.build_policy import (
     BaseFact,
     BuildPolicy,
@@ -169,10 +171,18 @@ class TestEffectiveFailOn:
         assert BuildPolicy(fail_on="critical").effective_fail_on("high") == "high"
         assert BuildPolicy(fail_on="critical").effective_fail_on("low") == "low"
 
-    def test_unknown_nunca_vira_limiar(self) -> None:
-        """O portão não sabe avaliá-lo; aceitá-lo produziria um build que morre
-        com erro técnico no meio do caminho."""
-        assert BuildPolicy(fail_on="critical").effective_fail_on("unknown") == "critical"
+    def test_um_portao_que_nao_existe_e_recusado_em_vez_de_descartado(self) -> None:
+        """Antes, um valor desconhecido era silenciosamente ignorado e a
+        política respondia como se ele não tivesse sido escrito. Descartar em
+        silêncio é como `--fail-on medium` virou um portão que nunca
+        reprovava: o pipeline pedia uma coisa, recebia outra, e nada dizia.
+
+        Agora recusa. Quem digitou errado descobre pela mensagem, e não por
+        um build que passa quando deveria ter reprovado."""
+        from dockerls.domain.value_objects.gate import InvalidGateError
+
+        with pytest.raises(InvalidGateError, match="unknown --fail-on gate"):
+            BuildPolicy(fail_on="critical").effective_fail_on("unknown")
 
     def test_politica_sozinha_define_o_limiar(self) -> None:
         assert BuildPolicy(fail_on="high").effective_fail_on("") == "high"

@@ -3268,6 +3268,44 @@ flag explícita sempre vence a configuração.
 | scan_budget (tags medidas) | 25 |
 | TTL do cache  | 24h     |
 
+### O portão olha exploração, não só severidade
+
+`--fail-on` aceita três tipos de portão, e eles respondem perguntas
+diferentes:
+
+| portão | pergunta |
+|---|---|
+| `critical` / `high` / `medium` / `low` | qual a severidade que o vendor atribuiu? |
+| `kev` | está sendo explorado no mundo real? (catálogo CISA KEV) |
+| `epss>=N` | qual a probabilidade de exploração nos próximos 30 dias? (FIRST EPSS) |
+
+Podem ser combinados por vírgula, e **todos** precisam passar:
+
+```bash
+dockerls build . -t app:1.0 --fail-on critical,kev
+dockerls build . -t app:1.0 --fail-on epss>=0.5
+```
+
+O caso que motivou isto: um CVE **sendo explorado hoje**, classificado
+MEDIUM pelo vendor da distro, atravessava um `--fail-on high` sem um pio. E
+o inverso — um CRITICAL teórico, sem exploit publicado e com EPSS de
+0,0003 — reprovava o build. A ferramenta já media a diferença e não a usava
+onde ela decide alguma coisa.
+
+**Um portão que não pôde ser avaliado não passa.** Se você pediu `kev` e o
+catálogo não respondeu, o build para com `Gate not evaluated` — e a
+mensagem diz que aquilo é ausência de medição, não um achado. Aprovar ali
+gastaria falta de consulta como tranquilidade, e desligaria um portão de
+segurança em silêncio numa oscilação de rede.
+
+A rede só é tocada quando algum portão a exige: `--fail-on high` não sai
+para buscar o catálogo KEV.
+
+O `.dockerls-policy.yaml` aceita os mesmos valores em `fail_on`. Quando os
+dois lados pedem portões de tipos diferentes, eles **somam** — entre
+`critical` e `kev` não dá para dizer qual é mais estrito, e escolher um
+descartaria o outro em silêncio.
+
 ### Descobrir não é medir
 
 `--limit` (config `max_tags`) governa quantas tags a **busca** traz; `--budget`

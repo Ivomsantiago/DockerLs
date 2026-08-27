@@ -25,10 +25,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from dockerls.domain.value_objects.build_policy import (
-    GATE_THRESHOLDS,
     SEVERITY_ORDER,
     BuildPolicy,
 )
+from dockerls.domain.value_objects.gate import GateSet, InvalidGateError
 from dockerls.utils.safe_yaml import UnsafeYAMLError, safe_load_yaml
 
 if TYPE_CHECKING:
@@ -118,13 +118,17 @@ def _severity(data: dict[str, Any], key: str, path: Path) -> str:
     value = data.get(key, "")
     if not value:
         return ""
-    # `unknown` é severidade válida numa contagem e não é limiar válido: o
-    # portão não sabe avaliá-lo. Recusar aqui é o que evita um build que morre
-    # com erro técnico no meio do caminho por causa de uma linha de YAML.
-    if not isinstance(value, str) or value.strip().lower() not in GATE_THRESHOLDS:
-        raise PolicyFileError(
-            f"{path}: {key} must be one of {', '.join(GATE_THRESHOLDS)}, not {value!r}"
-        )
+    # Recusar aqui é o que evita um build que morre com erro técnico no meio
+    # do caminho por causa de uma linha de YAML. `unknown` é severidade
+    # válida numa contagem e não é portão válido; `kev` e `epss>=N` são, e
+    # quem decide isso é `GateSet.parse`, para que o arquivo e a linha de
+    # comando não possam discordar sobre o que existe.
+    if not isinstance(value, str):
+        raise PolicyFileError(f"{path}: {key} must be a string, not {value!r}")
+    try:
+        GateSet.parse(value)
+    except InvalidGateError as e:
+        raise PolicyFileError(f"{path}: {key} is not a valid gate -- {e}") from e
     return value.strip().lower()
 
 

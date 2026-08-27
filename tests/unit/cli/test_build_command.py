@@ -9,7 +9,7 @@ então nada disso quebrou nenhum teste.
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -936,3 +936,69 @@ class TestSignFlag:
             )
             is None
         )
+
+
+class TestTheExploitabilityGateOnTheCommandLine:
+    """`--fail-on` deixou de aceitar só severidade. O que a CLI precisa
+    garantir: os portões novos são aceitos, os inválidos são recusados
+    **antes** do build, e a rede só é tocada quando algum portão a exige."""
+
+    def _dockerfile(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM python:3.12-alpine\nUSER 10001\n")
+        return str(tmp_path)
+
+    @pytest.mark.parametrize("gate", ["kev", "epss>=0.5", "critical,kev", "high"])
+    def test_the_new_gates_are_accepted(self, tmp_path, gate):
+        with patch("dockerls.cli.commands.build.BuildImageUseCase") as use_case:
+            use_case.return_value.execute.return_value = MagicMock(
+                success=True, exit_code=0, error="", policy_violations=[], report=None
+            )
+            result = CliRunner().invoke(
+                app, ["build", self._dockerfile(tmp_path), "-t", "a:1", "--fail-on", gate]
+            )
+        assert "invalid" not in result.output.lower()
+
+    @pytest.mark.parametrize("gate", ["exploitable", "epss>=50", "epss", ""])
+    def test_an_invalid_gate_is_refused_before_anything_is_built(self, tmp_path, gate):
+        """Descobrir o erro depois de construir e escanear desperdiça o
+        trabalho inteiro -- e um valor ignorado em silêncio seria um portão
+        que nunca reprova."""
+        with patch("dockerls.cli.commands.build.BuildImageUseCase") as use_case:
+            result = CliRunner().invoke(
+                app, ["build", self._dockerfile(tmp_path), "-t", "a:1", "--fail-on", gate]
+            )
+        assert result.exit_code == EXIT_ERROR
+        use_case.assert_not_called()
+
+    def test_the_error_names_the_gates_that_exist(self, tmp_path):
+        result = CliRunner().invoke(
+            app, ["build", self._dockerfile(tmp_path), "-t", "a:1", "--fail-on", "exploitable"]
+        )
+        assert "kev" in result.output
+        assert "epss" in result.output
+
+
+class TestThreatIntelligenceIsOnlyBuiltWhenAGateAsksForIt:
+    """Montá-lo sempre faria todo `dockerls build` sair para a rede buscar o
+    catálogo KEV -- para um portão que ninguém pediu. Nunca montá-lo faria
+    `--fail-on kev` não ter o que consultar."""
+
+    @pytest.mark.parametrize("gate", ["", "high", "critical"])
+    def test_a_severity_gate_does_not_reach_for_the_network(self, gate):
+        from dockerls.cli.commands.build import _threat_intel_for
+
+        assert _threat_intel_for(gate, None) is None
+
+    @pytest.mark.parametrize("gate", ["kev", "epss>=0.1", "high,kev"])
+    def test_an_exploitability_gate_builds_the_client(self, gate):
+        from dockerls.cli.commands.build import _threat_intel_for
+
+        assert _threat_intel_for(gate, None) is not None
+
+    def test_a_policy_that_asks_for_kev_is_enough(self):
+        """O `.dockerls-policy.yaml` da organização não pode depender de a
+        linha de comando lembrar de pedir."""
+        from dockerls.cli.commands.build import _threat_intel_for
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        assert _threat_intel_for(None, BuildPolicy(fail_on="kev")) is not None
