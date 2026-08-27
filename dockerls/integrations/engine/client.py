@@ -41,7 +41,7 @@ from dockerls.integrations.engine.locator import PROTOCOL_VERSION
 from dockerls.utils.subprocess_runner import MAX_OUTPUT_BYTES
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
 #: Teto do documento de resposta. Um lote de cem imagens muito ruidosas
@@ -88,15 +88,22 @@ class EngineClient:
         engine_path: str,
         scanner_path: str,
         *,
+        scanner: str = "trivy",
         timeout_seconds: float,
         skip_db_update: bool,
         raw_dir: Path | None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self._engine_path = engine_path
+        self._scanner = scanner
         self._scanner_path = scanner_path
         self._timeout_seconds = timeout_seconds
         self._skip_db_update = skip_db_update
         self._raw_dir = raw_dir
+        # Somado ao ambiente herdado pela engine, nunca no lugar dele: o
+        # Grype desliga a atualização automática da base por variável, e um
+        # scanner sem PATH e sem HOME não roda.
+        self._env = dict(env or {})
 
     async def scan_batch(
         self,
@@ -117,7 +124,7 @@ class EngineClient:
 
         request = {
             "version": PROTOCOL_VERSION,
-            "scanner": "trivy",
+            "scanner": self._scanner,
             "scanner_path": self._scanner_path,
             "workers": workers,
             "timeout_seconds": self._timeout_seconds,
@@ -125,6 +132,7 @@ class EngineClient:
             "max_output_bytes": MAX_OUTPUT_BYTES,
             "cache_dirs": [str(d) for d in cache_dirs],
             "raw_dir": str(self._raw_dir) if self._raw_dir else "",
+            "env": self._env,
             "targets": [{"reference": t.reference, "dedup_key": t.dedup_key} for t in targets],
         }
 

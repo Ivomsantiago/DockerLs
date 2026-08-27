@@ -47,21 +47,21 @@ _COLORS = {
 
 
 def provenance(
-    document: str = typer.Argument(..., help="Arquivo JSON escrito por `build --provenance`"),
+    document: str = typer.Argument(..., help="JSON file written by `build --provenance`"),
     output_format: str = typer.Option(
-        OutputFormat.TABLE.value, "--format", "-f", help="Formato de saída: table ou json"
+        OutputFormat.TABLE.value, "--format", "-f", help="Output format: table or json"
     ),
     github_output: bool = typer.Option(
         False,
         "--github-output",
         help=(
-            "Escreve subject-name e subject-digest em $GITHUB_OUTPUT para "
-            "actions/attest-build-provenance consumir"
+            "Write subject-name and subject-digest to $GITHUB_OUTPUT for "
+            "actions/attest-build-provenance to consume"
         ),
     ),
-    no_color: bool = typer.Option(False, "--no-color", help="Desativa cor na saída"),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable colored output"),
 ) -> None:
-    """Confere um documento de procedência e prepara a atestação."""
+    """Check a provenance document and prepare the attestation."""
     if no_color:
         console.no_color = True
     fmt = parse_output_format(output_format)
@@ -70,10 +70,10 @@ def provenance(
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except OSError as e:
-        console.print(f"[red]Erro:[/red] não foi possível ler {safe(str(path))}: {safe(str(e))}")
+        console.print(f"[red]Error:[/red] could not read {safe(str(path))}: {safe(str(e))}")
         raise typer.Exit(EXIT_ERROR) from e
     except json.JSONDecodeError as e:
-        console.print(f"[red]Erro:[/red] {safe(str(path))} não é JSON válido: {safe(str(e))}")
+        console.print(f"[red]Error:[/red] {safe(str(path))} is not valid JSON: {safe(str(e))}")
         raise typer.Exit(EXIT_ERROR) from e
 
     record = BuildProvenance.from_dict(raw)
@@ -97,9 +97,9 @@ def provenance(
         # Sem digest não há o que atestar: uma assinatura precisa apontar para
         # bytes específicos, e "a imagem com esta tag" não são bytes.
         console.print(
-            "[yellow]O documento não traz digest do artefato: não há sujeito para "
-            "atestar.[/yellow]\n[dim]Publique a imagem (`build --push`) para que o "
-            "registry devolva o digest do manifesto.[/dim]"
+            "[yellow]The document carries no artifact digest: there is no subject to "
+            "attest.[/yellow]\n[dim]Publish the image (`build --push`) so the registry "
+            "returns the manifest digest.[/dim]"
         )
         raise typer.Exit(EXIT_POLICY)
     raise typer.Exit(EXIT_OK)
@@ -119,30 +119,26 @@ def _subject(record: BuildProvenance) -> tuple[str, str]:
 
 def _render(record: BuildProvenance, subject_name: str, subject_digest: str) -> None:
     color = _COLORS.get(record.status, "white")
-    console.print(f"\n[bold]{safe(record.tag or '(sem tag)')}[/bold]")
+    console.print(f"\n[bold]{safe(record.tag or '(no tag)')}[/bold]")
     console.print(f"  [{color}]{record.status}[/{color}]  [dim]{safe(record.explain())}[/dim]\n")
 
-    console.print("  [bold]entrada[/bold]")
-    console.print(f"    Dockerfile  {safe(record.source.dockerfile or '(não medido)')}")
+    console.print("  [bold]input[/bold]")
+    console.print(f"    Dockerfile  {safe(record.source.dockerfile or '(not measured)')}")
     console.print(
-        f"    contexto    {safe(record.source.context or '(não medido)')}"
-        f"  [dim]({record.source.context_files} arquivo(s))[/dim]"
+        f"    context     {safe(record.source.context or '(not measured)')}"
+        f"  [dim]({record.source.context_files} file(s))[/dim]"
     )
     if record.source.git_revision:
-        sujo = (
-            " [yellow](com alterações não commitadas)[/yellow]" if record.source.git_dirty else ""
-        )
-        console.print(f"    revisão     {safe(record.source.git_revision)}{sujo}")
+        sujo = " [yellow](with uncommitted changes)[/yellow]" if record.source.git_dirty else ""
+        console.print(f"    revision    {safe(record.source.git_revision)}{sujo}")
     for reference, digest in record.source.base_images.items():
-        console.print(f"    base        {safe(reference)} -> {safe(digest or '(tag móvel)')}")
+        console.print(f"    base        {safe(reference)} -> {safe(digest or '(moving tag)')}")
 
-    console.print("\n  [bold]saída[/bold]")
-    console.print(f"    sujeito     {safe(subject_name or '(sem nome)')}")
-    origem = "manifesto no registry" if record.artifact.repo_digest else "id local da imagem"
-    console.print(
-        f"    digest      {safe(subject_digest or '(sem digest)')}  [dim]({origem})[/dim]"
-    )
-    console.print(f"    scanner     {safe(record.artifact.scanner or '(não registrado)')}\n")
+    console.print("\n  [bold]output[/bold]")
+    console.print(f"    subject     {safe(subject_name or '(no name)')}")
+    origem = "registry manifest" if record.artifact.repo_digest else "local image id"
+    console.print(f"    digest      {safe(subject_digest or '(no digest)')}  [dim]({origem})[/dim]")
+    console.print(f"    scanner     {safe(record.artifact.scanner or '(not recorded)')}\n")
 
 
 def _write_github_output(name: str, digest: str, record: BuildProvenance) -> None:
@@ -154,8 +150,8 @@ def _write_github_output(name: str, digest: str, record: BuildProvenance) -> Non
     destination = os.environ.get("GITHUB_OUTPUT", "")
     if not destination:
         console.print(
-            "[yellow]$GITHUB_OUTPUT não está definido: --github-output só tem efeito "
-            "dentro de um workflow do GitHub Actions.[/yellow]"
+            "[yellow]$GITHUB_OUTPUT is not set: --github-output only has an effect "
+            "inside a GitHub Actions workflow.[/yellow]"
         )
         return
     linhas = f"subject-name={name}\nsubject-digest={digest}\nprovenance-status={record.status}\n"
@@ -163,6 +159,4 @@ def _write_github_output(name: str, digest: str, record: BuildProvenance) -> Non
         with Path(destination).open("a", encoding="utf-8") as handle:
             handle.write(linhas)
     except OSError as e:
-        console.print(
-            f"[yellow]Não foi possível escrever em $GITHUB_OUTPUT: {safe(str(e))}[/yellow]"
-        )
+        console.print(f"[yellow]Could not write to $GITHUB_OUTPUT: {safe(str(e))}[/yellow]")

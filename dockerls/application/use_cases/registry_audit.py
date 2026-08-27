@@ -89,7 +89,7 @@ class RegistryAuditUseCase:
         try:
             return await self._inspector.resolve_digest(DockerImage(name=name, tag=tag))
         except Exception as e:  # pragma: no cover - rede é o caminho instável
-            logger.debug(f"Não foi possível resolver {name}:{tag}: {e}")
+            logger.debug(f"Could not resolve {name}:{tag}: {e}")
             return ""
 
     async def _tag_stability(self, name: str, tag: str, *, given_digest: bool) -> AuditFinding:
@@ -117,7 +117,7 @@ class RegistryAuditUseCase:
         try:
             found = await self._inspector.resolve_digest(DockerImage(name=name, tag=derived))
         except Exception as e:  # pragma: no cover - rede é o caminho instável
-            logger.debug(f"Não foi possível consultar {derived}: {e}")
+            logger.debug(f"Could not query {derived}: {e}")
             return AuditFinding(check=check, state=Tristate.UNKNOWN)
         # "" aqui é resposta: o registry falou e não tem essa tag. O caso de
         # não conseguir falar cai no `except` acima, e vira UNKNOWN.

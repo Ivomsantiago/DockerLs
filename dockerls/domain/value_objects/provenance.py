@@ -107,19 +107,19 @@ class BuildProvenance:
         if self.status is ProvenanceStatus.INPUT_CHANGED:
             changed = []
             if self.source.dockerfile != self.source_after.dockerfile:
-                changed.append("o Dockerfile")
+                changed.append("the Dockerfile")
             if self.source.context != self.source_after.context:
-                changed.append("o contexto de build")
+                changed.append("the build context")
             return (
-                f"{' e '.join(changed)} mudou durante o build: a imagem existe, mas "
-                "não corresponde à entrada que foi medida no início"
+                f"{' and '.join(changed)} changed during the build: the image exists, "
+                "but does not correspond to the input measured at the start"
             )
         if self.status is ProvenanceStatus.INCOMPLETE:
             return (
-                "procedência incompleta: parte da entrada ou da saída não pôde ser "
-                "digerida, então a cadeia não fecha"
+                "provenance incomplete: part of the input or the output could not be "
+                "digested, so the chain does not close"
             )
-        return "entrada e saída digeridas, e a entrada não mudou durante o build"
+        return "input and output digested, and the input did not change during the build"
 
     @staticmethod
     def from_dict(raw: object) -> BuildProvenance:

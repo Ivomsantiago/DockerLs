@@ -94,6 +94,17 @@ class ReleaseAsset:
     #: A página de release, para o usuário conferir de onde isto vem antes
     #: de consentir.
     release_url: str
+    #: Assinatura cosign do `checksums.txt`, quando o projeto publica uma.
+    #: Vazio quando não publica -- e vazio nunca significa "não assinado":
+    #: significa que este catálogo não sabe de nenhuma, que é ausência de
+    #: informação e não veredito.
+    checksums_signature_url: str = ""
+    #: Certificado keyless que acompanha a assinatura.
+    checksums_certificate_url: str = ""
+    #: Regex da identidade que precisa ter assinado, e emissor OIDC
+    #: esperado. Vazios quando não há assinatura a conferir.
+    signer_identity_pattern: str = ""
+    signer_oidc_issuer: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,6 +125,20 @@ class ToolSpec:
     separator: str
     #: Plataformas para as quais o projeto publica artefato.
     supported: frozenset[tuple[OS, Arch]]
+    #: Se o projeto publica `checksums.txt.sig` e `checksums.txt.pem` ao
+    #: lado do `checksums.txt`, que é o par que o `cosign verify-blob`
+    #: consome.
+    #:
+    #: A cadeia inteira depende disto e de mais nada: a assinatura prova
+    #: que o `checksums.txt` é o que o projeto publicou, e o SHA-256 do
+    #: arquivo compactado contra a linha correspondente prova que o
+    #: arquivo é o que aquele `checksums.txt` descreve.
+    #:
+    #: `False` significa **não confirmado por este catálogo**, e não "não
+    #: assinado": ninguém aqui foi ao release ver. A instalação segue com
+    #: o checksum, e `signature_verified` fica `None` -- ausência de
+    #: verificação, dita como ausência.
+    signs_checksums: bool = False
 
     @property
     def repo_url(self) -> str:
@@ -147,6 +172,18 @@ class ToolSpec:
             archive_name=archive,
             binary_name=f"{self.name}.exe" if os_ is OS.WINDOWS else self.name,
             release_url=f"{self.repo_url}/releases/tag/v{clean}",
+            checksums_signature_url=(f"{base}/{checksums}.sig" if self.signs_checksums else ""),
+            checksums_certificate_url=(f"{base}/{checksums}.pem" if self.signs_checksums else ""),
+            # A identidade tem de ser deste projeto: uma assinatura válida
+            # de *outra* workflow do GitHub prova que alguém assinou, e não
+            # que quem publica esta ferramenta assinou. O emissor é o do
+            # OIDC do GitHub Actions, que é como os dois projetos assinam.
+            signer_identity_pattern=(
+                rf"^https://github\.com/{self.owner}/{self.repo}/" if self.signs_checksums else ""
+            ),
+            signer_oidc_issuer=(
+                "https://token.actions.githubusercontent.com" if self.signs_checksums else ""
+            ),
         )
 
 
@@ -172,6 +209,12 @@ TRIVY = ToolSpec(
     arch_labels={Arch.AMD64: "64bit", Arch.ARM64: "ARM64"},
     separator="-",
     supported=_EVERY_PLATFORM,
+    # Não confirmado: o release do Trivy não foi inspecionado a partir
+    # deste ambiente, e afirmar que ele assina (ou que não assina) seria
+    # inventar. Fica `False`, a instalação segue pelo checksum, e
+    # `signature_verified` volta `None` -- ausência de verificação, dita
+    # como ausência.
+    signs_checksums=False,
 )
 
 #: O `.goreleaser.yaml` do Grype não declara `name_template`, então vale o
@@ -184,6 +227,10 @@ GRYPE = ToolSpec(
     arch_labels={Arch.AMD64: "amd64", Arch.ARM64: "arm64"},
     separator="_",
     supported=_EVERY_PLATFORM,
+    # Confirmado no `install.sh` do próprio Grype, que baixa
+    # `checksums.txt.sig` e `checksums.txt.pem` ao lado do `checksums.txt`
+    # e chama `cosign verify-blob` com os três.
+    signs_checksums=True,
 )
 
 #: Os scanners que `doctor --install` sabe instalar, na ordem em que são

@@ -70,24 +70,24 @@ class TestReferenceComposition:
 
     def test_a_tag_inside_the_destination_is_refused(self):
         # Duas tags é ambiguidade, não conveniência: qual das duas vale?
-        with pytest.raises(InvalidRegistryTargetError, match="sem tag"):
+        with pytest.raises(InvalidRegistryTargetError, match="without a tag"):
             RegistryTarget.parse("minhaorg/app:1.0", "2.0")
 
 
 class TestProviderRules:
     def test_docker_hub_without_a_namespace_is_refused(self):
         target = RegistryTarget.parse("minha-app", "1.0")
-        with pytest.raises(InvalidRegistryTargetError, match="usuário ou a organização"):
+        with pytest.raises(InvalidRegistryTargetError, match="user or organization"):
             target.validate()
 
     def test_the_library_namespace_is_refused(self):
         target = RegistryTarget.parse("library/minha-app", "1.0")
-        with pytest.raises(InvalidRegistryTargetError, match="imagens oficiais"):
+        with pytest.raises(InvalidRegistryTargetError, match="official images"):
             target.validate()
 
     def test_artifact_registry_requires_project_and_repository(self):
         target = RegistryTarget.parse("us-central1-docker.pkg.dev/proj/app", "1.0")
-        with pytest.raises(InvalidRegistryTargetError, match="projeto"):
+        with pytest.raises(InvalidRegistryTargetError, match="<project>"):
             target.validate()
 
     def test_artifact_registry_with_the_full_path_is_accepted(self):
@@ -101,7 +101,7 @@ class TestProviderRules:
 
     def test_dhi_is_a_catalogue_not_a_destination(self):
         target = RegistryTarget.parse("dhi.io/minha-app", "1.0")
-        with pytest.raises(InvalidRegistryTargetError, match="não aceita push"):
+        with pytest.raises(InvalidRegistryTargetError, match="does not accept pushes"):
             target.validate()
 
     @pytest.mark.parametrize("tag", ["", "-começa-com-hífen", "tag com espaço", "a" * 200])
@@ -110,7 +110,7 @@ class TestProviderRules:
             RegistryTarget.parse("minhaorg/app", tag).validate()
 
     def test_uppercase_paths_are_refused(self):
-        with pytest.raises(InvalidRegistryTargetError, match="minúsculas"):
+        with pytest.raises(InvalidRegistryTargetError, match="lowercase"):
             RegistryTarget.parse("MinhaOrg/App", "1.0").validate()
 
 

@@ -214,6 +214,96 @@ class TestPlanNeverCrossesEcosystems:
         assert forbidden_cve not in steps
 
 
+class TestTheInsightsFollowTheSameTarget:
+    """As particularidades de ecossistema seguem o **alvo do plano**, e não
+    a raiz do documento.
+
+    A alternativa era segui-la a `best`, e ela produzia a mesma confusão que
+    o P1 do Remediation Plan: conselho sobre Debian ao lado de uma
+    recomendação Alpine, sem nada dizendo que são imagens diferentes. A
+    escolha aqui é deliberada e o JSON a declara -- `ecosystem_insights.for`
+    nomeia de quem o conselho é --, e é isso que estes testes travam.
+    """
+
+    def test_the_insights_describe_the_image_the_user_named(self):
+        import json
+
+        search = AsyncMock()
+        search.execute = AsyncMock(
+            return_value=AnalysisResult(
+                query="eclipse-temurin",
+                total_tags_scanned=1,
+                total_tags_analyzed=1,
+                baseline_met=True,
+                # A candidata eleita é Go: se as particularidades seguissem
+                # a raiz do documento, o usuário leria conselho de Go sobre
+                # a imagem Java que ele nomeou.
+                recommendations=[_go_image()],
+            )
+        )
+        analyzer = AsyncMock()
+        analyzer.execute = AsyncMock(return_value=_java_image())
+        analyzer.close = AsyncMock()
+
+        with (
+            patch(
+                "dockerls.cli.commands.advisor.build_recommend_use_case",
+                AsyncMock(return_value=search),
+            ),
+            patch(
+                "dockerls.cli.commands.advisor.build_analyze_use_case",
+                AsyncMock(return_value=analyzer),
+            ),
+        ):
+            result = runner.invoke(
+                app, ["advisor", "eclipse-temurin:21-jre-alpine", "--format", "json"]
+            )
+
+        payload = json.loads(result.output)
+        insights = payload["ecosystem_insights"]
+        assert insights["for"] == payload["remediation_target"]
+        assert insights["for"] == "eclipse-temurin:21-jre-alpine"
+        assert "java" in insights["ecosystem"].lower()
+
+    def test_the_document_says_whose_advice_it_is(self):
+        """`best` fica na raiz e o alvo fica ao lado. Sem o campo `for`, um
+        consumidor não teria como saber que são imagens diferentes."""
+        import json
+
+        search = AsyncMock()
+        search.execute = AsyncMock(
+            return_value=AnalysisResult(
+                query="eclipse-temurin",
+                total_tags_scanned=1,
+                total_tags_analyzed=1,
+                baseline_met=True,
+                recommendations=[_go_image()],
+            )
+        )
+        analyzer = AsyncMock()
+        analyzer.execute = AsyncMock(return_value=_java_image())
+        analyzer.close = AsyncMock()
+
+        with (
+            patch(
+                "dockerls.cli.commands.advisor.build_recommend_use_case",
+                AsyncMock(return_value=search),
+            ),
+            patch(
+                "dockerls.cli.commands.advisor.build_analyze_use_case",
+                AsyncMock(return_value=analyzer),
+            ),
+        ):
+            result = runner.invoke(
+                app, ["advisor", "eclipse-temurin:21-jre-alpine", "--format", "json"]
+            )
+
+        payload = json.loads(result.output)
+        # A raiz continua sendo a candidata eleita, e o campo `for` é o que
+        # impede ler as duas como se fossem a mesma imagem.
+        assert payload["image"]["full_reference"] != payload["ecosystem_insights"]["for"]
+
+
 class TestBareNameKeepsTheOriginalBehaviour:
     """Sem tag na linha de comando não existe imagem atual, e aconselhar
     sobre a melhor candidata é o que o comando sempre fez."""

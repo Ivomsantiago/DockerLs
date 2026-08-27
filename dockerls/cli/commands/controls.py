@@ -87,7 +87,7 @@ def _report_unknown(rule: str, output_format: OutputFormat) -> None:
     if output_format == OutputFormat.JSON:
         console.print(json.dumps({"error": message, "known_rules": known.split(", ")}))
         return
-    console.print(f"[red]Erro:[/red] {safe(message)}")
+    console.print(f"[red]Error:[/red] {safe(message)}")
     console.print(f"[dim]Regras catalogadas: {known}[/dim]")
 
 

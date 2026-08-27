@@ -69,8 +69,8 @@ def hash_context(root: Path, *, dockerignore: Path | None = None) -> tuple[str, 
         counted += 1
         if counted > MAX_CONTEXT_FILES:
             raise ContextTooLargeError(
-                f"o contexto de build excede {MAX_CONTEXT_FILES} arquivos; "
-                "quase sempre isso significa um .dockerignore ausente"
+                f"the build context exceeds {MAX_CONTEXT_FILES} files; "
+                "almost always that means a missing .dockerignore"
             )
         # O caminho entra no digest junto do conteúdo: renomear um arquivo
         # muda o contexto tanto quanto editá-lo, e um digest que não visse o
@@ -114,7 +114,7 @@ def _walk(root: Path, patterns: list[str]) -> list[Path]:
             # Um diretório ilegível não interrompe a digestão do resto: o
             # `.dockerignore` pode muito bem excluí-lo, e o daemon não teria
             # recebido nada dali de qualquer forma.
-            logger.debug(f"Não foi possível listar {directory}: {e}")
+            logger.debug(f"Could not list {directory}: {e}")
             continue
 
         for child in children:

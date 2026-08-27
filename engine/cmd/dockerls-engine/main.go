@@ -117,8 +117,9 @@ func readRequest(in io.Reader) (protocol.Request, error) {
 			"protocol version mismatch: the caller speaks %d, this engine speaks %d",
 			req.Version, protocol.Version)
 	}
-	if req.Scanner != "trivy" {
-		return req, fmt.Errorf("unsupported scanner %q: this engine only drives trivy", req.Scanner)
+	if req.Scanner != "trivy" && req.Scanner != "grype" {
+		return req, fmt.Errorf(
+			"unsupported scanner %q: this engine drives trivy and grype", req.Scanner)
 	}
 	if req.ScannerPath == "" {
 		return req, errors.New("scanner_path is required: the engine does not resolve PATH itself")

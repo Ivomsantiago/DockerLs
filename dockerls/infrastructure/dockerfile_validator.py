@@ -409,8 +409,8 @@ class DockerfileValidator(DockerfileValidatorInterface):
                     # que esta ferramenta faz em todo o resto, então ela agora
                     # aponta para os comandos que medem de verdade.
                     suggested_fix=(
-                        "dockerls base --dry-run          # fixa a base por digest\n"
-                        "dockerls base --alternatives     # mede alternativas mais seguras"
+                        "dockerls base --dry-run          # pins the base by digest\n"
+                        "dockerls base --alternatives     # measures safer alternatives"
                     ),
                     reason=(
                         "Pinned versions ensure reproducibility; minimal bases reduce "

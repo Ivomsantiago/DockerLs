@@ -52,7 +52,7 @@ class TestMissingSigner:
         assert result.status is SignatureStatus.SIGNER_MISSING
         assert not result.trustworthy
         assert not result.status.is_conclusive
-        assert "ausência de resposta" in result.explain()
+        assert "absence of an answer" in result.explain()
 
     async def test_cosign_ausente_na_assinatura_tambem(self) -> None:
         with _absent():
@@ -70,7 +70,7 @@ class TestSigning:
         result = await CosignClient().sign("reg.io/app:1.0")
 
         assert result.status is SignatureStatus.FAILED
-        assert "só se assina por digest" in result.detail
+        assert "only digests get signed" in result.detail
 
     async def test_assinatura_bem_sucedida(self) -> None:
         with _resolves(), _run(0):
@@ -110,7 +110,7 @@ class TestVerification:
             result = await CosignClient().verify(_DIGEST)
 
         assert result.status is SignatureStatus.VERIFIED
-        assert "não que quem você espera assinou" in result.detail
+        assert "not that whoever you expect signed" in result.detail
 
     async def test_ausencia_de_assinatura_e_veredito_conclusivo(self) -> None:
         with _resolves(), _run(1, err=b"error: no signatures found for image"):
@@ -171,3 +171,81 @@ class TestStatusSemantics:
         assert not SignatureStatus.FAILED.is_conclusive
         assert SignatureStatus.UNSIGNED.is_conclusive
         assert SignatureStatus.VERIFIED.is_conclusive
+
+
+class TestVerifyBlob:
+    """`verify-blob` decide se uma instalação aborta, então a diferença
+    entre "não confere" e "não consegui conferir" é a coisa toda: a
+    primeira é veredito e para tudo; a segunda é ausência e deixa o
+    checksum publicado responder."""
+
+    @pytest.mark.asyncio
+    async def test_a_clean_exit_is_a_verified_blob(self):
+        with _resolves(), _run(0):
+            result = await CosignClient().verify_blob(
+                "f.txt", signature="f.sig", certificate="f.pem"
+            )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_a_bad_signature_is_a_verdict(self):
+        with _resolves(), _run(1, err=b"error: signature verification failed"):
+            result = await CosignClient().verify_blob(
+                "f.txt", signature="f.sig", certificate="f.pem"
+            )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_an_identity_mismatch_is_a_verdict(self):
+        """Assinado, sim -- por outra pessoa. É a falha que restringir a
+        identidade existe para pegar, e ela não pode virar "inconclusivo"."""
+        message = b"none of the expected identities matched what was in the certificate"
+        with _resolves(), _run(1, err=message):
+            result = await CosignClient().verify_blob(
+                "f.txt", signature="f.sig", certificate="f.pem"
+            )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_failure_is_not_a_verdict(self):
+        """Rekor fora do ar não diz nada sobre os bytes."""
+        message = b"error: dial tcp: lookup rekor.sigstore.dev: no such host"
+        with _resolves(), _run(1, err=message):
+            result = await CosignClient().verify_blob(
+                "f.txt", signature="f.sig", certificate="f.pem"
+            )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_a_missing_cosign_is_not_a_verdict(self):
+        with _absent():
+            result = await CosignClient().verify_blob(
+                "f.txt", signature="f.sig", certificate="f.pem"
+            )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_the_identity_and_issuer_reach_the_command_line(self):
+        seen: list[list[str]] = []
+
+        async def capture(argv, timeout=None, **kwargs):
+            seen.append(list(argv))
+            return 0, b"", b""
+
+        with (
+            _resolves(),
+            patch("dockerls.integrations.signing.cosign.run_capture", capture),
+        ):
+            await CosignClient().verify_blob(
+                "f.txt",
+                signature="f.sig",
+                certificate="f.pem",
+                certificate_identity_regexp="^https://github.com/anchore/grype/",
+                certificate_oidc_issuer="https://token.actions.githubusercontent.com",
+            )
+
+        argv = seen[0]
+        assert "verify-blob" in argv
+        assert "--certificate-identity-regexp" in argv
+        assert "--certificate-oidc-issuer" in argv
+        assert argv[-1] == "f.txt"

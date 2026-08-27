@@ -74,7 +74,7 @@ def install_fake_engine(tmp_path: Path, monkeypatch, *, record_to: Path | None =
 
     monkeypatch.setenv("DOCKERLS_ENGINE_PATH", str(script))
     monkeypatch.setattr(
-        "dockerls.integrations.trivy.scanner.resolve_executable", lambda name: f"/usr/bin/{name}"
+        "dockerls.integrations.engine.batch.resolve_executable", lambda name: f"/usr/bin/{name}"
     )
     return script
 
@@ -161,7 +161,7 @@ class TestFallingBackToThePythonPipeline:
         def missing(name: str) -> str:
             raise ExecutableNotFoundError(name)
 
-        monkeypatch.setattr("dockerls.integrations.trivy.scanner.resolve_executable", missing)
+        monkeypatch.setattr("dockerls.integrations.engine.batch.resolve_executable", missing)
         scanner = TrivyScanner(cache_dir=tmp_path / "cache", workers=2)
         assert await scanner.batch.scan_batch([("node:22", "sha256:a")]) is None
 
@@ -178,7 +178,7 @@ class TestFallingBackToThePythonPipeline:
             calls.append(path)
             return real_probe(path)
 
-        monkeypatch.setattr("dockerls.integrations.trivy.scanner.probe", counting_probe)
+        monkeypatch.setattr("dockerls.integrations.engine.batch.probe", counting_probe)
         scanner = TrivyScanner(cache_dir=tmp_path / "cache", workers=2)
 
         await scanner.batch.scan_batch([("node:22", "sha256:a")])

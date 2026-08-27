@@ -946,7 +946,7 @@ class TestPushRefusesABrokenChain:
 
         assert response.success is False
         assert response.exit_code == EXIT_POLICY
-        assert "não corresponde à entrada" in (response.error or "")
+        assert "does not correspond to the input" in (response.error or "")
         use_case._push_image.assert_not_called()
 
     def test_a_stable_input_publishes_normally(self, tmp_path):
@@ -1264,7 +1264,7 @@ class TestAttribution:
         report = response.inheritance
         assert report is not None
         assert not report.available
-        assert "não pôde ser escaneada" in report.unavailable_reason
+        assert "could not be scanned" in report.unavailable_reason
         assert not report.introduced
 
     def test_sem_a_flag_nada_e_atribuido(self, use_case, context):
@@ -1437,8 +1437,8 @@ class TestGateOriginHint:
         response = self._run(use_case, context, built, base)
 
         assert response.exit_code == EXIT_POLICY
-        assert "1 da base node:22-alpine (1 com correção publicada)" in response.error
-        assert "1 das suas camadas" in response.error
+        assert "1 from the base node:22-alpine (1 with a published fix)" in response.error
+        assert "1 from your layers" in response.error
 
     def test_sem_atribuicao_o_portao_nao_insinua_origem(self, use_case, context):
         """Um portão que insinua uma origem que não mediu é pior do que um

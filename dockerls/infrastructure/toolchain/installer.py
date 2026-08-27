@@ -10,14 +10,23 @@ O caminho aqui faz o que aquele script faria, verificando:
 1. resolve a versão publicada mais recente pela API de releases do projeto;
 2. baixa o arquivo compactado **e** o `checksums.txt` do mesmo release;
 3. confere o SHA-256 do arquivo contra a linha correspondente;
-4. confere também a assinatura, *se* receber um verificador de blob -- o
-   gancho existe (`verify_blob`), e hoje nada o implementa, então o checksum
-   publicado é toda a verificação. O caminho para implementá-lo está aberto:
-   o Grype publica `checksums.txt.sig` e `checksums.txt.pem` ao lado do
-   `checksums.txt` (ver `install.sh`, `github_release_asset_url ...
-   "checksums.txt.sig"`), que é o que `cosign verify-blob` consome. O
-   `CosignClient` deste projeto só sabe verificar referência de imagem, e
-   por isso não serve aqui;
+4. confere a **assinatura cosign do `checksums.txt`**, quando o projeto
+   publica uma e o cosign está instalado. A cadeia é curta de propósito: a
+   assinatura prova que o `checksums.txt` é o que o projeto publicou, e o
+   passo 3 prova que o arquivo é o que aquele `checksums.txt` descreve.
+   Não há assinatura por artefato para conferir diretamente.
+
+   A ordem é assinatura **antes** do SHA-256: conferir o digest primeiro
+   compararia o arquivo com uma lista que ainda não se sabe de quem é, e
+   uma lista adulterada aprova um arquivo adulterado.
+
+   A identidade é restrita ao repositório do projeto e o emissor ao OIDC do
+   GitHub Actions -- sem isso, o cosign responderia "alguém assinou", que é
+   uma pergunta diferente da que importa.
+
+   Só uma assinatura **inválida** aborta. Projeto sem assinatura conhecida,
+   cosign ausente ou cosign inconclusivo devolvem `None`: ausência de
+   verificação, dita como ausência, e a instalação segue pelo checksum;
 5. extrai **apenas** o binário, para um diretório do usuário.
 
 Nada baixado é executado. A extração é feita pelo `tarfile`/`zipfile` do
@@ -89,7 +98,18 @@ class InstallPlan:
 
     @property
     def sources(self) -> tuple[str, ...]:
-        return (self.asset.archive_url, self.asset.checksums_url)
+        """Tudo que este plano baixa, para o consentimento e para a política.
+
+        O par de assinatura entra aqui: uma URL que a confirmação não
+        mostrou é uma URL que o usuário não consentiu, e a política de rede
+        precisa julgar todas antes de qualquer download começar.
+        """
+        urls = [self.asset.archive_url, self.asset.checksums_url]
+        if self.asset.checksums_signature_url:
+            urls.append(self.asset.checksums_signature_url)
+        if self.asset.checksums_certificate_url:
+            urls.append(self.asset.checksums_certificate_url)
+        return tuple(urls)
 
 
 @dataclass(frozen=True)
@@ -161,7 +181,22 @@ class ToolInstaller:
                 for url in plan.sources:
                     self._check_policy(url)
                 await self._download(plan.asset.archive_url, archive, MAX_ARCHIVE_BYTES)
+
+                # O `checksums.txt` vai para o disco, e não só para a
+                # memória: é ele o blob que a assinatura cobre, e o cosign
+                # verifica arquivo.
+                checksums_path = workdir / "checksums.txt"
                 checksums = await self._fetch_text(plan.asset.checksums_url, MAX_CHECKSUMS_BYTES)
+                checksums_path.write_text(checksums, encoding="utf-8")
+
+                # A ordem importa: a assinatura é conferida **antes** do
+                # SHA-256. Conferir o digest primeiro compararia o arquivo
+                # com uma lista que ainda não se sabe de quem é -- e uma
+                # lista adulterada aprova um arquivo adulterado.
+                signature_verified = await self._verify_checksums(
+                    cosign, checksums_path, plan, workdir
+                )
+
                 expected = self._expected_digest(checksums, plan.asset.archive_name)
                 actual = _sha256(archive)
                 if actual != expected:
@@ -172,7 +207,6 @@ class ToolInstaller:
                         f"expected {expected}, got {actual}"
                     )
 
-                signature_verified = await _verify_signature(cosign, archive, plan)
                 binary = self._extract(archive, workdir, plan.asset.binary_name)
                 destination = self._place(binary, plan.destination, plan.asset.binary_name)
             except InstallError as e:
@@ -194,10 +228,88 @@ class ToolInstaller:
         return InstallOutcome(
             plan.tool,
             installed=True,
-            detail=f"verified sha256 and installed to {destination}",
+            detail=(
+                (
+                    "verified cosign signature and sha256, installed to "
+                    if signature_verified
+                    else "verified sha256 and installed to "
+                )
+                + str(destination)
+            ),
             path=destination,
             signature_verified=signature_verified,
         )
+
+    async def _verify_checksums(
+        self,
+        cosign: object | None,
+        checksums_path: Path,
+        plan: InstallPlan,
+        workdir: Path,
+    ) -> bool | None:
+        """Confere a assinatura do `checksums.txt`, quando há o que conferir.
+
+        A cadeia é esta e não é mais longa: a assinatura prova que o
+        `checksums.txt` é o que o projeto publicou, e o SHA-256 do arquivo
+        compactado contra a linha correspondente prova que o arquivo é o
+        que aquele `checksums.txt` descreve. Verificar o compactado
+        diretamente não é possível -- não há assinatura por artefato.
+
+        `None` significa **não verificado**, e é o valor honesto para três
+        situações diferentes: o projeto não publica assinatura conhecida,
+        o cosign não está instalado, ou o cosign não conseguiu concluir.
+        Nenhuma delas é "não assinado", e nenhuma delas impede a
+        instalação: o checksum publicado continua sendo verificado. Só uma
+        assinatura **inválida** aborta, porque essa é uma afirmação.
+        """
+        asset = plan.asset
+        if not asset.checksums_signature_url or not asset.checksums_certificate_url:
+            return None
+        if cosign is None:
+            return None
+        verify = getattr(cosign, "verify_blob", None)
+        if not callable(verify):
+            return None
+
+        signature = workdir / "checksums.txt.sig"
+        certificate = workdir / "checksums.txt.pem"
+        try:
+            for url in (asset.checksums_signature_url, asset.checksums_certificate_url):
+                self._check_policy(url)
+            await self._download(asset.checksums_signature_url, signature, MAX_CHECKSUMS_BYTES)
+            await self._download(asset.checksums_certificate_url, certificate, MAX_CHECKSUMS_BYTES)
+        except (OSError, httpx.HTTPError) as e:
+            # O par de assinatura não veio. É ausência de verificação, e a
+            # instalação segue pelo checksum -- que é exatamente o que
+            # acontecia antes de este caminho existir.
+            logger.debug(f"signature material unavailable for {plan.tool}: {e}")
+            return None
+
+        try:
+            ok = await verify(
+                str(checksums_path),
+                signature=str(signature),
+                certificate=str(certificate),
+                certificate_identity_regexp=asset.signer_identity_pattern,
+                certificate_oidc_issuer=asset.signer_oidc_issuer,
+            )
+        except Exception as e:  # pragma: no cover - a verificação é best-effort
+            logger.debug(f"cosign verification unavailable for {plan.tool}: {e}")
+            return None
+
+        if ok is False:
+            raise InstallError(
+                f"cosign reported an invalid signature for {plan.asset.archive_name} "
+                f"(the {asset.checksums_signature_url.rsplit('/', 1)[-1]} does not match "
+                f"an identity under {asset.signer_identity_pattern}); refusing to install"
+            )
+        if ok is True:
+            logger.info(f"cosign verified the checksums of {plan.tool}")
+            return True
+        # Qualquer coisa que não seja True nem False -- um duplo que
+        # devolveu outra coisa -- é tratada como não conclusiva, e nunca
+        # como aprovação.
+        return None
 
     async def _download(self, url: str, target: Path, limit: int) -> None:
         async with self._client() as client, client.stream("GET", url) as resp:
@@ -321,29 +433,3 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
-
-
-async def _verify_signature(cosign: object | None, archive: Path, plan: InstallPlan) -> bool | None:
-    """Confere a assinatura quando há cosign, sem exigir que haja.
-
-    Devolve None quando o cosign não está disponível: isso é ausência de
-    verificação, e o checksum já garantiu que os bytes são os publicados.
-    Uma assinatura **inválida**, por outro lado, aborta -- é uma afirmação,
-    não uma ausência.
-    """
-    if cosign is None:
-        return None
-    verify = getattr(cosign, "verify_blob", None)
-    if not callable(verify):
-        return None
-    try:
-        ok = await verify(str(archive), plan.asset.archive_url)
-    except Exception as e:  # pragma: no cover - a verificação é best-effort
-        logger.debug(f"cosign verification unavailable for {plan.tool}: {e}")
-        return None
-    if ok is False:
-        raise InstallError(
-            f"cosign reported an invalid signature for {plan.asset.archive_name}; "
-            "refusing to install it"
-        )
-    return bool(ok)

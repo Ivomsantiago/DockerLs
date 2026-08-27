@@ -132,6 +132,7 @@ DYNAMICALLY_DISPATCHED = {
     "tag_exists",  # getattr(repo, "tag_exists", None) in the use case
     "refresh_db",  # getattr(scanner, "refresh_db", None)
     "close",  # getattr(scanner, "close", None)
+    "verify_blob",  # getattr(cosign, "verify_blob", None) no instalador
 }
 
 

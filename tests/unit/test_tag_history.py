@@ -55,11 +55,11 @@ class TestRecord:
         assert history.moves == 0
         assert history.current_digest == ""
         assert history.last_moved_at == ""
-        assert "não há histórico" in history.explain()
+        assert "there is no history" in history.explain()
 
     def test_tag_que_nunca_mudou_diz_que_o_passado_e_desconhecido(self) -> None:
         history = record(TagHistory(reference="r"), "sha256:aaa", _at(1))
-        assert "desconhecido, não ausente" in history.explain()
+        assert "unknown, not absent" in history.explain()
 
     def test_poda_preserva_a_primeira_observacao(self) -> None:
         """Perder a primeira apagaria o "desde quando", e a contagem viraria um

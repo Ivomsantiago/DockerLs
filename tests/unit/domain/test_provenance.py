@@ -46,7 +46,7 @@ class TestVerification:
             artifact=_ARTIFACT,
         )
         assert record.status is ProvenanceStatus.INPUT_CHANGED
-        assert "contexto" in record.explain()
+        assert "build context" in record.explain()
 
     def test_an_undigested_input_is_incomplete_not_verified(self):
         # Ausência de prova nunca vira prova de integridade -- é o mesmo

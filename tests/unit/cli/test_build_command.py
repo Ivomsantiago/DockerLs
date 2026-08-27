@@ -455,7 +455,7 @@ class TestPublishFlow:
         with patch("dockerls.cli.commands.build.BuildImageUseCase") as use_case:
             result = self._run(tmp_path, ["-t", "app:1.0", "--registry", "dhi.io/app", "--push"])
         assert result.exit_code == EXIT_ERROR
-        assert "não aceita push" in result.output
+        assert "does not accept pushes" in result.output
         # O build nunca chegou a ser instanciado.
         use_case.assert_not_called()
 
@@ -530,7 +530,7 @@ class TestPublishingRequiresAVerdict:
                 ["build", self._dockerfile(tmp_path), "-t", "app:1.0", "--push", "--no-scan"],
             )
         assert result.exit_code == EXIT_ERROR
-        assert "não medida" in result.output
+        assert "unmeasured image" in result.output
         use_case.assert_not_called()
 
     def test_publishing_defaults_the_gate_to_critical(self, tmp_path):
@@ -640,7 +640,7 @@ class TestTemplateDiscovery:
         assert "--base maven-alpine" in result.output
         # E a frase que evita a confusão de origem: sem --base, o build usa o
         # Dockerfile que já está lá.
-        assert "Dockerfile que já está no diretório" in result.output
+        assert "Dockerfile already in the directory" in result.output
 
     def test_an_unknown_base_fails_before_building(self, tmp_path):
         (tmp_path / "Dockerfile").write_text("FROM python:3.12-alpine\n")
@@ -648,7 +648,7 @@ class TestTemplateDiscovery:
             app, ["build", str(tmp_path), "-t", "a:1", "--base", "alpine-inexistente"]
         )
         assert result.exit_code == EXIT_ERROR
-        assert "inválido" in result.output
+        assert "invalid --base" in result.output
 
     def test_json_mode_still_lists_plain_names(self):
         result = CliRunner().invoke(app, ["build", "--list-templates", "--ci-mode"])
@@ -671,7 +671,7 @@ class TestBaseImageCommand:
             ["base-image", "-o", str(tmp_path / "Dockerfile"), "--no-pin"],
             input="1\n1\n1,2\ns\n",
         )
-        assert "serve para:" in result.output
+        assert "used for:" in result.output
         assert "custa:" in result.output
 
     def test_a_refused_package_names_the_reason(self, tmp_path):
@@ -692,7 +692,7 @@ class TestBaseImageCommand:
         )
         assert result.exit_code == EXIT_ERROR
         assert "sudo" in result.output
-        assert "privilégio" in result.output
+        assert "unprivileged" in result.output
 
     def test_distroless_refuses_packages_instead_of_generating_a_broken_file(self, tmp_path):
         destination = tmp_path / "Dockerfile"
@@ -906,7 +906,7 @@ class TestSignFlag:
 
         assert result is not None
         assert result.status is SignatureStatus.FAILED
-        assert "sem digest" in result.detail
+        assert "no manifest digest" in result.detail
 
     def test_assina_o_digest_e_nao_a_tag(self):
         from unittest.mock import AsyncMock, patch

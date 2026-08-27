@@ -108,16 +108,16 @@ class TagHistory:
     def explain(self) -> str:
         """A frase que transforma o histórico numa decisão."""
         if self.is_empty:
-            return "primeira vez que esta tag é observada: não há histórico para comparar"
+            return "first time this tag is observed: there is no history to compare against"
         if not self.moves:
             return (
-                f"observada desde {self.first_seen} sempre no mesmo digest — o que "
-                "aconteceu antes disso é desconhecido, não ausente"
+                f"observed since {self.first_seen}, always on the same digest -- what "
+                "happened before that is unknown, not absent"
             )
         vezes = "vez" if self.moves == 1 else "vezes"
         return (
             f"mudou de digest {self.moves} {vezes} desde {self.first_seen}, "
-            f"a última em {self.last_moved_at}"
+            f"the last on {self.last_moved_at}"
         )
 
     def to_dict(self) -> dict[str, object]:

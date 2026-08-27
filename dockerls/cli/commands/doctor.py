@@ -79,10 +79,18 @@ def doctor(
     For each tool it fetches the release archive and the `checksums.txt`
     published alongside it, verifies the SHA-256, and extracts only the
     binary. Nothing downloaded is ever executed, and no install script is
-    fetched or run. The published SHA-256 is the whole verification: the
-    cosign blob signature is *not* checked, because nothing here knows how
-    to check one yet, and claiming otherwise would be a security control
-    that exists only in the help text.
+    fetched or run.
+
+    When the project publishes `checksums.txt.sig` and `checksums.txt.pem`
+    and cosign is installed, the signature on `checksums.txt` is verified
+    first -- constrained to an identity under that project's own GitHub
+    repository, so "someone signed" is never mistaken for "the publisher
+    signed". Only then is the archive's SHA-256 compared against it.
+
+    An invalid signature aborts the install. A project with no signature
+    known here, a missing cosign, or a check that could not conclude are
+    reported as *not verified*, never as unsigned, and the install proceeds
+    on the published SHA-256 alone.
     """
     # `doctor` is the documented way for a pipeline to check its
     # prerequisites before a scan job, so it has to *gate*: it used to print
@@ -379,12 +387,12 @@ def _cosign_if_available() -> object | None:
     """O verificador de assinatura, quando existir um que sirva.
 
     `ToolInstaller` pede `verify_blob`: um release de scanner é um *blob*
-    assinado, não uma imagem de container. `CosignClient` só sabe verificar
-    referência de imagem (`cosign verify`), então devolvê-lo aqui fazia o
-    instalador procurar `verify_blob`, não achar, e seguir em silêncio --
-    uma verificação anunciada que nunca acontecia. Enquanto não houver
-    `verify_blob`, esta função devolve None e o checksum publicado é a
-    verificação, dita como tal.
+    assinado, não uma imagem de container. O `CosignClient` sabia verificar
+    só referência de imagem (`cosign verify`), então devolvê-lo aqui fazia
+    o instalador procurar `verify_blob`, não achar, e seguir em silêncio --
+    uma verificação anunciada que nunca acontecia. A checagem abaixo
+    sobrevive à implementação de `verify_blob` de propósito: ela é o que
+    impede a mesma armadilha de voltar por um caminho diferente.
     """
     if shutil.which("cosign") is None:
         return None

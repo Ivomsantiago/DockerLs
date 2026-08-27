@@ -3,6 +3,7 @@ package scan
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -82,7 +83,13 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 //     matar só o líder deixava netos vivos, ainda segurando o lock BoltDB
 //     que o pool de cache existe para não disputar;
 //   - o teto de saída encerra o scan em vez de continuar acumulando.
-func runCapture(parent context.Context, argv []string, timeout time.Duration, maxBytes int64) runResult {
+func runCapture(
+	parent context.Context,
+	argv []string,
+	timeout time.Duration,
+	maxBytes int64,
+	extraEnv map[string]string,
+) runResult {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
@@ -90,6 +97,17 @@ func runCapture(parent context.Context, argv []string, timeout time.Duration, ma
 	// Sem shell em canto nenhum: `exec.Command` recebe argv já separado,
 	// então uma referência de imagem não tem como virar comando.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if len(extraEnv) > 0 {
+		// Somado ao ambiente herdado, e não no lugar dele: um scanner
+		// precisa de HOME, PATH e das variáveis de proxy para funcionar, e
+		// substituir o ambiente inteiro por três chaves quebraria todas as
+		// três coisas de uma vez.
+		env := os.Environ()
+		for key, value := range extraEnv {
+			env = append(env, key+"="+value)
+		}
+		cmd.Env = env
+	}
 
 	kill := func() { killGroup(cmd) }
 	outW := &boundedWriter{limit: maxBytes, onExceed: kill}

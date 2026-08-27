@@ -24,9 +24,9 @@ from dataclasses import dataclass, field
 #: empresa. São poucos de propósito: uma lista longa vira formulário que
 #: ninguém preenche de verdade.
 REQUIRED_FIELDS: tuple[tuple[str, str], ...] = (
-    ("owner", "Time ou pessoa responsável pela imagem"),
-    ("security_contact", "Para quem avisar sobre uma vulnerabilidade nesta imagem"),
-    ("source", "URL do repositório que gera esta imagem"),
+    ("owner", "Owning team or person for this image"),
+    ("security_contact", "Who to tell about a vulnerability in this image"),
+    ("source", "URL of the repository that produces this image"),
 )
 
 
@@ -62,10 +62,10 @@ class BuildIdentity:
         absent = self.missing()
         if absent:
             raise MissingBuildMetadataError(
-                "faltam rótulos obrigatórios: "
+                "required labels are missing: "
                 + ", ".join(absent)
-                + ". Informe-os nas opções do build ou responda às perguntas "
-                "(use --non-interactive para exigir que venham por opção)."
+                + ". Give them as build options, or answer the questions "
+                "(use --non-interactive to require them as options)."
             )
 
     def to_labels(self) -> dict[str, str]:

@@ -61,7 +61,7 @@ def test_acesso_publico_aparece_sem_reprovar():
     texto = " ".join(result.output.split())
     assert "PUBLICLY_READABLE" in texto
     # Só PINNED_REFERENCE alerta neste cenário: público não é alerta.
-    assert "1 achado(s) que pedem atenção" in texto
+    assert "1 finding(s) that want attention" in texto
 
 
 def test_formato_json_traz_os_achados_e_a_ressalva():

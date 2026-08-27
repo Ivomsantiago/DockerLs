@@ -41,11 +41,11 @@ _COLORS = {
 
 
 def verify(
-    reference: str = typer.Argument(..., help="Imagem a verificar (idealmente por digest)"),
+    reference: str = typer.Argument(..., help="Image to verify (ideally by digest)"),
     identity: str = typer.Option(
         "",
         "--identity",
-        help="Regex da identidade que deve ter assinado (ex: 'https://github.com/org/.*')",
+        help="Regex for the identity that must have signed (e.g. 'https://github.com/org/.*')",
     ),
     issuer: str = typer.Option(
         "",
@@ -53,11 +53,11 @@ def verify(
         help="Emissor OIDC esperado (ex: https://token.actions.githubusercontent.com)",
     ),
     output_format: str = typer.Option(
-        OutputFormat.TABLE.value, "--format", "-f", help="Formato de saída: table ou json"
+        OutputFormat.TABLE.value, "--format", "-f", help="Output format: table or json"
     ),
-    no_color: bool = typer.Option(False, "--no-color", help="Desativa cor na saída"),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable colored output"),
 ) -> None:
-    """Confere a assinatura de uma imagem com cosign."""
+    """Check an image signature with cosign."""
     if no_color:
         console.no_color = True
     fmt = parse_output_format(output_format)
@@ -82,8 +82,8 @@ def verify(
             console.print(f"  [yellow]![/yellow] [dim]{safe(result.detail)}[/dim]")
         if "@sha256:" not in reference:
             console.print(
-                "\n[dim]Esta referência não é um digest: a assinatura conferida é a "
-                "do que a tag aponta agora, e a tag pode mover.[/dim]"
+                "\n[dim]This reference is not a digest: the signature checked is the "
+                "one for what the tag points at now, and the tag can move.[/dim]"
             )
         console.print()
 

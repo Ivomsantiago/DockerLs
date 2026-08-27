@@ -67,7 +67,7 @@ class TestClassification:
         finding = classify(self._base(f"FROM node:22@{_ANTIGO}\n"), _ATUAL)
         assert finding.status is BaseStatus.PINNED_STALE
         assert finding.proposed_reference == f"node:22@{_ATUAL}"
-        assert "republicada" in finding.explain()
+        assert "republished" in finding.explain()
 
     def test_a_bare_tag_is_unpinned(self):
         finding = classify(self._base("FROM node:22\n"), _ATUAL)

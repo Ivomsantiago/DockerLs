@@ -114,7 +114,7 @@ def test_comparar_com_distroless_lista_os_pacotes_que_se_perdem(tmp_path: Path):
     assert result.exit_code == EXIT_OK
     assert "- ca-certificates" in result.output
     assert "- tzdata" in result.output
-    assert "nem shell" in result.output
+    assert "no shell" in result.output
 
 
 def test_o_diff_nao_elege_vencedora(tmp_path: Path):
@@ -135,7 +135,7 @@ def test_o_diff_nao_elege_vencedora(tmp_path: Path):
         ],
     )
 
-    assert "escanear" in result.output
+    assert "scanning both" in result.output
 
 
 def test_familia_desconhecida_e_erro(tmp_path: Path):

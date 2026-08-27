@@ -124,8 +124,8 @@ class FleetScanUseCase:
         except Exception as e:
             # Um arquivo ilegível continua no relatório: sumir com ele faria a
             # frota parecer menor e mais em ordem do que é.
-            logger.debug(f"Não foi possível analisar {path}: {e}")
-            return FleetEntry(path=relative, error=str(e) or "não foi possível analisar")
+            logger.debug(f"Could not analyze {path}: {e}")
+            return FleetEntry(path=relative, error=str(e) or "could not be analyzed")
 
         info = analysis.info
         nonroot = _nonroot(analysis)
@@ -138,7 +138,7 @@ class FleetScanUseCase:
         try:
             declared = parse_bases(path.read_text(encoding="utf-8", errors="replace"))
         except OSError as e:
-            logger.debug(f"Não foi possível reler {path}: {e}")
+            logger.debug(f"Could not re-read {path}: {e}")
             declared = []
 
         facts = tuple(
@@ -209,7 +209,7 @@ def _walk(
         try:
             children = sorted(directory.iterdir())
         except OSError as e:
-            logger.debug(f"Não foi possível listar {directory}: {e}")
+            logger.debug(f"Could not list {directory}: {e}")
             unreadable.append(_relative(directory, root))
             continue
 

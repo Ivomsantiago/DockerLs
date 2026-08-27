@@ -91,21 +91,21 @@ class SignatureResult:
 
     def explain(self) -> str:
         if self.status is SignatureStatus.VERIFIED:
-            quem = ", ".join(self.identities) if self.identities else "identidade não revelada"
-            return f"assinatura válida ({quem})"
+            quem = ", ".join(self.identities) if self.identities else "identity not disclosed"
+            return f"valid signature ({quem})"
         if self.status is SignatureStatus.SIGNED:
-            return "assinatura publicada no registry"
+            return "signature published in the registry"
         if self.status is SignatureStatus.UNSIGNED:
             return (
-                "o cosign não encontrou assinatura válida para esta imagem: ninguém "
-                "atestou publicamente que a publicou"
+                "cosign found no valid signature for this image: nobody publicly "
+                "attested to publishing it"
             )
         if self.status is SignatureStatus.SIGNER_MISSING:
             return (
-                "cosign não está instalado: isto é ausência de resposta, e não "
-                "confirmação de que a imagem não está assinada"
+                "cosign is not installed: this is an absence of an answer, not "
+                "confirmation that the image is unsigned"
             )
-        return f"a verificação não pôde ser concluída: {self.detail or 'motivo desconhecido'}"
+        return f"the check could not be completed: {self.detail or 'reason unknown'}"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -135,8 +135,8 @@ class CosignClient:
                 reference=reference,
                 status=SignatureStatus.FAILED,
                 detail=(
-                    "só se assina por digest: uma tag pode mover, e a assinatura "
-                    "continuaria válida cobrindo bytes que ninguém mediu"
+                    "only digests get signed: a tag can move, and the signature would "
+                    "stay valid over bytes nobody measured"
                 ),
             )
 
@@ -191,8 +191,8 @@ class CosignClient:
         detail = ""
         if not certificate_identity_regexp and not certificate_oidc_issuer:
             detail = (
-                "verificado sem restringir identidade nem emissor: isto confirma que "
-                "*alguém* assinou, não que quem você espera assinou"
+                "verified without constraining identity or issuer: this confirms that "
+                "*someone* signed, not that whoever you expect signed"
             )
         return SignatureResult(
             reference=reference,
@@ -200,6 +200,54 @@ class CosignClient:
             identities=identities,
             detail=detail,
         )
+
+    async def verify_blob(
+        self,
+        blob: str,
+        *,
+        signature: str,
+        certificate: str,
+        certificate_identity_regexp: str = "",
+        certificate_oidc_issuer: str = "",
+    ) -> bool | None:
+        """Confere a assinatura keyless de um arquivo local.
+
+        `None` quer dizer **não foi possível conferir** -- cosign ausente, ou
+        o cosign falhando por um motivo que não é "assinatura inválida". Só
+        `False` é veredito: os bytes não são os que aquela identidade
+        assinou. A distinção é a mesma de sempre neste projeto, e aqui ela
+        decide se uma instalação é abortada ou apenas não é atestada.
+
+        Sem identidade e emissor declarados o cosign aceita qualquer
+        assinante, o que responderia "está assinado" sem responder "por
+        quem". Quem chama passa os dois; este método não inventa um padrão,
+        porque um padrão errado seria pior que nenhum.
+        """
+        argv = [
+            "verify-blob",
+            "--signature",
+            signature,
+            "--certificate",
+            certificate,
+            blob,
+        ]
+        if certificate_identity_regexp:
+            argv[1:1] = ["--certificate-identity-regexp", certificate_identity_regexp]
+        if certificate_oidc_issuer:
+            argv[1:1] = ["--certificate-oidc-issuer", certificate_oidc_issuer]
+
+        code, _, err = await self._run(argv)
+        if code is None:
+            return None
+        if code == 0:
+            return True
+        texto = _tail(err)
+        if _looks_like_a_bad_signature(texto):
+            return False
+        # Rede fora do ar, Rekor indisponível, certificado que o cosign não
+        # soube ler: nada disso diz que os bytes estão errados.
+        logger.debug(f"cosign verify-blob could not conclude: {texto}")
+        return None
 
     async def _run(self, argv: list[str]) -> tuple[int | None, bytes, bytes]:
         """Executa o cosign. `None` como código significa "não está instalado"."""
@@ -228,6 +276,28 @@ def _tail(stream: bytes, limit: int = 400) -> str:
     conter caminho local; o corte reduz o que vaza para um log de CI."""
     text = stream.decode("utf-8", errors="replace").strip()
     return text[-limit:] if len(text) > limit else text
+
+
+def _looks_like_a_bad_signature(message: str) -> bool:
+    """Se o cosign disse que a assinatura **não confere**.
+
+    Existe para separar veredito de indisponibilidade: o cosign devolve o
+    mesmo código de saída para "estes bytes não são os assinados" e para
+    "não consegui falar com o Rekor", e tratar o segundo como o primeiro
+    abortaria instalações por causa de uma rede instável.
+    """
+    texto = (message or "").lower()
+    return any(
+        marker in texto
+        for marker in (
+            "signature verification failed",
+            "invalid signature",
+            "failed to verify signature",
+            "error verifying blob",
+            "certificate identity",
+            "none of the expected identities matched",
+        )
+    )
 
 
 def _looks_unsigned(message: str) -> bool:

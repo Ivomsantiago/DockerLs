@@ -70,6 +70,12 @@ type Request struct {
 	// antes do scan ser abandonado. 0 usa o padrão da engine.
 	MaxOutputBytes int64 `json:"max_output_bytes"`
 
+	// Env são variáveis de ambiente extras para o processo do scanner,
+	// somadas às que a engine já herdou. O Grype desliga a atualização
+	// automática da base por env (`GRYPE_DB_AUTO_UPDATE`), e não por flag,
+	// então sem isto o `skip_db_update` não teria como valer para ele.
+	Env map[string]string `json:"env"`
+
 	// RawDir, quando preenchido, é onde a engine deposita o JSON cru de
 	// cada scan, e o caminho volta em Result.RawPath. A redação de
 	// segredos e a gravação definitiva continuam no Python: `redact()` é

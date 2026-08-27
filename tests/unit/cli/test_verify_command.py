@@ -70,7 +70,7 @@ def test_verificar_uma_tag_avisa_que_ela_pode_mover():
     with _verifies(SignatureResult(reference="reg.io/app:1.0", status=SignatureStatus.VERIFIED)):
         outcome = runner.invoke(app, ["verify", "reg.io/app:1.0", "--no-color"])
 
-    assert "a tag pode mover" in " ".join(outcome.output.split())
+    assert "the tag can move" in " ".join(outcome.output.split())
 
 
 def test_formato_json_traz_o_veredito():

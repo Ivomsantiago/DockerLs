@@ -12,6 +12,8 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from dockerls.domain.value_objects.scan_plan import DEFAULT_SCAN_BUDGET
+
 
 def _default_cache_dir() -> Path:
     xdg = os.environ.get("XDG_CACHE_HOME")
@@ -62,6 +64,16 @@ class Settings(BaseSettings):
     # disappearing matters sooner than a score going slightly stale.
     tag_cache_ttl_seconds: int = 6 * 3600
     max_tags: int = 100
+    # Quantas das tags descobertas este run realmente mede. `max_tags`
+    # governa a *descoberta*; isto governa a *medição*, e são coisas
+    # diferentes: descobrir 100 tags custa uma chamada HTTP, medir as 100
+    # custa dois a quatro minutos de Trivy para exibir cinco.
+    #
+    # O corte não esconde nada. As tags não medidas voltam no resultado
+    # (`deferred`) com o motivo -- quase sempre "existe uma tag mais nova
+    # da mesma linha" --, porque uma tag não medida não é uma tag pior.
+    # `0` mede todas, que é o comportamento anterior.
+    scan_budget: int = DEFAULT_SCAN_BUDGET
     # 0 means "derive from this machine": each worker holds a scanner
     # process that wants a core and hundreds of megabytes, so a flat number
     # oversubscribes small runners and underuses large ones. Any explicit

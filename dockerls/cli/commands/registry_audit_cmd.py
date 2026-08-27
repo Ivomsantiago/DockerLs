@@ -33,13 +33,13 @@ console = Console()
 
 
 def registry_audit(
-    reference: str = typer.Argument(..., help="Imagem publicada (`ghcr.io/org/app:1.0`)"),
+    reference: str = typer.Argument(..., help="Published image (`ghcr.io/org/app:1.0`)"),
     output_format: str = typer.Option(
-        OutputFormat.TABLE.value, "--format", "-f", help="Formato de saída: table ou json"
+        OutputFormat.TABLE.value, "--format", "-f", help="Output format: table or json"
     ),
-    no_color: bool = typer.Option(False, "--no-color", help="Desativa cor na saída"),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable colored output"),
 ) -> None:
-    """Apura pelo registry o que se sabe sobre uma imagem publicada."""
+    """Establish, through the registry, what is known about a published image."""
     if no_color:
         console.no_color = True
     fmt = parse_output_format(output_format)
@@ -80,7 +80,7 @@ def _render(audit: RegistryAudit) -> None:
     console.print()
 
     if not audit.findings:
-        console.print("[red]Referência inválida: não foi possível apurar nada.[/red]")
+        console.print("[red]Invalid reference: nothing could be established.[/red]")
         return
 
     for finding in audit.findings:
