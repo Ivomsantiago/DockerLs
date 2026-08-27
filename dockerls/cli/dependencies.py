@@ -291,6 +291,7 @@ async def build_recommend_use_case(
     use_cache: bool = True,
     sources: Sequence[str] | None = None,
     all_sources: bool = False,
+    scan_budget: int | None = None,
 ) -> RecommendImagesUseCase:
     s = _settings()
     # None means "not given on the command line", so the configured value
@@ -360,6 +361,7 @@ async def build_recommend_use_case(
         verify_hub_tags=s.verify_hub_tags if verify_hub_tags is None else verify_hub_tags,
         log_file=current_log_file(),
         cache_ttl_seconds=s.cache_ttl_seconds,
+        scan_budget=s.scan_budget if scan_budget is None else scan_budget,
     )
 
 

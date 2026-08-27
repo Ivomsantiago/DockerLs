@@ -86,7 +86,13 @@ def recommend(
         None, "--max-medium", help="Max medium vulns allowed [config: max_medium, default 5]"
     ),
     limit: int | None = typer.Option(
-        None, "--limit", "-l", help="Max tags to scan [config: max_tags, default 100]"
+        None, "--limit", "-l", help="Max tags to discover [config: max_tags, default 100]"
+    ),
+    budget: int | None = typer.Option(
+        None,
+        "--budget",
+        "-b",
+        help="Max tags to actually scan; 0 scans every tag found [config: scan_budget, default 25]",
     ),
     workers: int | None = typer.Option(
         None,
@@ -149,6 +155,10 @@ def recommend(
         max_medium = check_threshold(max_medium, "max_medium")
     if limit is not None:
         limit = check_limit(limit)
+    # `0` é um valor legítimo aqui -- significa "meça todas" -- e por isso
+    # não passa pelo validador de limite, que recusa zero.
+    if budget is not None and budget < 0:
+        raise typer.BadParameter("--budget cannot be negative")
     # `0` means "size it to this machine", so it is passed through rather
     # than validated: the resolver, not the flag, decides what it becomes.
     if workers:
@@ -167,6 +177,7 @@ def recommend(
                 max_high,
                 max_medium,
                 limit,
+                budget,
                 workers,
                 fail_on,
                 fmt,
@@ -197,6 +208,7 @@ async def _recommend(
     max_high: int | None,
     max_medium: int | None,
     limit: int | None,
+    budget: int | None,
     workers: int | None,
     fail_on: FailOn,
     output_format: OutputFormat,
@@ -223,6 +235,7 @@ async def _recommend(
             use_cache=use_cache,
             sources=sources,
             all_sources=all_sources,
+            scan_budget=budget,
         )
         result = await use_case.execute(image, limit=resolve_tag_limit(limit))
 
@@ -252,6 +265,7 @@ async def _recommend(
 
     _print_tier_warnings(result.recommendations or result.alternatives)
     _print_unverified(result)
+    _print_deferred(result)
 
     if result.evidence_manifest:
         console.print(f"\n[dim]Evidence manifest: {result.evidence_manifest}[/dim]")
@@ -295,6 +309,12 @@ def _print_summary(result: AnalysisResult) -> None:
     parts = [f"[green]OK {analyzed}/{total} analyzed[/green]"]
     if skipped:
         parts.append(f"[yellow]X {skipped} skipped (technical error)[/yellow]")
+    if result.deferred_count:
+        # Dito no mesmo lugar que os scans que falharam, e com palavras
+        # diferentes: um scan que falhou é uma medição que não deu certo,
+        # uma tag adiada é uma medição que nem foi tentada. As duas são
+        # ausência de medição, e nenhuma é um veredito sobre a imagem.
+        parts.append(f"[cyan]- {result.deferred_count} not measured[/cyan]")
     if result.sources_searched:
         parts.append(f"[magenta]sources: {', '.join(result.sources_searched)}[/magenta]")
     console.print(" | ".join(parts))
@@ -589,6 +609,50 @@ def _print_unverified(result: AnalysisResult) -> None:
     if remaining > 0:
         console.print(f"  [dim]... and {remaining} more (see log file)[/dim]")
     console.print("  [dim]Run with --verbose for the full scanner output.[/dim]")
+
+
+def _print_deferred(result: AnalysisResult) -> None:
+    """As tags que a busca achou e o run não mediu, com o motivo.
+
+    Existe pelo mesmo motivo que `_print_unverified`: uma tabela limpa não
+    pode esconder o que ficou de fora. A diferença entre os dois blocos é
+    a que importa -- lá estão scans que falharam, aqui estão scans que não
+    foram tentados, e o segundo é uma escolha desta ferramenta, não um
+    acidente. Por isso o bloco também diz como desfazê-la.
+    """
+    if not result.deferred:
+        return
+
+    console.print()
+    console.print(
+        Panel(
+            f"[bold cyan]Not Measured ({result.deferred_count} of "
+            f"{result.tags_discovered} tags found)[/bold cyan]",
+            expand=False,
+        )
+    )
+    console.print(
+        "[dim]These tags exist and were not scanned. That is not a verdict on "
+        "them: nothing here was measured, so nothing here is being claimed.[/dim]"
+    )
+    console.print()
+
+    by_reason = Counter(item.reason.value for item in result.deferred)
+    for reason, count in by_reason.most_common():
+        console.print(f"  [cyan]{reason}[/cyan]  {count}")
+    console.print()
+
+    for item in result.deferred[:10]:
+        console.print(f"  [dim]{safe(item.reference)}[/dim] -- {safe(item.detail)}")
+    remaining = result.deferred_count - 10
+    if remaining > 0:
+        console.print(f"  [dim]... and {remaining} more (see --format json)[/dim]")
+
+    console.print()
+    console.print(
+        "[dim]To measure every tag found: --budget 0, or set scan_budget = 0 "
+        "in the config file.[/dim]"
+    )
 
 
 def _nothing_could_be_measured(result: AnalysisResult) -> bool:

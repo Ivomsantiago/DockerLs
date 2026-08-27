@@ -3264,8 +3264,35 @@ flag explícita sempre vence a configuração.
 | max-high      | 0       |
 | max-medium    | 5       |
 | workers       | automático (ver abaixo) |
-| limit (tags)  | 100     |
+| limit (tags descobertas) | 100 |
+| scan_budget (tags medidas) | 25 |
 | TTL do cache  | 24h     |
+
+### Descobrir não é medir
+
+`--limit` (config `max_tags`) governa quantas tags a **busca** traz; `--budget`
+(config `scan_budget`) governa quantas delas são de fato **escaneadas**. São
+coisas diferentes: descobrir 100 tags custa uma chamada HTTP, medir as 100
+custa dois a quatro minutos de Trivy — para exibir cinco.
+
+O corte não esconde nada. As tags não medidas voltam no resultado, no bloco
+`Not Measured` e no campo `deferred` do JSON, cada uma com o motivo — quase
+sempre "existe uma tag mais nova da mesma linha". **Uma tag não medida não é
+uma tag pior**: nada foi medido nela, então nada está sendo afirmado sobre ela.
+É a mesma disciplina que separa `unverified` (o scan falhou) de um scan limpo.
+
+A regra de seleção só usa fatos que a listagem já trouxe — sem rede, sem
+scanner: majors diferentes nunca competem entre si (`20-alpine` continua
+sendo resposta legítima ao lado de `22-alpine`), variantes diferentes nunca
+competem, e um apelido móvel (`22-alpine`) nunca é colapsado num patch fixo
+(`22.14-alpine`) porque são perguntas diferentes. Havendo folga no orçamento,
+nada é cortado.
+
+```bash
+dockerls recommend node                # 100 descobertas, 25 medidas
+dockerls recommend node --budget 50    # mede mais
+dockerls recommend node --budget 0     # mede todas (comportamento anterior)
+```
 
 ### Uso de recursos
 

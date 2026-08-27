@@ -31,6 +31,7 @@ from dockerls.domain.entities.recommendation import (
     RemediationStep,
 )
 from dockerls.domain.value_objects.remediation_score import RemediationScore
+from dockerls.domain.value_objects.scan_plan import DEFAULT_SCAN_BUDGET, plan_scans
 from dockerls.domain.value_objects.security_score import SecurityScore
 from dockerls.domain.value_objects.security_tier import SecurityTier
 from dockerls.domain.value_objects.tristate import Tristate
@@ -86,6 +87,7 @@ class RecommendImagesUseCase:
         hardening: HardeningAnalyzer | None = None,
         resolve_digests: bool = True,
         exploitdb: ExploitDBClient | None = None,
+        scan_budget: int = DEFAULT_SCAN_BUDGET,
     ):
         # Guarded at construction rather than only at the CLI boundary: the
         # use case is the last place that can refuse a value which would
@@ -96,6 +98,9 @@ class RecommendImagesUseCase:
         self._repository = repository
         self._scanner = scanner
         self._eol_checker = eol_checker
+        # Quantas tags este run pode medir. 0 mede todas, que é o
+        # comportamento anterior e segue disponível por configuração.
+        self._scan_budget = max(0, scan_budget)
         self._cache = cache
         self._max_critical = validate_threshold(max_critical, "max_critical")
         self._max_high = validate_threshold(max_high, "max_high")
@@ -267,6 +272,23 @@ class RecommendImagesUseCase:
             ],
         )
 
+        # Quem medir. Medir as 100 tags para mostrar cinco custa dois a
+        # quatro minutos, e 95 desses scans existem só para serem
+        # descartados no ranqueamento. O plano corta isso -- e declara o
+        # que cortou: uma tag adiada não é uma tag pior, é uma tag *não
+        # medida*, e ela aparece no resultado com o motivo.
+        plan = plan_scans(tags, self._scan_budget)
+        if plan.deferred:
+            self._observer.phase_result(
+                "Selected for measurement",
+                [
+                    ("measuring", str(len(plan.selected))),
+                    ("deferred", str(plan.deferred_count)),
+                    ("budget", str(plan.budget)),
+                ],
+            )
+        tags = plan.selected
+
         await self._pin_digests(tags)
 
         analyses, unverified, errors = await self._scan_all(tags)
@@ -319,6 +341,8 @@ class RecommendImagesUseCase:
             baseline=self._baseline(),
             sources_searched=_sources_of(tags),
             metrics=self._metrics,
+            deferred=plan.deferred,
+            tags_discovered=plan.discovered,
         )
         result.evidence_manifest = await self._write_manifest(image_name, selected)
         return result

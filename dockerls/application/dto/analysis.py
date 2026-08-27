@@ -8,6 +8,7 @@ from dockerls.domain.entities.recommendation import Recommendation
 from dockerls.domain.entities.scan_result import ScanResult
 from dockerls.domain.entities.vulnerability import Vulnerability
 from dockerls.domain.value_objects.confidence import Confidence
+from dockerls.domain.value_objects.scan_plan import DeferredTag
 from dockerls.domain.value_objects.tristate import Tristate
 
 
@@ -201,10 +202,23 @@ class AnalysisResult(BaseModel):
     # Catalogues that returned at least one candidate for this query.
     sources_searched: list[str] = []
     metrics: RunMetrics = Field(default_factory=RunMetrics)
+    #: Tags que a busca encontrou e que este run deliberadamente **não
+    #: mediu**, com o motivo de cada uma. Deliberadamente separado de
+    #: `unverified`: ali estão as medições que falharam, aqui as que nunca
+    #: foram tentadas. As duas são ausência de medição, e nenhuma das duas
+    #: é um veredito sobre a imagem -- mas confundi-las esconderia que uma
+    #: é escolha desta ferramenta e a outra é uma falha.
+    deferred: list[DeferredTag] = []
+    #: Quantas tags a busca trouxe, antes de qualquer corte.
+    tags_discovered: int = 0
 
     @property
     def unverified_count(self) -> int:
         return len(self.unverified)
+
+    @property
+    def deferred_count(self) -> int:
+        return len(self.deferred)
 
 
 class ComparisonResult(BaseModel):

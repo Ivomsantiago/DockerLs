@@ -29,6 +29,7 @@ from dockerls.cli.progress import RichScanObserver
 from dockerls.domain.entities.image import DockerImage
 from dockerls.domain.entities.scan_result import ScanResult, ScanStatus
 from dockerls.domain.interfaces.eol_checker import EOLCheckerInterface
+from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
 from dockerls.domain.value_objects.image_reference import registry_host_of
 from dockerls.infrastructure.evidence import EvidenceStore
 from dockerls.integrations.grype.scanner import GrypeScanner
@@ -345,16 +346,60 @@ async def test_high_concurrency_loses_no_tag_and_hides_no_failure(
         observer=RichScanObserver(enabled=False),
         evidence=evidence,
         max_medium=50,
+        # Sem orçamento: o que está sob teste aqui é a concorrência, e um
+        # corte de seleção reduziria o número de scans simultâneos que o
+        # teste existe para exercer.
+        scan_budget=0,
     )
     result = await use_case.execute("node", limit=len(tags))
 
     assert result.total_tags_scanned == len(tags)
+    assert result.deferred == []
     # Nothing may vanish: analyzed + skipped must account for every tag.
     assert result.total_tags_analyzed + result.unverified_count == len(tags)
     assert result.total_tags_analyzed == len(tags), (
         f"{result.unverified_count} tags failed under concurrency: "
         f"{[u.reason for u in result.unverified][:3]}"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_scan_budget_accounts_for_every_tag_it_did_not_measure(scanner_stubs, tmp_path):
+    """O corte de scans é a única coisa no projeto que remove candidatas
+    sem medi-las. A invariante que o torna defensável: medidas + falhadas +
+    adiadas tem de fechar com o que a busca encontrou, e nenhuma tag pode
+    sumir sem ser nomeada."""
+    tags = [DockerImage(name="node", tag=f"22.{i}-alpine", is_official=True) for i in range(30)]
+
+    class _ManyTags(ImageRepositoryInterface):
+        async def search_tags(self, image_name, limit=100):
+            return tags[:limit]
+
+        async def get_image_metadata(self, image_name, tag):
+            return next((t for t in tags if t.tag == tag), None)
+
+        async def tag_exists(self, image_name, tag):
+            return True
+
+    use_case = RecommendImagesUseCase(
+        repository=_ManyTags(),
+        scanner=TrivyScanner(workers=4, cache_dir=tmp_path / "trivy"),
+        eol_checker=_EOL(),
+        workers=4,
+        observer=RichScanObserver(enabled=False),
+        max_medium=50,
+        scan_budget=6,
+    )
+    result = await use_case.execute("node", limit=len(tags))
+
+    assert result.tags_discovered == len(tags)
+    assert result.total_tags_scanned <= 6
+    assert result.total_tags_analyzed + result.unverified_count + result.deferred_count == len(tags)
+    # Nomeada, e uma vez só: uma referência em duas listas seria contada
+    # duas vezes por qualquer um que somasse as duas.
+    named = {d.reference for d in result.deferred}
+    named |= {u.image_reference for u in result.unverified}
+    assert len(named) == result.deferred_count + result.unverified_count
 
 
 @pytest.mark.asyncio
