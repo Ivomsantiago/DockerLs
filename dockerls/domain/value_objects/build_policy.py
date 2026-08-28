@@ -30,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from dockerls.domain.value_objects.gate import SEVERITY_THRESHOLDS, merge_gates
 from dockerls.domain.value_objects.tristate import Tristate
 
 #: Severidades que uma contagem pode nomear. `unknown` entra: um scanner que
@@ -47,7 +48,9 @@ SEVERITY_ORDER: tuple[str, ...] = ("critical", "high", "medium", "low", "unknown
 #: `unknown` fica de fora porque o portão não sabe avaliá-lo: aceitá-lo na
 #: política produziria um build que morre com erro técnico no meio do
 #: caminho, em vez de uma política recusada na leitura do arquivo.
-GATE_THRESHOLDS: tuple[str, ...] = ("critical", "high", "medium", "low")
+#: Reexportado de `gate.py`, que é onde a escala mora agora: duas
+#: definições de "mais estrito" divergiriam na primeira mudança.
+GATE_THRESHOLDS: tuple[str, ...] = SEVERITY_THRESHOLDS
 
 
 class PolicyRule(StrEnum):
@@ -105,8 +108,9 @@ class PolicyViolation:
 class BuildPolicy:
     """As exigências declaradas em `.dockerls-policy.yaml`."""
 
-    #: Severidade a partir da qual o build reprova. Vazio deixa a decisão com
-    #: a linha de comando.
+    #: O portão que reprova o build: uma severidade (`critical`), `kev`,
+    #: `epss>=N`, ou vários separados por vírgula. Vazio deixa a decisão
+    #: com a linha de comando.
     fail_on: str = ""
     #: Teto por severidade (`{"high": 5}`). Um teto de zero é diferente de
     #: `fail_on`: permite tolerar 3 HIGH e nenhum CRITICAL no mesmo arquivo.
@@ -136,21 +140,21 @@ class BuildPolicy:
         )
 
     def effective_fail_on(self, requested: str) -> str:
-        """O limiar que vale, entre o da política e o da linha de comando.
+        """O portão que vale, entre o da política e o da linha de comando.
 
-        Vence o mais estrito, nos dois sentidos: um arquivo no repositório não
-        desliga um portão que o pipeline pediu, e uma flag não afrouxa a
-        política da organização.
+        Severidade contra severidade continua sendo a regra antiga: vence o
+        limiar **mais baixo na escala**, e não a palavra mais assustadora --
+        `--fail-on low` reprova em LOW e em tudo acima, enquanto `critical`
+        só olha CRITICAL. Nem o arquivo do repositório desliga um portão que
+        o pipeline pediu, nem uma flag afrouxa a política da organização.
 
-        "Mais estrito" é o limiar **mais baixo na escala de severidade**, e não
-        a palavra mais assustadora: `--fail-on low` reprova em LOW e em tudo
-        acima, enquanto `--fail-on critical` só olha para CRITICAL. Entre
-        `high` e `critical` vence `high`.
+        Portões de tipos diferentes não competem: somam. `kev` e `high` são
+        perguntas diferentes sobre coisas diferentes, e escolher uma
+        descartaria a outra em silêncio. A regra vive em
+        `domain/value_objects/gate.py` para que a política e o portão do
+        build não possam divergir sobre o que "mais estrito" significa.
         """
-        candidates = [s for s in (self.fail_on, requested) if s in GATE_THRESHOLDS]
-        if not candidates:
-            return requested or self.fail_on
-        return max(candidates, key=GATE_THRESHOLDS.index)
+        return merge_gates(self.fail_on, requested)
 
     @staticmethod
     def production() -> BuildPolicy:

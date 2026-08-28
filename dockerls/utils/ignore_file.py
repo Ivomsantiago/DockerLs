@@ -7,6 +7,8 @@ import yaml
 from loguru import logger
 from pydantic import BaseModel, field_validator
 
+from dockerls.domain.value_objects.vex import VexJustification, parse_justification
+
 DEFAULT_IGNORE_FILENAME = ".dockerls-ignore.yaml"
 
 
@@ -14,6 +16,32 @@ class IgnoreRule(BaseModel):
     cve: str
     justification: str = ""
     expires: date | None = None
+    #: A justificativa **do padrão VEX**, quando quem escreveu a regra
+    #: souber declarar uma. Opcional de propósito: `not_affected` é uma
+    #: afirmação técnica com vocabulário fechado, e a maioria das isenções
+    #: é decisão de risco ("aceito até o Q3"), que não é nenhuma delas.
+    #:
+    #: Sem ela, o documento OpenVEX sai como `affected` com a justificativa
+    #: em texto -- o consumidor vê a exceção e o motivo, sem receber uma
+    #: alegação técnica que ninguém fez. Ver `domain/value_objects/vex.py`.
+    vex_justification: str = ""
+
+    @field_validator("vex_justification")
+    @classmethod
+    def _known_vex_justification(cls, v: str) -> str:
+        """Recusa um valor que não existe no padrão.
+
+        Aceitá-lo produziria um documento VEX que outra ferramenta rejeita
+        na leitura -- e o erro apareceria longe daqui, sem dizer que veio
+        de uma linha do arquivo de isenções.
+        """
+        text = v.strip().lower()
+        if not text:
+            return ""
+        if parse_justification(text) is None:
+            allowed = ", ".join(str(j) for j in VexJustification)
+            raise ValueError(f"unknown VEX justification {v!r}; expected one of: {allowed}")
+        return text
 
     @field_validator("cve")
     @classmethod

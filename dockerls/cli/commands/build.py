@@ -24,6 +24,12 @@ from dockerls.cli.rendering import render_validation_report
 from dockerls.cli.text import safe
 from dockerls.domain.value_objects.build_labels import BuildIdentity, MissingBuildMetadataError
 from dockerls.domain.value_objects.build_policy import BuildPolicy
+from dockerls.domain.value_objects.gate import (
+    GateKind,
+    GateSet,
+    InvalidGateError,
+    merge_gates,
+)
 from dockerls.domain.value_objects.inheritance import ACTIONS, FindingOrigin
 from dockerls.domain.value_objects.provenance import BuildProvenance, ProvenanceStatus
 from dockerls.domain.value_objects.registry_target import InvalidRegistryTargetError
@@ -43,6 +49,7 @@ from dockerls.integrations.signing.cosign import (
 if TYPE_CHECKING:
     from dockerls.domain.value_objects.build_policy import PolicyViolation
     from dockerls.domain.value_objects.inheritance import InheritanceReport
+    from dockerls.integrations.threat_intel.client import ThreatIntelClient
 
 console = Console()
 
@@ -80,12 +87,16 @@ def build(
         3, "--max-iterations", help="Maximum number of remediation iterations"
     ),
     fail_on: str | None = typer.Option(
-        None, "--fail-on", help="Reprova build se tiver critical/high"
+        None,
+        "--fail-on",
+        help="Fail the build on: a severity (critical, high, medium, low), `kev` "
+        "(exploited in the wild, per CISA KEV), or `epss>=N` (probability of "
+        "exploitation). Combine with commas; all of them must pass",
     ),
     report: str | None = typer.Option(
         None, "--report", "-r", help="Save the security report (JSON/HTML)"
     ),
-    no_cache: bool = typer.Option(False, "--no-cache", help="Desativa cache do Docker"),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Disable the Docker build cache"),
     build_args: str | None = typer.Option(None, "--build-args", help="Argumentos de build (JSON)"),
     labels: str | None = typer.Option(None, "--labels", help="Security labels (JSON)"),
     ci_mode: bool = typer.Option(
@@ -180,10 +191,12 @@ def build(
 
     # Um limiar desconhecido não pode virar um portão que nunca reprova:
     # rejeita antes de construir qualquer coisa.
-    if fail_on is not None and fail_on.strip().lower() not in BuildImageUseCase.FAIL_ON_THRESHOLDS:
-        valid = ", ".join(BuildImageUseCase.FAIL_ON_THRESHOLDS)
-        console.print(f"[red]Error:[/red] invalid --fail-on: {fail_on!r}. Use um de: {valid}")
-        raise typer.Exit(EXIT_ERROR)
+    if fail_on is not None:
+        try:
+            GateSet.parse(fail_on)
+        except InvalidGateError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(EXIT_ERROR) from e
 
     # Uma base sem template não pode ser descoberta só depois do build ter
     # começado -- o mesmo raciocínio do `--fail-on` acima.
@@ -256,7 +269,12 @@ def build(
 
     # Inicializar use case
     validator = DockerfileValidator()
-    use_case = BuildImageUseCase(validator, template_provider)
+    # A inteligência de ameaça só é montada quando algum portão a pede:
+    # `--fail-on high` não deve sair para a rede consultar KEV, e um build
+    # sem portão de exploração não deve consultar nada.
+    use_case = BuildImageUseCase(
+        validator, template_provider, threat_intel=_threat_intel_for(fail_on, declared_policy)
+    )
 
     # Criar request
     request = BuildImageRequest(
@@ -477,6 +495,37 @@ def _print_signature(signature: SignatureResult) -> None:
     console.print(f"\n[{cor}]{signature.status}[/{cor}]  [dim]{safe(signature.explain())}[/dim]")
     if signature.detail and not signature.trustworthy:
         console.print(f"[dim]{safe(signature.detail)}[/dim]")
+
+
+def _threat_intel_for(fail_on: str | None, policy: BuildPolicy | None) -> ThreatIntelClient | None:
+    """O cliente de inteligência de ameaça, quando algum portão o exige.
+
+    Montá-lo sempre faria todo `dockerls build` sair para a rede buscar o
+    catálogo KEV e as pontuações EPSS -- para um portão que ninguém pediu.
+    Montá-lo nunca faria `--fail-on kev` não ter o que consultar, e um
+    portão de segurança que não avalia é a pior falha possível: a que não
+    aparece.
+
+    A pergunta é feita sobre o portão **efetivo**, política somada à linha
+    de comando: um `.dockerls-policy.yaml` que exige `kev` tem de fazer o
+    cliente existir mesmo que a linha de comando não peça nada.
+    """
+    declared = policy.fail_on if policy is not None else ""
+    effective = merge_gates(declared, fail_on or "")
+    if not effective:
+        return None
+    try:
+        gates = GateSet.parse(effective)
+    except InvalidGateError:
+        # Valor inválido já foi recusado antes de chegar aqui; se escapou,
+        # não é este o lugar de reclamar.
+        return None
+    if not any(gate.kind in (GateKind.KEV, GateKind.EPSS) for gate in gates.gates):
+        return None
+
+    from dockerls.integrations.threat_intel.client import ThreatIntelClient
+
+    return ThreatIntelClient()
 
 
 def _load_policy(context: str, explicit: str | None, *, no_policy: bool) -> BuildPolicy | None:

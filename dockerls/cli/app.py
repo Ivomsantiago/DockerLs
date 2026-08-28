@@ -168,6 +168,12 @@ COMMANDS: tuple[_Lazy, ...] = (
         "sbom",
         "Generate a Software Bill of Materials (SBOM) for an image via Trivy.",
     ),
+    _Lazy(
+        "vex",
+        "vex_cmd",
+        "vex",
+        "Emit this repository's exemptions as an OpenVEX document.",
+    ),
     _Lazy("cache", "cache_cmd", "cache_app", "Manage scan cache", is_group=True),
 )
 

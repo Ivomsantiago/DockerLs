@@ -3268,6 +3268,132 @@ flag explícita sempre vence a configuração.
 | scan_budget (tags medidas) | 25 |
 | TTL do cache  | 24h     |
 
+### SBOM que existe para quem baixa a imagem
+
+Sem `--attest`, o SBOM é um arquivo no seu disco: útil, e invisível para
+quem faz `docker pull`. É a atestação que o `registry-audit` procura — e
+que, até agora, ele nunca encontrava para imagens construídas por esta
+própria ferramenta.
+
+```bash
+dockerls sbom ghcr.io/org/app@sha256:abc... --attest
+```
+
+Assina o SBOM com cosign e o anexa ao manifesto, com o tipo de predicado
+certo (`cyclonedx` ou `spdxjson`) — sem ele o documento é anexado como
+predicado genérico e quem consome não sabe que é um SBOM, o que é quase o
+mesmo que não ter anexado.
+
+**Só por digest.** Uma tag pode mover, e uma atestação que sobrevive à
+mudança segue descrevendo uma imagem que ela nunca viu. A recusa acontece
+antes da geração: descobrir isso depois de escanear a imagem inteira
+desperdiçaria o trabalho.
+
+Cosign ausente não é falha da imagem: o SBOM foi gerado e continua válido,
+e o que não aconteceu foi a publicação — a saída diz exatamente isso.
+
+### O `doctor` confere que o scanner mede, não só que ele existe
+
+Um Trivy com base de vulnerabilidades de três semanas produz um scan
+**limpo, verde e sem erro nenhum** que simplesmente não conhece os CVEs do
+último mês. É a falha de medição mais silenciosa que existe aqui: nada no
+relatório indica que a resposta está velha.
+
+`dockerls doctor` passou a ler a data da base de cada scanner instalado:
+
+| estado | idade | o que significa |
+|---|---|---|
+| Fresh | até 24h | cobre o que se publicou recentemente |
+| Aging | 1 a 3 dias | ainda mede, e já perdeu dias de publicação |
+| Stale | mais de 3 dias | um scan contra ela volta limpo para tudo que saiu desde |
+| Unknown | — | **não foi possível ler a data**, o que não é o mesmo que estar atualizada |
+
+Por padrão isso é um aviso, e não muda o código de saída: `doctor` sempre
+significou "os componentes estão presentes", e mudar esse contrato em
+silêncio quebraria pipelines. Para transformar em portão:
+
+```bash
+dockerls doctor --require-fresh-db
+```
+
+`Unknown` reprova junto com `Stale` sob essa flag, pela mesma razão de
+sempre: a pergunta é "dá para confiar na atualidade desta base", e "não
+sei" não é sim.
+
+### Isenções portáveis: OpenVEX
+
+O `.dockerls-ignore.yaml` já é um documento VEX em tudo menos no formato --
+tem o CVE, a justificativa e o prazo. `dockerls vex` o escreve num formato
+que o resto do mundo lê, para que uma exceção decidida uma vez valha no
+pipeline inteiro em vez de só dentro desta ferramenta (Trivy e Grype
+consomem OpenVEX nativamente).
+
+```bash
+dockerls vex ghcr.io/org/app:1.2.3 --author "Plataforma <sec@org.example>"
+```
+
+**O que ele não faz é transformar risco aceito em alegação técnica.** VEX
+tem quatro estados, e o que quase toda implementação emite para uma isenção
+é `not_affected` — mas `not_affected` é uma afirmação *técnica* (o código
+vulnerável não está presente, ou não é alcançável, ou já está mitigado), e
+o padrão exige dizer qual das cinco razões é.
+
+"A equipe aceitou o risco até o Q3" não é nenhuma das cinco. Então:
+
+| a regra diz | o documento diz |
+|---|---|
+| justificativa em texto livre | `affected`, com o texto no `action_statement` |
+| `vex_justification: vulnerable_code_not_present` | `not_affected`, com a justificativa do padrão |
+
+O consumidor vê a exceção e vê o motivo, sem receber uma alegação que
+ninguém fez — e VEX existe justamente para ser acreditado.
+
+O prazo entra no `action_statement`, porque VEX não tem campo para
+expiração e uma isenção sem prazo visível é uma isenção que ninguém revisa.
+Regras vencidas não entram no documento: ressuscitá-las diria ao mundo
+inteiro que continuam valendo.
+
+`--author` é obrigatório. Uma afirmação VEX é alguém afirmando alguma
+coisa; sem autor ela não responsabiliza ninguém.
+
+### O portão olha exploração, não só severidade
+
+`--fail-on` aceita três tipos de portão, e eles respondem perguntas
+diferentes:
+
+| portão | pergunta |
+|---|---|
+| `critical` / `high` / `medium` / `low` | qual a severidade que o vendor atribuiu? |
+| `kev` | está sendo explorado no mundo real? (catálogo CISA KEV) |
+| `epss>=N` | qual a probabilidade de exploração nos próximos 30 dias? (FIRST EPSS) |
+
+Podem ser combinados por vírgula, e **todos** precisam passar:
+
+```bash
+dockerls build . -t app:1.0 --fail-on critical,kev
+dockerls build . -t app:1.0 --fail-on epss>=0.5
+```
+
+O caso que motivou isto: um CVE **sendo explorado hoje**, classificado
+MEDIUM pelo vendor da distro, atravessava um `--fail-on high` sem um pio. E
+o inverso — um CRITICAL teórico, sem exploit publicado e com EPSS de
+0,0003 — reprovava o build. A ferramenta já media a diferença e não a usava
+onde ela decide alguma coisa.
+
+**Um portão que não pôde ser avaliado não passa.** Se você pediu `kev` e o
+catálogo não respondeu, o build para com `Gate not evaluated` — e a
+mensagem diz que aquilo é ausência de medição, não um achado. Aprovar ali
+gastaria falta de consulta como tranquilidade, e desligaria um portão de
+segurança em silêncio numa oscilação de rede.
+
+A rede só é tocada quando algum portão a exige: `--fail-on high` não sai
+para buscar o catálogo KEV.
+
+O `.dockerls-policy.yaml` aceita os mesmos valores em `fail_on`. Quando os
+dois lados pedem portões de tipos diferentes, eles **somam** — entre
+`critical` e `kev` não dá para dizer qual é mais estrito, e escolher um
+descartaria o outro em silêncio.
+
 ### Descobrir não é medir
 
 `--limit` (config `max_tags`) governa quantas tags a **busca** traz; `--budget`
