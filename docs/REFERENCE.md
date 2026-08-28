@@ -160,6 +160,7 @@ pip install "dockerls[keyring]"
 | **Grype** ([instalação](https://github.com/anchore/grype)) | alternativa ao Trivy e segundo scanner na validação cruzada | funciona sem, mas a confiança não chega a `HIGH` por falta de corroboração |
 | **daemon do Docker** | **apenas o `build`** — é ele que roda `docker build`, `docker tag` e `docker push` | `build` falha; todo o resto continua funcionando |
 | **git** (opcional) | registro de supply chain: commit e estado da árvore | a procedência sai sem revisão, marcada como incompleta |
+| **Go 1.24+** (opcional) | compilar a engine de orquestração (`make engine`) para acelerar runs grandes | dispensável — sem o binário, a CLI usa o caminho Python normalmente |
 
 Confira tudo de uma vez:
 
@@ -3204,7 +3205,16 @@ dockerls/
   exporters/         # Exportadores JSON, CSV, HTML, Markdown, SARIF
   utils/             # Validação de entrada, autenticação, retry, rate limit,
                      #   circuit breaker e parsing YAML com limites explícitos
+engine/              # Orquestrador de scans em Go (opcional, ver abaixo)
 ```
+
+**A engine em Go (`engine/`)** dispara Trivy/Grype em paralelo sobre um lote
+de imagens e devolve tudo num único processo, em vez de um `subprocess` por
+scan. É opcional: `pip install dockerls` não instala o binário, e o
+pipeline em Python continua sendo o caminho completo — qualquer problema do
+lado da engine (binário ausente, timeout, saída ilegível) faz a CLI voltar
+sozinha para o caminho Python, sem falhar o comando. Detalhes, protocolo e
+como compilar estão em [`engine/README.md`](../engine/README.md).
 
 Os dados fluem para dentro: CLI -> Casos de uso -> Domínio. As integrações
 externas implementam interfaces do domínio e são injetadas pelo construtor de

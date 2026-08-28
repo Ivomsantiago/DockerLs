@@ -182,11 +182,14 @@ def _why(analysis: ImageAnalysis) -> list[str]:
     # KEV catalogue actually answered. With the feed unreachable every CVE
     # comes back `exploit_known=False`, and stating the claim on that basis
     # would be reporting a failed lookup as a security property.
-    exploited = sum(1 for v in scan.vulnerabilities if v.exploit_known)
+    #
+    # A CVE the catalogue *does* list is the mirror case, and it belongs in
+    # `_trade_offs`, not here: it used to land in this list, so a log4j RCE
+    # under active exploitation (CVE-2021-44228, CISA KEV) printed as a `+`
+    # reason to pick the image. Exploitation observed in the wild is never a
+    # point in an image's favour.
     checked = [v for v in scan.vulnerabilities if v.kev_status.is_known]
-    if exploited:
-        reasons.append(f"{exploited} known-exploited vulnerability(ies) present")
-    elif checked:
+    if checked and not any(v.exploit_known for v in checked):
         reasons.append(
             f"no known-exploited (CISA KEV) vulnerabilities among the "
             f"{len(checked)} finding(s) checked"
@@ -249,6 +252,9 @@ def _trade_offs(analysis: ImageAnalysis) -> list[str]:
         v.kev_status.is_known for v in analysis.scan.vulnerabilities
     ):
         costs.append("exploitation status (CISA KEV) could not be determined for any finding")
+    exploited = sum(1 for v in scan.vulnerabilities if v.exploit_known)
+    if exploited:
+        costs.append(f"{exploited} known-exploited (CISA KEV) vulnerability(ies) present")
     if analysis.scan_divergence:
         costs.append(f"scanners disagree: {analysis.scan_divergence}")
     if analysis.confidence is not Confidence.HIGH:
