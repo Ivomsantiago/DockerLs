@@ -3268,6 +3268,30 @@ flag explícita sempre vence a configuração.
 | scan_budget (tags medidas) | 25 |
 | TTL do cache  | 24h     |
 
+### SBOM que existe para quem baixa a imagem
+
+Sem `--attest`, o SBOM é um arquivo no seu disco: útil, e invisível para
+quem faz `docker pull`. É a atestação que o `registry-audit` procura — e
+que, até agora, ele nunca encontrava para imagens construídas por esta
+própria ferramenta.
+
+```bash
+dockerls sbom ghcr.io/org/app@sha256:abc... --attest
+```
+
+Assina o SBOM com cosign e o anexa ao manifesto, com o tipo de predicado
+certo (`cyclonedx` ou `spdxjson`) — sem ele o documento é anexado como
+predicado genérico e quem consome não sabe que é um SBOM, o que é quase o
+mesmo que não ter anexado.
+
+**Só por digest.** Uma tag pode mover, e uma atestação que sobrevive à
+mudança segue descrevendo uma imagem que ela nunca viu. A recusa acontece
+antes da geração: descobrir isso depois de escanear a imagem inteira
+desperdiçaria o trabalho.
+
+Cosign ausente não é falha da imagem: o SBOM foi gerado e continua válido,
+e o que não aconteceu foi a publicação — a saída diz exatamente isso.
+
 ### O `doctor` confere que o scanner mede, não só que ele existe
 
 Um Trivy com base de vulnerabilidades de três semanas produz um scan

@@ -153,6 +153,61 @@ class CosignClient:
             )
         return SignatureResult(reference=reference, status=SignatureStatus.SIGNED)
 
+    async def attest(
+        self,
+        reference: str,
+        *,
+        predicate: str,
+        predicate_type: str,
+        keyless: bool = True,
+    ) -> SignatureResult:
+        """Anexa um documento ao manifesto de uma imagem, assinado.
+
+        Uma atestação é uma afirmação sobre bytes específicos -- "este SBOM
+        descreve *esta* imagem" --, e por isso vale a mesma regra do
+        `sign`: **só por digest**. Atestar uma tag anexaria o documento ao
+        que ela aponta agora, e ela pode mover no instante seguinte; a
+        atestação seguiria válida, descrevendo outra imagem.
+
+        Isto é o que fecha o círculo com `registry-audit`, que já pergunta
+        se há atestação publicada e, até agora, respondia "não há" para
+        toda imagem que esta própria ferramenta construiu.
+        """
+        if "@sha256:" not in reference:
+            return SignatureResult(
+                reference=reference,
+                status=SignatureStatus.FAILED,
+                detail=(
+                    "only digests get attested: a tag can move, and the attestation "
+                    "would stay valid while describing a different image"
+                ),
+            )
+
+        argv = [
+            "attest",
+            "--yes",
+            "--predicate",
+            predicate,
+            "--type",
+            predicate_type,
+            reference,
+        ]
+        if not keyless:
+            argv[1:1] = ["--key", "cosign.key"]
+
+        code, _, err = await self._run(argv)
+        if code is None:
+            return _missing(reference)
+        if code != 0:
+            return SignatureResult(
+                reference=reference, status=SignatureStatus.FAILED, detail=_tail(err)
+            )
+        return SignatureResult(
+            reference=reference,
+            status=SignatureStatus.SIGNED,
+            detail=f"attested with a {predicate_type} predicate",
+        )
+
     async def verify(
         self,
         reference: str,

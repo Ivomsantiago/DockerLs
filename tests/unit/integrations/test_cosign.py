@@ -21,6 +21,9 @@ from dockerls.utils.executables import ExecutableNotFoundError
 
 _DIGEST = "reg.io/app@sha256:" + "a" * 64
 
+#: Caminho de predicado usado só como argumento; nada aqui abre arquivo.
+_PREDICATE = "sbom-fixture.json"
+
 
 def _run(code: int, out: bytes = b"", err: bytes = b""):
     return patch(
@@ -249,3 +252,70 @@ class TestVerifyBlob:
         assert "--certificate-identity-regexp" in argv
         assert "--certificate-oidc-issuer" in argv
         assert argv[-1] == "f.txt"
+
+
+class TestAttest:
+    """Uma atestação é uma afirmação sobre bytes específicos -- "este SBOM
+    descreve *esta* imagem". Vale a mesma regra do `sign`, e pela mesma
+    razão."""
+
+    @pytest.mark.asyncio
+    async def test_a_tag_is_refused(self):
+        """Atestar uma tag anexaria o documento ao que ela aponta agora, e
+        ela pode mover no instante seguinte: a atestação seguiria válida,
+        descrevendo outra imagem."""
+        result = await CosignClient().attest(
+            "reg.io/app:1.0", predicate=_PREDICATE, predicate_type="cyclonedx"
+        )
+
+        assert result.status is SignatureStatus.FAILED
+        assert "only digests get attested" in result.detail
+
+    @pytest.mark.asyncio
+    async def test_a_digest_is_attested(self):
+        with _resolves(), _run(0):
+            result = await CosignClient().attest(
+                _DIGEST, predicate=_PREDICATE, predicate_type="cyclonedx"
+            )
+
+        assert result.status is SignatureStatus.SIGNED
+        assert "cyclonedx" in result.detail
+
+    @pytest.mark.asyncio
+    async def test_the_predicate_and_its_type_reach_the_command_line(self):
+        """Sem `--type`, o documento é anexado como predicado genérico e
+        quem consome não sabe que é um SBOM -- quase o mesmo que não ter
+        anexado."""
+        seen: list[list[str]] = []
+
+        async def capture(argv, timeout=None, **kwargs):
+            seen.append(list(argv))
+            return 0, b"", b""
+
+        with _resolves(), patch("dockerls.integrations.signing.cosign.run_capture", capture):
+            await CosignClient().attest(_DIGEST, predicate=_PREDICATE, predicate_type="spdxjson")
+
+        argv = seen[0]
+        assert "attest" in argv
+        assert argv[argv.index("--predicate") + 1] == _PREDICATE
+        assert argv[argv.index("--type") + 1] == "spdxjson"
+        assert argv[-1] == _DIGEST
+
+    @pytest.mark.asyncio
+    async def test_a_missing_cosign_is_an_absence_and_not_a_failure(self):
+        with _absent():
+            result = await CosignClient().attest(
+                _DIGEST, predicate=_PREDICATE, predicate_type="cyclonedx"
+            )
+
+        assert result.status is SignatureStatus.SIGNER_MISSING
+
+    @pytest.mark.asyncio
+    async def test_a_cosign_failure_carries_the_reason(self):
+        with _resolves(), _run(1, err=b"error: 401 unauthorized"):
+            result = await CosignClient().attest(
+                _DIGEST, predicate=_PREDICATE, predicate_type="cyclonedx"
+            )
+
+        assert result.status is SignatureStatus.FAILED
+        assert "401" in result.detail
