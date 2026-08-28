@@ -3268,6 +3268,34 @@ flag explícita sempre vence a configuração.
 | scan_budget (tags medidas) | 25 |
 | TTL do cache  | 24h     |
 
+### O `doctor` confere que o scanner mede, não só que ele existe
+
+Um Trivy com base de vulnerabilidades de três semanas produz um scan
+**limpo, verde e sem erro nenhum** que simplesmente não conhece os CVEs do
+último mês. É a falha de medição mais silenciosa que existe aqui: nada no
+relatório indica que a resposta está velha.
+
+`dockerls doctor` passou a ler a data da base de cada scanner instalado:
+
+| estado | idade | o que significa |
+|---|---|---|
+| Fresh | até 24h | cobre o que se publicou recentemente |
+| Aging | 1 a 3 dias | ainda mede, e já perdeu dias de publicação |
+| Stale | mais de 3 dias | um scan contra ela volta limpo para tudo que saiu desde |
+| Unknown | — | **não foi possível ler a data**, o que não é o mesmo que estar atualizada |
+
+Por padrão isso é um aviso, e não muda o código de saída: `doctor` sempre
+significou "os componentes estão presentes", e mudar esse contrato em
+silêncio quebraria pipelines. Para transformar em portão:
+
+```bash
+dockerls doctor --require-fresh-db
+```
+
+`Unknown` reprova junto com `Stale` sob essa flag, pela mesma razão de
+sempre: a pergunta é "dá para confiar na atualidade desta base", e "não
+sei" não é sim.
+
 ### Isenções portáveis: OpenVEX
 
 O `.dockerls-ignore.yaml` já é um documento VEX em tudo menos no formato --

@@ -15,6 +15,11 @@ from rich.table import Table
 
 from dockerls.cli.dependencies import available_source_names, build_source_registry
 from dockerls.cli.text import safe
+from dockerls.domain.value_objects.scanner_db import (
+    DatabaseFreshness,
+    DatabaseState,
+    classify,
+)
 from dockerls.domain.value_objects.tool_release import (
     INSTALLABLE,
     OS,
@@ -24,6 +29,10 @@ from dockerls.domain.value_objects.tool_release import (
     detect_os,
 )
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK
+from dockerls.infrastructure.toolchain.db_metadata import (
+    read_grype_built_at,
+    read_trivy_built_at,
+)
 from dockerls.infrastructure.toolchain.installer import (
     InstallError,
     InstallOutcome,
@@ -63,6 +72,13 @@ def doctor(
         "--install-dir",
         help="Where to install the binaries [default: ~/.local/bin, no privilege required]",
     ),
+    require_fresh_db: bool = typer.Option(
+        False,
+        "--require-fresh-db",
+        help="Also fail when a scanner's vulnerability database is stale, or when its "
+        "age cannot be determined. Off by default: the exit code has always meant "
+        "'the components are present', and changing that silently would break pipelines",
+    ),
 ) -> None:
     """Check system dependencies and configuration.
 
@@ -100,7 +116,58 @@ def doctor(
     # same way for network dependencies.
     if install:
         raise typer.Exit(asyncio.run(_install_missing(assume_yes=yes, install_dir=install_dir)))
-    raise typer.Exit(asyncio.run(_doctor()))
+    raise typer.Exit(asyncio.run(_doctor(require_fresh_db=require_fresh_db)))
+
+
+def _database_ages(*, has_trivy: bool, has_grype: bool) -> list[DatabaseFreshness]:
+    """A idade da base de cada scanner instalado.
+
+    Só dos instalados: dizer que a base do Grype tem idade desconhecida
+    numa máquina sem Grype seria ruído, e ruído é como um aviso de verdade
+    deixa de ser lido.
+    """
+    ages: list[DatabaseFreshness] = []
+    if has_trivy:
+        built, detail = read_trivy_built_at()
+        ages.append(classify("trivy", built, detail=detail))
+    if has_grype:
+        built, detail = read_grype_built_at()
+        ages.append(classify("grype", built, detail=detail))
+    return ages
+
+
+def _print_database_ages(*, has_trivy: bool, has_grype: bool) -> list[DatabaseFreshness]:
+    """Conferir que o scanner existe não é conferir que ele mede.
+
+    Um Trivy com base de três semanas devolve um scan limpo, verde e sem
+    erro nenhum que simplesmente não conhece os CVEs do último mês. É a
+    falha de medição mais silenciosa que há aqui, e a mais perigosa por
+    isso: nada no relatório indica que a resposta está velha.
+    """
+    ages = _database_ages(has_trivy=has_trivy, has_grype=has_grype)
+    if not ages:
+        return ages
+
+    console.print("\n[bold]Vulnerability database[/bold] [dim](how recent the answers are)[/dim]")
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Scanner", style="bold")
+    table.add_column("State")
+    table.add_column("Detail")
+    for age in ages:
+        table.add_row(age.scanner, _DB_STATES[age.state], safe(age.explain()))
+    console.print(table)
+    return ages
+
+
+#: Cor por estado. `UNKNOWN` é ciano e não verde de propósito: ele não é
+#: uma aprovação, e pintá-lo como uma seria a mentira que este bloco existe
+#: para não contar.
+_DB_STATES: dict[DatabaseState, str] = {
+    DatabaseState.FRESH: "[green]Fresh[/green]",
+    DatabaseState.AGING: "[yellow]Aging[/yellow]",
+    DatabaseState.STALE: "[red]Stale[/red]",
+    DatabaseState.UNKNOWN: "[cyan]Unknown[/cyan]",
+}
 
 
 def _print_sources() -> None:
@@ -147,7 +214,7 @@ def _print_threat_sources() -> None:
     )
 
 
-async def _doctor() -> int:
+async def _doctor(*, require_fresh_db: bool = False) -> int:
     console.print("[bold]DockerLs System Check[/bold]\n")
 
     checks = Table(show_header=False, box=None, padding=(0, 2))
@@ -181,6 +248,7 @@ async def _doctor() -> int:
         checks.add_row("keyring", "[yellow]Not installed (optional)[/yellow]")
 
     console.print(checks)
+    database_ages = _print_database_ages(has_trivy=has_trivy, has_grype=has_grype)
     _print_sources()
     _print_threat_sources()
 
@@ -188,6 +256,26 @@ async def _doctor() -> int:
     # runs on Grype alone. Flagging a Grype-only machine as broken would have
     # been a false alarm, and flagging a machine with neither as fine was the
     # real failure.
+    stale = [age for age in database_ages if not age.is_usable_measurement]
+    if stale and require_fresh_db:
+        # Só com `--require-fresh-db`. O código de saída deste comando sempre
+        # significou "os componentes estão presentes", e mudar isso em
+        # silêncio quebraria pipelines que já dependem do contrato -- que é
+        # exatamente o tipo de mudança que este projeto cobra dos outros.
+        console.print(
+            "\n[red]A vulnerability database is not fit to measure with.[/red]\n"
+            + "\n".join(f"  {safe(age.scanner)}: {safe(age.explain())}" for age in stale)
+            + "\n[dim]Refresh it (`trivy image --download-db-only`, `grype db update`) "
+            "or drop --require-fresh-db to keep this a warning.[/dim]"
+        )
+        return EXIT_ERROR
+    if stale:
+        console.print(
+            "\n[yellow]A scan run now would answer from a database that is not "
+            "current.[/yellow] [dim]The result would look exactly like a clean one. "
+            "Use --require-fresh-db to make this fail.[/dim]"
+        )
+
     if has_httpx and (has_trivy or has_grype):
         if not (has_trivy and has_grype):
             console.print(
@@ -352,7 +440,7 @@ async def _install_missing(*, assume_yes: bool, install_dir: str) -> int:
     # O veredito final é o mesmo diagnóstico de sempre, sobre o estado real
     # da máquina: dizer "instalado" sem reconferir seria reportar a intenção
     # em vez do resultado.
-    return await _doctor()
+    return await _doctor(require_fresh_db=False)
 
 
 def _confirmed(assume_yes: bool) -> bool:
