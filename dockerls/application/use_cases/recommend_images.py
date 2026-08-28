@@ -875,11 +875,15 @@ async def _enrich_with_threat_intel(
     if not notable_ids:
         return scan
 
-    kev_ids = await threat_intel.known_exploited(notable_ids)
-    epss = await threat_intel.epss_scores(notable_ids)
-    # A falha desta fonte não pode custar o enriquecimento das outras: sem
-    # ela os CVEs ficam com `exploitdb_status` UNKNOWN e KEV/EPSS seguem.
-    exploits = await _exploitdb_lookup(exploitdb, notable_ids)
+    # As três fontes respondem sobre o mesmo lote de CVEs e não dependem
+    # uma da outra -- pedi-las em sequência somava a latência das três num
+    # scan que já espera pelo scanner. Uma falha isolada não derruba as
+    # outras: cada chamada já degrada sozinha para o tri-state UNKNOWN.
+    kev_ids, epss, exploits = await asyncio.gather(
+        threat_intel.known_exploited(notable_ids),
+        threat_intel.epss_scores(notable_ids),
+        _exploitdb_lookup(exploitdb, notable_ids),
+    )
     exploitdb_available = exploitdb is not None and bool(exploitdb.available)
     kev_available = _answered(threat_intel.kev_available, bool(kev_ids))
     epss_available = _answered(threat_intel.epss_available, bool(epss))

@@ -142,10 +142,17 @@ def build_cache() -> SQLiteCache:
 
 @lru_cache(maxsize=1)
 def _threat_intel() -> ThreatIntelClient | None:
+    """KEV catalogue and EPSS scores, cached to disk like Exploit-DB below.
+
+    Both feeds move roughly once a day, so without a disk cache every single
+    invocation re-downloaded the whole KEV catalogue and re-queried FIRST.org
+    for every CRITICAL/HIGH CVE from scratch -- including two `recommend`
+    runs back to back against the same image a minute apart.
+    """
     s = _settings()
     if not s.enable_threat_intel:
         return None
-    return ThreatIntelClient(timeout=s.http_timeout)
+    return ThreatIntelClient(timeout=s.http_timeout, cache=build_cache())
 
 
 @lru_cache(maxsize=1)
@@ -154,9 +161,10 @@ def _exploitdb() -> ExploitDBClient | None:
 
     Segue `enable_threat_intel` porque responde à mesma pergunta -- quão
     explorável é isto -- e quem desliga o enriquecimento não quer que este
-    fique de fora. Ao contrário do `ThreatIntelClient`, recebe o cache em
-    disco: o CSV tem cerca de 10 MB, e rebaixá-lo a cada invocação seria
-    pagar o download inteiro para reler o mesmo dia de catálogo.
+    fique de fora. Recebe o cache em disco pelo mesmo motivo do
+    `ThreatIntelClient`: o CSV tem cerca de 10 MB, e rebaixá-lo a cada
+    invocação seria pagar o download inteiro para reler o mesmo dia de
+    catálogo.
     """
     s = _settings()
     if not s.enable_threat_intel:

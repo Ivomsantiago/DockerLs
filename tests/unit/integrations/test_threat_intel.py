@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -156,3 +157,108 @@ class TestKevIsFetchedOnce:
 
         assert calls == 1, f"KEV catalogue downloaded {calls} times for one run"
         assert all(r == {"CVE-2024-0001"} for r in results)
+
+
+class _Cache:
+    def __init__(self) -> None:
+        self.store: dict[str, Any] = {}
+
+    async def get(self, key: str) -> Any | None:
+        return self.store.get(key)
+
+    async def set(self, key: str, value: Any, ttl_seconds: int = 86400) -> None:
+        self.store[key] = value
+
+    async def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
+    async def clear(self) -> None:
+        self.store.clear()
+
+
+class TestKevCache:
+    """Sem persistir em disco, todo processo baixava o catálogo inteiro do
+    zero -- inclusive dois `recommend` seguidos contra a mesma imagem."""
+
+    @pytest.mark.asyncio
+    async def test_a_second_client_reads_the_cache_instead_of_the_network(self):
+        cache = _Cache()
+        kev_payload = {"vulnerabilities": [{"cveID": "CVE-2024-0001"}]}
+        request = httpx.Request("GET", "https://x")
+        resp = httpx.Response(200, json=kev_payload, request=request)
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            first = ThreatIntelClient(cache=cache)
+            await first.known_exploited(["CVE-2024-0001"])
+
+        with patch(
+            "httpx.AsyncClient.get",
+            AsyncMock(side_effect=AssertionError("should not hit the network")),
+        ):
+            second = ThreatIntelClient(cache=cache)
+            result = await second.known_exploited(["CVE-2024-0001"])
+
+        assert result == {"CVE-2024-0001"}
+        assert second.kev_available is True
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_cache_falls_back_to_the_network(self):
+        class _Broken(_Cache):
+            async def get(self, key: str) -> Any | None:
+                raise RuntimeError("cache is broken")
+
+        kev_payload = {"vulnerabilities": [{"cveID": "CVE-2024-0001"}]}
+        request = httpx.Request("GET", "https://x")
+        resp = httpx.Response(200, json=kev_payload, request=request)
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            client = ThreatIntelClient(cache=_Broken())
+            result = await client.known_exploited(["CVE-2024-0001"])
+
+        assert result == {"CVE-2024-0001"}
+
+
+class TestEpssCache:
+    """A mesma CVE de OS aparece em dezenas de tags da mesma família de
+    imagem -- sem cache, cada uma delas requeria FIRST.org de novo."""
+
+    @pytest.mark.asyncio
+    async def test_a_cached_cve_is_never_requested_again(self):
+        cache = _Cache()
+        payload = {"data": [{"cve": "CVE-2024-0001", "epss": "0.87", "percentile": "0.9"}]}
+        request = httpx.Request("GET", "https://x")
+        resp = httpx.Response(200, json=payload, request=request)
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            first = ThreatIntelClient(cache=cache)
+            await first.epss_scores(["CVE-2024-0001"])
+
+        with patch(
+            "httpx.AsyncClient.get",
+            AsyncMock(side_effect=AssertionError("should not hit the network")),
+        ):
+            second = ThreatIntelClient(cache=cache)
+            scores = await second.epss_scores(["CVE-2024-0001"])
+
+        assert scores == {"CVE-2024-0001": 0.87}
+        assert second.percentile_of("CVE-2024-0001") == 0.9
+        assert second.epss_available is True
+
+    @pytest.mark.asyncio
+    async def test_only_the_uncached_cves_are_requested(self):
+        cache = _Cache()
+        cache.store["threat-intel:epss:v1:CVE-2024-0001"] = {"score": 0.5, "percentile": 0.4}
+
+        requested: list[str] = []
+
+        async def fake_get(self, url, params=None, **kwargs):
+            requested.extend(params["cve"].split(","))
+            return httpx.Response(
+                200,
+                json={"data": [{"cve": "CVE-2024-0002", "epss": "0.1"}]},
+                request=httpx.Request("GET", url),
+            )
+
+        with patch.object(httpx.AsyncClient, "get", fake_get):
+            client = ThreatIntelClient(cache=cache)
+            scores = await client.epss_scores(["CVE-2024-0001", "CVE-2024-0002"])
+
+        assert requested == ["CVE-2024-0002"]
+        assert scores == {"CVE-2024-0001": 0.5, "CVE-2024-0002": 0.1}
