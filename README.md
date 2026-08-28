@@ -38,16 +38,27 @@ Hub no sistema, em vez de texto puro):
 pip install "dockerls[keyring]"
 ```
 
-Você vai precisar de um scanner de vulnerabilidades instalado — [Trivy](https://aquasecurity.github.io/trivy)
-ou [Grype](https://github.com/anchore/grype). Sem um dos dois, o DockerLs
-ainda funciona, mas nada é "medido de verdade": os resultados saem marcados
-como não verificados. Para checar se está tudo certo na sua máquina:
+### O que você precisa ter instalado
+
+| Precisa de | Pra quê | Se faltar |
+|---|---|---|
+| **Python 3.11+** | tudo | nada roda |
+| **Trivy** ou **Grype** | medir vulnerabilidade de verdade (`recommend`, `analyze`, `compare`, `advisor`, etc.) | ainda funciona, mas os resultados saem marcados como "não verificado" |
+| **Docker** (o daemon) | só o comando `build` | `build` falha; todo o resto continua normal |
+| **git** | opcional — usado pra registrar de onde veio o build | sai sem esse detalhe, marcado como incompleto |
+| **Go 1.24+** | opcional — só se você quiser compilar a engine que acelera runs grandes | dispensável, a CLI funciona 100% sem isso |
+
+Pra conferir tudo de uma vez e instalar o que faltar:
 
 ```bash
-dockerls doctor
+dockerls doctor            # confere o ambiente
+dockerls doctor --install  # instala Trivy/Grype pra você
 ```
 
-Esse comando também instala os scanners para você, se quiser (`doctor --install`).
+Nos bastidores, parte da orquestração de scans (`recommend` com muitas tags)
+pode rodar num binário auxiliar escrito em Go — é 100% opcional, a CLI
+volta sozinha pro caminho em Python se ele não estiver compilado ou
+instalado. Detalhes de como compilar em [`engine/README.md`](engine/README.md).
 
 ---
 
@@ -133,6 +144,7 @@ make dev      # instala as dependências de desenvolvimento
 make test     # roda os testes
 make lint     # roda o linter
 make audit    # roda tudo: lint + tipos + testes + segurança
+make engine   # compila a engine em Go (opcional, precisa de Go 1.24+)
 ```
 
 Mais detalhes sobre CI/CD, arquitetura e como contribuir estão na

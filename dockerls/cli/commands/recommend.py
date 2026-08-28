@@ -26,6 +26,7 @@ from dockerls.cli.text import safe
 from dockerls.cli.validators import check_limit, check_threshold, check_workers
 from dockerls.domain.value_objects.confidence import Confidence
 from dockerls.domain.value_objects.security_tier import SecurityTier, Tier
+from dockerls.domain.value_objects.tristate import Tristate
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK
 from dockerls.infrastructure.evidence import slugify_reference
 
@@ -380,6 +381,7 @@ def _print_table(analyses: list[ImageAnalysis]) -> None:
     table.add_column("Fix", justify="right", style="green")
     table.add_column("Rem", justify="right")
     table.add_column("Tag", justify="center")
+    table.add_column("Threat", justify="center", no_wrap=True)
 
     styles = {
         "A": "bold green",
@@ -412,13 +414,44 @@ def _print_table(analyses: list[ImageAnalysis]) -> None:
             str(a.scan.fixable_count),
             f"{a.remediation_score}/100",
             _hub_status(a),
+            _threat_cell(a),
         )
     console.print(table)
     console.print(
         "[dim]C/H/M = Critical/High/Medium | Hard = hardening (higher is better) | "
         "Surf = attack surface (LOWER is better) | Conf = evidence confidence | "
-        "Fix = fixable | Rem = remediation | Tag = confirmed in source registry[/dim]"
+        "Fix = fixable | Rem = remediation | Tag = confirmed in source registry | "
+        "Threat = KEV (actively exploited) / EDB (public exploit) findings, from "
+        "CISA KEV, FIRST EPSS and Exploit-DB[/dim]"
     )
+
+
+def _threat_cell(analysis: ImageAnalysis) -> str:
+    """Worst-case KEV/Exploit-DB signal across the image's findings, in one cell.
+
+    The two exploitability signals -- CISA KEV (actively exploited) and
+    Exploit-DB (a public exploit exists) -- were already being fetched and
+    folded into the security score, but never shown in this table: a reader
+    had no way to tell a score reflected them at all. `-` means neither
+    catalogue was consulted for any finding in this image (nothing to show
+    yet); `none` means they were consulted and found nothing.
+    """
+    vulns = analysis.scan.vulnerabilities
+    if not vulns:
+        return "[dim]-[/dim]"
+    kev = sum(1 for v in vulns if v.kev_status.is_true)
+    edb = sum(1 for v in vulns if v.exploitdb_status.is_true)
+    if kev and edb:
+        return f"[red bold]KEV:{kev}+EDB:{edb}[/red bold]"
+    if kev:
+        return f"[red bold]KEV:{kev}[/red bold]"
+    if edb:
+        return f"[yellow]EDB:{edb}[/yellow]"
+    checked = any(
+        v.kev_status is not Tristate.UNKNOWN or v.exploitdb_status is not Tristate.UNKNOWN
+        for v in vulns
+    )
+    return "[dim]none[/dim]" if checked else "[dim]-[/dim]"
 
 
 def _dimension(report: DimensionReport) -> str:
