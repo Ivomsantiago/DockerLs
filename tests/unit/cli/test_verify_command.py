@@ -66,6 +66,46 @@ def test_falha_de_rede_tambem_sai_um():
     assert outcome.exit_code == EXIT_ERROR
 
 
+def test_uma_verificacao_que_falha_e_alta_e_visivel():
+    """Assinada por outra pessoa não é "não assinada", e não pode sair pela
+    mesma porta silenciosa que uma ferramenta ausente."""
+    result = SignatureResult(
+        reference=_DIGEST,
+        status=SignatureStatus.VERIFICATION_FAILED,
+        detail="none of the expected identities matched what was in the certificate",
+        identity_constrained=True,
+    )
+    with _verifies(result):
+        outcome = runner.invoke(app, ["verify", _DIGEST, "--no-color"])
+
+    texto = " ".join(outcome.output.split())
+    # Veredito sobre a imagem: EXIT_POLICY, não o EXIT_ERROR de "não deu
+    # para conferir".
+    assert outcome.exit_code == EXIT_POLICY
+    assert "VERIFICATION_FAILED" in texto
+    assert "SIGNATURE VERIFICATION FAILED" in texto
+    assert "Do not treat this as an unsigned image" in texto
+    # O motivo que o cosign deu tem de chegar a quem lê.
+    assert "none of the expected identities matched" in texto
+
+
+def test_o_json_de_uma_verificacao_que_falha_nao_se_confunde_com_unsigned():
+    result = SignatureResult(
+        reference=_DIGEST,
+        status=SignatureStatus.VERIFICATION_FAILED,
+        detail="signature verification failed",
+        identity_constrained=True,
+    )
+    with _verifies(result):
+        outcome = runner.invoke(app, ["verify", _DIGEST, "--format", "json", "--no-color"])
+
+    payload = json.loads(outcome.output)
+    assert payload["status"] == "VERIFICATION_FAILED"
+    assert payload["trustworthy"] is False
+    assert payload["conclusive"] is True
+    assert payload["identity_constrained"] is True
+
+
 def test_verificar_uma_tag_avisa_que_ela_pode_mover():
     with _verifies(SignatureResult(reference="reg.io/app:1.0", status=SignatureStatus.VERIFIED)):
         outcome = runner.invoke(app, ["verify", "reg.io/app:1.0", "--no-color"])
