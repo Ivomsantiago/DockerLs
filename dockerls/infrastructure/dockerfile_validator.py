@@ -74,6 +74,34 @@ _ADD_ARCHIVE = re.compile(
 )
 
 
+#: Os dois inteiros que este parser lê de um Dockerfile: uma porta TCP e um
+#: UID. Ambos são grandezas limitadas, e é o limite que fecha o buraco
+#: abaixo.
+_MAX_PORT = 65535
+_MAX_UID = 2**32 - 1
+
+
+def _bounded_int(digits: str, maximum: int) -> int | None:
+    """Um dígito-a-dígito vindo do arquivo, ou `None` se não for plausível.
+
+    A partir do Python 3.11 `int()` **recusa** uma string com mais de 4300
+    dígitos, e a recusa é um `ValueError` que este parser não capturava. Uma
+    única linha `EXPOSE <4301 dígitos>` -- ou `USER app:<4301 dígitos>` --
+    abortava `validate()` inteiro: o Dockerfile se retirava de *todas* as
+    regras de uma vez, e quem lê o relatório vê um erro de uso, não um
+    Dockerfile por verificar. Encontrado por fuzzing (Hypothesis).
+
+    Os zeros à esquerda caem antes da medição, para que `USER app:000...0`
+    continue sendo lido como uid 0 -- isto é, como root -- em vez de virar
+    "sem uid" e passar na DF002.
+    """
+    normalized = digits.lstrip("0") or "0"
+    if len(normalized) > len(str(maximum)):
+        return None
+    value = int(normalized)
+    return value if value <= maximum else None
+
+
 def _strip_quoted(command: str) -> str:
     """O comando sem o que está entre aspas.
 
@@ -367,8 +395,8 @@ class DockerfileParser:
 
         # EXPOSE
         elif match := self.EXPOSE_PATTERN.match(line):
-            port = int(match.group(1))
-            if port not in self._info.exposes_ports:
+            port = _bounded_int(match.group(1), _MAX_PORT)
+            if port is not None and port not in self._info.exposes_ports:
                 self._info.exposes_ports.append(port)
 
         # USER -- registrado no estágio corrente; qual deles vale é decidido
@@ -378,7 +406,7 @@ class DockerfileParser:
                 name, _, group = match.group(1).partition(":")
                 self._stages[-1].user = name
                 uid = match.group(2) or (group if group.isdigit() else None)
-                self._stages[-1].uid = int(uid) if uid else None
+                self._stages[-1].uid = _bounded_int(uid, _MAX_UID) if uid else None
 
         # HEALTHCHECK
         elif self.HEALTHCHECK_PATTERN.match(line):

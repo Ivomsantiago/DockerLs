@@ -77,7 +77,14 @@ def split_repository_and_tag(reference: str) -> tuple[str, str]:
         prefix = parts[0] + "/"
         parts = parts[1:]
     tail = "/".join(parts)
-    if ":" in tail:
-        repo_tail, tag = tail.rsplit(":", 1)
-        return prefix + repo_tail, tag
+    # Only the *last* path segment, as the docstring says. `rsplit` over the
+    # whole tail read the colon of a second host-shaped segment as a tag
+    # separator and answered a "tag" with a slash in it -- something no
+    # Docker tag can contain. `_is_moving_reference` then saw a non-empty,
+    # non-`latest` tag and reported the base as pinned: the same
+    # port-hides-an-unpinned-base shape as DF013, one segment deeper.
+    head, separator, last = tail.rpartition("/")
+    if ":" in last:
+        repo_tail, tag = last.rsplit(":", 1)
+        return prefix + head + separator + repo_tail, tag
     return ref, ""
