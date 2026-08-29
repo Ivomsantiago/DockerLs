@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from dockerls.application.services.tag_history_store import TagHistoryStore
 from dockerls.application.use_cases.analyze_image import AnalyzeImageUseCase
 from dockerls.application.use_cases.compare_images import CompareImagesUseCase
 from dockerls.application.use_cases.recommend_images import RecommendImagesUseCase
@@ -262,6 +263,78 @@ class TestAnalyzeImage:
         assert result.scan.is_verified is False
         assert result.security_score == 0.0
         assert result.production_ready is False
+
+
+class TestTagDriftDetection:
+    """F13: the cache already keys by digest, so a moved tag never serves
+    stale evidence -- what was missing was *saying* the tag moved. `base`
+    already reports this for Dockerfile-pinned bases; this is the same
+    fact for a tag looked up directly with `analyze`."""
+
+    @pytest.mark.asyncio
+    async def test_a_tag_that_changed_digest_is_reported(self):
+        history = TagHistoryStore(MockCache())
+        old_digest = "sha256:" + "a" * 64
+        new_digest = "sha256:" + "b" * 64
+
+        first = AnalyzeImageUseCase(
+            repository=MockRepo([DockerImage(name="node", tag="22-alpine", digest=old_digest)]),
+            scanner=MockScanner(),
+            eol_checker=MockEOL(),
+            tag_history=history,
+        )
+        await first.execute("node:22-alpine")
+
+        second = AnalyzeImageUseCase(
+            repository=MockRepo([DockerImage(name="node", tag="22-alpine", digest=new_digest)]),
+            scanner=MockScanner(),
+            eol_checker=MockEOL(),
+            tag_history=history,
+        )
+        result = await second.execute("node:22-alpine")
+
+        assert result.tag_drift_note != ""
+        assert "1" in result.tag_drift_note
+
+    @pytest.mark.asyncio
+    async def test_the_first_time_a_tag_is_seen_nothing_is_reported(self):
+        history = TagHistoryStore(MockCache())
+        image = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "a" * 64)
+        uc = AnalyzeImageUseCase(MockRepo([image]), MockScanner(), MockEOL(), tag_history=history)
+
+        result = await uc.execute("node:22-alpine")
+
+        assert result.tag_drift_note == ""
+
+    @pytest.mark.asyncio
+    async def test_the_same_digest_seen_twice_is_not_a_move(self):
+        history = TagHistoryStore(MockCache())
+        image = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "a" * 64)
+
+        for _ in range(2):
+            uc = AnalyzeImageUseCase(
+                MockRepo([image]), MockScanner(), MockEOL(), tag_history=history
+            )
+            result = await uc.execute("node:22-alpine")
+
+        assert result.tag_drift_note == ""
+
+    @pytest.mark.asyncio
+    async def test_a_digest_reference_has_no_tag_to_track(self):
+        """`node@sha256:...` asked for a fixed set of bytes, not a tag --
+        there is no "move" to observe."""
+        history = TagHistoryStore(MockCache())
+        uc = AnalyzeImageUseCase(MockRepo(), MockScanner(), MockEOL(), tag_history=history)
+
+        result = await uc.execute(f"node@{'sha256:' + 'a' * 64}")
+
+        assert result.tag_drift_note == ""
+
+    @pytest.mark.asyncio
+    async def test_without_a_tag_history_store_nothing_is_reported(self, tags):
+        uc = AnalyzeImageUseCase(MockRepo(tags), MockScanner(), MockEOL())
+        result = await uc.execute("node:22-alpine")
+        assert result.tag_drift_note == ""
 
 
 class TestCompareImages:

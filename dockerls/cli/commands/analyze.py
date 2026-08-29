@@ -285,6 +285,9 @@ def _render_table(result: ImageAnalysis, wide: bool) -> None:
     info.add_row("Scanner", result.scan.scanner)
     console.print(info)
 
+    if result.tag_drift_note:
+        console.print(f"\n[dim]tag history: {safe(result.tag_drift_note)}[/dim]")
+
     if result.scan.vulnerabilities:
         console.print("\n[bold]Vulnerabilities[/bold]\n")
         vtable = Table()
