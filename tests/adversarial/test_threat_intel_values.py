@@ -62,9 +62,7 @@ class TestProbabilitiesAreBounded:
 class TestScoreCannotBeNaN:
     def _score(self, vulns: list[Vulnerability]) -> float:
         image = DockerImage(name="app", tag="1.0")
-        scan = ScanResult(
-            image_reference="app:1.0", status=ScanStatus.OK, vulnerabilities=vulns
-        )
+        scan = ScanResult(image_reference="app:1.0", status=ScanStatus.OK, vulnerabilities=vulns)
         return SecurityScore(image, scan).value
 
     def test_a_nan_epss_no_longer_yields_a_perfect_score(self):

@@ -155,7 +155,11 @@ class TestFileHandling:
         )
 
         assert result.exit_code == EXIT_ERROR
-        assert "does not exist" in result.output
+        # Rich wraps long lines at the terminal width, and tmp_path's length
+        # varies by test run/worker -- "does not exist" can itself be split
+        # across the wrap. Collapse whitespace before asserting so this
+        # isn't sensitive to where the wrap lands.
+        assert "does not exist" in " ".join(result.output.split())
 
     def test_an_empty_document_says_it_is_empty(self, tmp_path):
         empty = tmp_path / ".dockerls-ignore.yaml"

@@ -243,8 +243,7 @@ _EXPLANATIONS = {
         "published there; add the host to network_allowed_hosts if this is deliberate."
     ),
     NetworkDecision.BLOCKED_SCHEME: (
-        "{host} was requested over a scheme other than http/https, which this tool "
-        "never follows."
+        "{host} was requested over a scheme other than http/https, which this tool never follows."
     ),
 }
 
