@@ -29,6 +29,7 @@ as respostas dele são diferentes das de um scanner comum.
 - [Instalação](#instalação)
 - [Comece por aqui](#comece-por-aqui)
 - [Todos os comandos](#todos-os-comandos)
+- [Guia completo: criando e usando uma imagem hardened do zero](#guia-completo-criando-e-usando-uma-imagem-hardened-do-zero)
 - [Configuração](#configuração)
 - [Exit codes (pra CI)](#exit-codes-pra-ci)
 - [Desenvolvimento](#desenvolvimento)
@@ -186,6 +187,264 @@ ele avisa.
 
 Cada um desses tem opções que não cabem aqui — a lista completa, com
 exemplos de saída real, está na **[referência completa](docs/REFERENCE.md)**.
+
+---
+
+## Guia completo: criando e usando uma imagem hardened do zero
+
+Uma sessão de terminal única, do gerador até a imagem em produção. Todo
+output abaixo é real — rodado neste repositório, com Trivy de verdade.
+
+### 1. Escolher sistema operacional, runtime e pacotes — antes do build
+
+A pergunta certa não é "quais pacotes eu tiro depois", é "quais eu realmente
+preciso". `base-image` faz essa escolha acontecer antes de qualquer coisa
+existir: sem `--with`, ele mostra um menu com o custo de cada pacote em
+superfície de ataque, não só o que ele serve.
+
+```console
+$ dockerls base-image --os alpine --runtime node
+
+Packages in the base image
+Each one exists in every application that consumes this base, and every CVE in
+it becomes triage for someone who does not even know it is there.
+
+  1. ca-certificates (already present in most bases)
+       used for: validating TLS when talking to any HTTPS service
+       custa: practically none; without it every TLS connection fails
+verification
+  2. tzdata
+       used for: time zones; without it the container stays on UTC and local
+dates are wrong
+       custa: a few MB of data, no new executable
+  3. curl
+       used for: HTTP HEALTHCHECK and network diagnostics
+       custa: a full HTTP client inside the container -- what an attacker uses
+to fetch the second stage
+  4. wget
+       used for: an alternative to curl for downloading files
+       custa: the same cost as curl; having both doubles the surface, not the
+use
+  5. bash
+       used for: scripts relying on features the Alpine `sh` does not have
+       custa: a more capable shell is a more useful shell for whoever breaks in
+  ...
+  9. tini
+       used for: a minimal init that forwards signals and reaps orphaned
+processes
+       custa: almost nothing, and it fixes the pid 1 that ignores SIGTERM
+
+Comma-separated numbers (empty = no packages): 1,2,9
+```
+
+Repare no `curl`: o propósito ("HEALTHCHECK e diagnóstico de rede") é
+legítimo, mas o custo dito ali do lado é o mesmo que um atacante usa pra
+buscar o segundo estágio de um ataque. O menu não esconde isso pra depois —
+mostra na hora de marcar.
+
+Em pipeline não tem menu pra responder. `--with` aceita a mesma lista
+separada por vírgula e pula direto pro Dockerfile:
+
+```console
+$ dockerls base-image --os alpine --runtime node \
+    --with "ca-certificates,tzdata,tini" -o Dockerfile \
+    --owner "team-x" --title minhaapp
+
+npm e yarn will be removed from the final image (--keep-manager keeps them).
+
+Dockerfile escrito em Dockerfile.
+
+Next step
+  dockerls build -t minhaapp:1.0 --fail-on critical .
+  Building and scanning is what turns this recipe into a claim about security;
+until then it is only an intention.
+```
+
+Existem três pacotes que esse catálogo se recusa a oferecer, mesmo por
+`--with` — são recusas documentadas, não omissões:
+
+| Pacote | Por que não |
+|---|---|
+| `sudo` | numa imagem que já roda sem privilégio, `sudo` existe pra cruzar a fronteira que acabou de ser estabelecida — e é setuid pra isso |
+| `su-exec` | trocar de usuário em runtime desfaz o `USER` da imagem; se o processo precisa de outro usuário, declare isso no `USER` |
+| `docker` | o cliente Docker dentro do container implica acesso ao socket do daemon, que equivale a root no host |
+
+### 2. A versão do runtime vem fixa por família — trocando e resolvendo o digest de novo
+
+Cada combinação de `--os`/`--runtime` mapeia pra uma versão específica,
+travada no catálogo (`RUNTIME_BASES`, em
+`dockerls/domain/value_objects/base_recipe.py`) — não é um parâmetro:
+`node:22-alpine`, `python:3.12-alpine`, `golang:1.23-alpine`,
+`eclipse-temurin:21-jre-alpine`, e o equivalente em Debian/Ubuntu/distroless
+pra cada um. Se você precisa de outra versão, o caminho é editar a linha
+`FROM` manualmente e resolver o digest de novo:
+
+```console
+$ sed -i 's/FROM node:22-alpine@\${BASE_DIGEST}/FROM node:20-alpine/; s/ARG BASE_DIGEST=.*/ARG BASE_DIGEST=/' Dockerfile
+$ dockerls base .
+
+Dockerfile
+
+  line 14  UNPINNED
+    node:20-alpine
+    moving tag, no digest: what you tested and what goes to production can be
+different bytes with no change on your part
+    ->
+node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609
+372293  (line 14)
+
+1 without a digest
+
+1 update(s) written to Dockerfile.
+Rebuild and scan before publishing: changing the base digest changes the image,
+and only a scan tells you whether for the better.
+```
+
+`base` não sabe (nem tenta adivinhar) se a troca de versão é segura — ele só
+garante que, seja qual for a tag, ela fica pinada por digest antes de ir pra
+frente. A resposta sobre segurança vem do scan, no passo 5.
+
+### 3. Nota pra quem usa PowerShell
+
+`--with ""` falha no PowerShell com `Got unexpected extra argument(s)`. Não é
+bug do DockerLs: o PowerShell descarta argumentos de string vazia ao chamar
+executáveis nativos, e isso empurra o parsing dos flags seguintes. A forma
+correta é `--with=` (sem espaço, sem aspas) ou, se precisar passar outros
+argumentos complicados, `dockerls --% base-image ...` pra desligar o parsing
+do PowerShell inteiro a partir dali.
+
+### 4. Validar antes de construir
+
+```console
+$ dockerls analyze-dockerfile .
+
+Summary: 9 passed | 4 warnings | 0 errors
+
+  PASS   base_image_pinned         Base image tag is not 'latest' (still a
+                                    moving tag -- `dockerls base` pins it by
+                                    digest)
+  PASS   non_root_user             Container runs as non-root user: node
+  WARN   multi_stage_build         Single-stage build detected
+  PASS   secrets_not_in_env        No obvious secrets in ENV variables or ARG
+                                    defaults
+  WARN   package_cache_clean       Package manager cache not cleaned
+  WARN   healthcheck_present       No HEALTHCHECK directive
+  PASS   security_labels           Security labels present
+  PASS   minimal_base              Using minimal base image
+  PASS   no_sudo                   No sudo usage detected
+  WARN   dockerignore_exists       .dockerignore not found
+  PASS   add_not_used_for_copy     No ADD directives (COPY is used to bring
+                                    files in)
+  PASS   no_unverified_remote_scr… No remote script is piped straight into a
+                                    shell
+  PASS   no_setuid_binaries_added  No setuid or setgid bit is set in the build
+
+Security Score: 90/100   Tier: A   Production Ready: Yes
+```
+
+Isso roda sem Docker, sem scanner, sem rede — é análise estática do texto do
+Dockerfile. Os warnings aqui (sem multi-stage, sem HEALTHCHECK, sem
+`.dockerignore`) são exatamente o que aparece de novo como sugestão depois do
+build, no passo 5.
+
+### 5. Build com portão de segurança
+
+`--production` liga de uma vez o perfil inteiro: gate em critical, exige que
+o scan realmente tenha rodado, bases pinadas por digest, usuário
+não-privilegiado, procedência verificada (hash do Dockerfile, do contexto e
+da imagem final, amarrados), labels de ownership obrigatórias e atribuição de
+findings (base vs. suas camadas). `--fail-on critical,kev` soma mais um
+critério: falhar também se algum CVE encontrado está no catálogo CISA KEV —
+sendo explorado ativamente, mesmo que não seja CRITICAL.
+
+```console
+$ dockerls build . -t minhaapp:1.0 --production --fail-on critical,kev `
+    --owner "team-x" `
+    --source "https://github.com/suaorg/minhaapp" `
+    --security-contact "security@suaorg.com"
+
+Production profile
+  fail_on  critical
+  require_scan  True
+  require_pinned_bases  True
+  require_nonroot  True
+  required_labels  org.opencontainers.image.source, org.opencontainers.image.vendor, security.contact
+  require_provenance  True
+
+╭──────────────────╮
+│ Build Successful │
+│ minhaapp:1.0     │
+╰──────────────────╯
+
+╭────────────────────────╮
+│ Security Score: 85/100 │
+│ Tier: B                │
+╰────────────────────────╯
+
+Validation: 8 passed | 5 warnings | 0 errors
+
+╭───────────────────────╮
+│ Security Scan Results │
+╰───────────────────────╯
+  CRITICAL: 0
+  HIGH: 0
+  MEDIUM: 0
+  LOW: 0
+
+╭────────────────────────╮
+│ Supply chain: VERIFIED │
+╰────────────────────────╯
+  input and output digested, and the input did not change during the build
+
+INPUT (measured before the build)
+  Dockerfile  sha256:e696d147012323b8b1c27de847b48f566ab4a8282b2377ba00fe35215a71a249
+  Contexto    sha256:a8d265c6ff3c1a57b43ad00c24f9d07b13531923d66acaa5948c85697476252c  (1 files)
+
+OUTPUT (measured after the build)
+  Image       sha256:5e5a079bbd616d166b155f15dac48c9c603a9d605876c732fde620a7aa7958bc
+```
+
+Sem `--owner`, `--source` e `--security-contact`, esse mesmo comando falha —
+de propósito: `required_labels` é parte do perfil `--production`, e o motivo
+está no próprio erro quando isso acontece: "sem isso ninguém sabe pra quem
+ligar quando essa imagem aparecer num alerta às três da manhã".
+
+### 6. Usando a imagem depois de construída
+
+```console
+$ docker run --rm minhaapp:1.0 id
+uid=1000(node) gid=1000(node) groups=1000(node),1000(node)
+```
+
+`uid=1000`, não `uid=0`. É o `USER node` do Dockerfile confirmado em
+execução, não só lido no texto — a mesma checagem que `non_root_user` faz de
+forma estática no passo 4, agora contra o container de verdade.
+
+### 7. Fechando o loop
+
+```console
+$ dockerls analyze minhaapp:1.0
+
+Analysis: minhaapp:1.0
+
+  Score                96.0
+  Tier                 A
+  Critical             0
+  High                 0
+  Medium               0
+  Low                  0
+  Total Vulns          0
+  Fixable              0 (n/a)
+  Remediation Score    100/100
+  EOL                  No
+  LTS                  No
+  Scanner              trivy
+```
+
+O mesmo `analyze` que você rodaria contra `node:22-alpine` pra decidir se
+confia nela funciona igual contra o que você acabou de construir. Não existe
+um comando separado pra "auditar a própria imagem" — é o mesmo raio-x, na
+mesma régua.
 
 ---
 
