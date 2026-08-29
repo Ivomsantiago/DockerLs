@@ -44,7 +44,14 @@ _DOWNLOADER = re.compile(r"(?:^|[\s;&(]) *(?:curl|wget|fetch)\b", re.IGNORECASE)
 #: a regra inteira: `curl ... | sh` executa o que veio da rede, enquanto
 #: `curl -o f && echo ... | sha256sum -c && sh f` também tem um `sh` depois
 #: de um pipe e é exatamente a forma correta. Só o primeiro é acusado.
-_SHELL_AT_HEAD = re.compile(r"^\s*(?:sudo\s+|env\s+\S+=\S+\s+)*(?:ba|z|k|da)?sh\b", re.IGNORECASE)
+#: `[^\s=]+=\S+` rather than `\S+=\S+`: the key half excludes `=`, so there
+#: is exactly one place the assignment can split. Two unbounded `\S+`
+#: sharing an unbounded search space around one `=` is the textbook
+#: catastrophic-backtracking shape (CodeQL flagged it); a real env var name
+#: never contains `=` or whitespace, so this loses no matches.
+_SHELL_AT_HEAD = re.compile(
+    r"^\s*(?:sudo\s+|env\s+[^\s=]+=\S+\s+)*(?:ba|z|k|da)?sh\b", re.IGNORECASE
+)
 
 #: Bit setuid/setgid posto na imagem, simbólico (`chmod u+s`) ou octal
 #: (`chmod 4755`). O primeiro dígito de um modo de quatro é o que carrega

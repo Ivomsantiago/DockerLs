@@ -10,6 +10,8 @@ Quatro regras erravam assim, e as quatro têm caso aqui.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from dockerls.domain.entities.dockerfile_analysis import ValidationStatus
@@ -538,6 +540,26 @@ class TestARemoteScriptPipedIntoAShell:
         )
 
         assert check.status is ValidationStatus.PASS
+
+    def test_a_long_env_prefixed_command_does_not_hang(self, check_for):
+        """The `env KEY=VALUE` prefix branch used two unbounded `\\S+`
+        tokens around a shared `=`, the textbook catastrophic-backtracking
+        shape: many ways to split "a=a=a=...=a" between them, multiplied
+        across the outer repetition, when the overall match ultimately
+        fails. CodeQL flagged this (dockerfile_validator.py:47, high
+        severity) on this exact rule. A Dockerfile a build worker parses
+        must never be able to hang the analysis regardless of what a RUN
+        line contains."""
+        adversarial = "env " + "=".join(["a"] * 200) + " " * 200 + "X"
+        command = f"echo start && {adversarial} && echo end"
+
+        start = time.monotonic()
+        check_for(
+            f"FROM node:22-alpine\nRUN {command}\nUSER 10001\n", "no_unverified_remote_script"
+        )
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 1.0, f"Dockerfile validation took {elapsed:.2f}s -- regex backtracking?"
 
 
 class TestSetuidBinariesLeftInTheImage:
