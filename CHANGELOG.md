@@ -5,6 +5,73 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [Não publicado]
+
+### Corrigido -- a política de rede só julgava o primeiro salto
+
+O `HostGuard` era consultado sobre o host da referência e sobre mais nada. Duas
+coisas escolhidas pela outra ponta acontecem depois desse teste, e as duas
+emitem requisição:
+
+- **Redirecionamentos.** `OCIRegistryClient` e `DockerHubClient` seguem
+  redirect (`follow_redirects=True`). Um registry respondendo `302 Location:
+  http://169.254.169.254/latest/meta-data/` fazia essa requisição sair de
+  dentro do runner com o veredito sobre o host *original* ainda valendo.
+- **`WWW-Authenticate`.** A dança de token do OCI tira de um cabeçalho a URL
+  contra a qual vai autenticar (`Bearer realm="..."`). Isso é a outra ponta
+  nomeando uma URL que este processo busca -- a mesma primitiva de um open
+  redirect, entrando por outra porta. Não havia validação nenhuma: `realm`
+  podia ser `file://` ou apontar para a rede interna.
+
+O guard agora viaja com o cliente e roda **por salto**, via event hook do
+`httpx`, e o `realm` precisa ser uma URL http(s) absoluta antes de ser pedido.
+Uma recusa é um `httpx.HTTPError`, então cai nos tratadores que já existem e
+vira "não deu para determinar" -- nunca um traceback e nunca uma lista vazia
+fingindo ser resposta.
+
+### Corrigido -- três grafias de um endereço proibido passavam
+
+O classificador de endereços deixava passar:
+
+- **`0.0.0.0/8` inteiro.** `is_unspecified` só é verdadeiro para o `0.0.0.0`
+  exato, e o Linux roteia o bloco todo para a própria máquina.
+- **Encapsulamentos IPv6 que carregam um IPv4**: 6to4 (`2002:7f00:1::`),
+  NAT64 (`64:ff9b::7f00:1`) e Teredo alcançam 127.0.0.1 num host com a
+  tradução configurada, e nenhum é reconhecido por `is_loopback`.
+- **CGNAT (`100.64.0.0/10`)**, onde a Alibaba Cloud serve credenciais de
+  instância em `100.100.100.200`, além de multicast e faixas reservadas.
+
+Registries internos em RFC1918 continuam funcionando exatamente como antes.
+
+### Corrigido -- um NaN vindo de um feed certificava a imagem como perfeita
+
+`float()` aceita `"nan"`, `"inf"` e `"-1"`, e o EPSS chega como JSON de
+terceiro. O NaN se propagava pela soma de penalidades, e o
+`max(0.0, min(100.0, score))` final responde **100.0** para uma entrada NaN --
+toda comparação com NaN é falsa, então o clamp devolvia o próprio limite. Uma
+imagem cheia de CRITICAL pontuava 100 porque um feed respondeu mal. Uma
+probabilidade negativa tinha a versão branda do mesmo efeito: subtraía da
+penalidade, comprando pontos de volta.
+
+Limitado em três lugares, porque o valor entra por três: o parser do feed
+descarta, a entidade valida (a mesma linha é reconstruída do SQLite, onde um
+valor ruim já pode estar gravado) e o score se recusa a reportar um resultado
+não-finito como qualquer coisa que não o fundo da escala.
+
+O catálogo KEV ganhou o piso de plausibilidade que o próprio comentário já
+prometia. Um 200 carregando três entradas -- página de erro de proxy,
+transferência truncada -- era aceito como o feed, e todo CVE fora daquelas três
+passava a ser reportado como "conferido, não consta como explorado".
+
+### Corrigido -- uma release que muda a política continuava servindo o veredito antigo
+
+A impressão digital do cache cobria as regras de ignore, a chave de threat
+intel e a identidade do scanner, mas não a versão deste pacote -- e um
+`ImageAnalysis` em cache carrega score, tier e veredito de produção, todos
+decididos por política que mora aqui. `CACHE_SCHEMA_VERSION` não pega isso: a
+*forma* do payload não muda, então a validação aceita e só o significado se
+moveu.
+
 ## [2.10.1] -- 2026-08-22
 
 ### Corrigido -- os alertas abertos no code scanning do próprio repositório
