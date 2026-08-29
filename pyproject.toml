@@ -55,6 +55,13 @@ dev = [
     "bandit>=1.7",
     "pip-audit>=2.7",
     "types-PyYAML>=6.0",
+    # Testing only. `jsonschema` validates the SARIF exporter's output
+    # against the vendored OASIS SARIF 2.1.0 schema (draft-04), and
+    # `hypothesis` fuzzes the reference and Dockerfile parsers -- the two
+    # places where a hostile string has repeatedly turned into a wrong
+    # security verdict. Neither is imported by `dockerls/`.
+    "jsonschema>=4.0",
+    "hypothesis>=6.100",
 ]
 
 [project.scripts]
