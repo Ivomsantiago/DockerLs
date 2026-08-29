@@ -123,6 +123,43 @@ Multiplicado pela repetição externa `(?:...)*`, uma linha `RUN` malformada
 podia travar a análise. Corrigido excluindo `=` da metade da chave
 (`[^\s=]+=\S+`): agora só existe um lugar onde a atribuição pode se dividir.
 
+### Corrigido -- um score não-finito invalidava o documento SARIF inteiro
+
+`json.dumps` aceita `NaN`/`Infinity` por padrão e escreve o token bruto --
+que não é JSON válido pela RFC 8259. Um `security_score` (ou score de
+hardening/attack-surface) não-finito em qualquer achado fazia o GitHub code
+scanning, que analisa com rigor, rejeitar o **upload inteiro**: todo achado
+descartado em silêncio, sem aviso nenhum na tela. Corrigido com um
+`_json_safe` recursivo (não-finito vira `null`) e `allow_nan=False` como
+verificação de guarda. Junto: `security-severity` podia sair como a string
+`"inf"` (GitHub lê esse campo como número; agora cai para a banda de
+severidade fora de `0 < s <= 10`, a mesma regra que o EPSS já aplica na
+entrada); `artifactLocation.uri` podia ser só `":"` quando nome e tag vinham
+vazios (agora cai para `scan.image_reference` ou `"unknown-image"`); e
+`$schema` apontava para uma URL que hoje devolve 404 (o repositório upstream
+renomeou a branch padrão). Validado contra o JSON Schema oficial do SARIF
+2.1.0 (OASIS, vendorizado em `tests/fixtures/`).
+
+### Corrigido -- dois defeitos achados por fuzzing dos parsers
+
+- **`EXPOSE <4301+ dígitos>` ou `USER app:<4301+ dígitos>` abortava a
+  validação inteira.** A partir do Python 3.11, `int()` recusa strings com
+  mais de 4300 dígitos e a recusa é um `ValueError` que o parser não
+  capturava -- uma única linha retirava o Dockerfile de **todas** as regras
+  de uma vez. Corrigido com limite explícito de porta/UID antes de
+  converter.
+- **`split_repository_and_tag` violava o próprio contrato documentado** em
+  referências como `a.io/b.io:5000/app`: fazia `rsplit(":", 1)` sobre a
+  cauda inteira em vez do último segmento, lendo `5000/app` como tag. Uma
+  tag não pode conter `/` nem `:`, então a base ficava marcada como
+  "pinada" quando na verdade não carrega tag nenhuma -- a mesma classe do
+  DF013 (porta de registry escondendo base sem tag), um nível mais fundo.
+
+Achado por Hypothesis, ~210 mil casos por propriedade (`DOCKERLS_HYPOTHESIS_EXAMPLES`
+ajusta o orçamento). A varredura confirmou negativo em duas frentes: nenhum
+dos 30+ padrões compilados do validador de Dockerfile reabre o ReDoS
+corrigido acima, e o invariante tag/digest (F13) não diverge sob fuzzing.
+
 ## [2.10.1] -- 2026-08-22
 
 ### Corrigido -- os alertas abertos no code scanning do próprio repositório
