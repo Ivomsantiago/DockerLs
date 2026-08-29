@@ -18,6 +18,7 @@ by the named regression tests at the bottom.
 
 from __future__ import annotations
 
+import os
 import time
 
 from hypothesis import HealthCheck, given, settings
@@ -35,8 +36,12 @@ from dockerls.infrastructure.dockerfile_validator import DockerfileParser
 # inputs of at most a few hundred characters: a healthy one finishes in
 # microseconds, and a backtracking one does not finish at all. The gap is
 # wide enough that the bound is not flaky on a loaded CI runner.
+#
+# 500 examples per property keeps the whole file at a few seconds, which is
+# what belongs in every run. A soak is the same properties with a bigger
+# budget: `DOCKERLS_HYPOTHESIS_EXAMPLES=10000 pytest tests/adversarial/`.
 _PROPERTY = settings(
-    max_examples=500,
+    max_examples=int(os.environ.get("DOCKERLS_HYPOTHESIS_EXAMPLES", "500")),
     deadline=2000,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
 )
