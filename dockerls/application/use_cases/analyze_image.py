@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from dockerls.application.services.hardening_analysis import HardeningAnalyzer
+    from dockerls.application.services.tag_history_store import TagHistoryStore
     from dockerls.domain.interfaces.eol_checker import EOLCheckerInterface
     from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
     from dockerls.domain.interfaces.scanner import ScannerInterface
@@ -38,6 +39,7 @@ class AnalyzeImageUseCase:
         threat_intel: ThreatIntelClient | None = None,
         hardening: HardeningAnalyzer | None = None,
         exploitdb: ExploitDBClient | None = None,
+        tag_history: TagHistoryStore | None = None,
     ):
         self._repository = repository
         self._scanner = scanner
@@ -46,6 +48,7 @@ class AnalyzeImageUseCase:
         self._threat_intel = threat_intel
         self._hardening = hardening
         self._exploitdb = exploitdb
+        self._tag_history = tag_history
 
     async def execute(self, image_reference: str) -> ImageAnalysis:
         name, tag = self._parse_reference(image_reference)
@@ -111,6 +114,17 @@ class AnalyzeImageUseCase:
             if digest and not image.digest:
                 image.digest = digest
             apply_facts(analysis, facts)
+
+        # A digest is the identity of a fixed set of bytes; `name@sha256:...`
+        # was asked for exactly that byte set and has no *tag* to track a
+        # move for. Only a mutable `name:tag` reference has history worth
+        # keeping -- the same distinction `base` already draws for
+        # Dockerfile-pinned bases (`tag_history.py`).
+        if self._tag_history is not None and image.digest_known and "@" not in image_reference:
+            history = await self._tag_history.observe(f"{name}:{tag}", image.digest)
+            if history.moves:
+                analysis.tag_drift_note = history.explain()
+
         finalize_verdict(analysis, cross_validated=False)
         return analysis
 

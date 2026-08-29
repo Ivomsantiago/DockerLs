@@ -31,7 +31,7 @@ a sustente; **alto** quando ausência de dado é convertida em fato favorável;
 | F10 | MÉDIA | Chave de cache ignora scanner e versão | **corrigido** — identidade do scanner entra no fingerprint |
 | F11 | MÉDIA | Versão do scanner nunca registrada | **corrigido** — capturada por execução, no manifesto e no cache |
 | F12 | MÉDIA | Cross-validation por contagem | **corrigido** — comparação por identidade (CVE+pacote) e desfecho classificado |
-| F13 | BAIXA | `TAG_MOVED` não detectado | **pendente** — a chave por digest já impede servir evidência de outra imagem; falta *reportar* o movimento |
+| F13 | BAIXA | `TAG_MOVED` não detectado | **corrigido** — `base` já registrava e reportava o histórico por tag (`tag_history.py`, commit `45f9821`, 2026-08-21) para bases fixadas em Dockerfile; `analyze` (e por extensão `compare`/`advisor`/`alternatives`) agora reporta o mesmo fato para uma tag consultada diretamente |
 
 Um achado extra apareceu durante a correção e foi tratado junto:
 
@@ -237,21 +237,37 @@ e alimentar o confidence com a classe, não com um booleano.
 
 ---
 
-## F13 — `TAG_MOVED` não é detectado  *(BAIXA)*
+## F13 — `TAG_MOVED` não é detectado  *(BAIXA, corrigido)*
 
 A chave de cache por digest já evita servir resultado de outra imagem. O que
-falta é *dizer* que a tag se moveu — informação acionável para quem fixou a tag
-num Dockerfile.
+faltava era *dizer* que a tag se moveu — informação acionável para quem fixou a
+tag num Dockerfile.
 
-**Proposta.** Registrar o último digest visto por tag e reportar a mudança.
+**Proposta original.** Registrar o último digest visto por tag e reportar a
+mudança.
 
 **Nota da revisão de 2026-08-18.** O impacto continua BAIXO e o motivo ficou
 claro: a confiança já rebaixa toda referência não fixada num digest para
 `LOW`/`MEDIUM`, com a razão escrita ("reference is not pinned to a digest and
 was not confirmed"). Ou seja, o leitor não recebe uma tag móvel apresentada
-como se fosse medida definitiva — ele só não recebe o aviso específico de que
-ela *se moveu desde a última vez*. Segue em aberto, por essa ordem de
-prioridade.
+como se fosse medida definitiva — ele só não recebia o aviso específico de que
+ela *se moveu desde a última vez*.
+
+**Status real, revisão de 2026-08-29.** Já estava corrigido para `base`: o
+commit `45f9821` (2026-08-21, três dias depois da nota acima) introduziu
+`domain/value_objects/tag_history.py` + `application/services/
+tag_history_store.py`, que fazem exatamente a proposta -- guardam o digest
+observado por tag, com timestamp, e `base_cmd.py` imprime `history: mudou de
+digest N vezes desde ...` quando `historico.moves` é maior que zero. Essa
+correção nunca foi cruzada de volta com esta entrada. O que faltava era
+estender o mesmo mecanismo, já testado, para quem consulta uma tag fora de um
+Dockerfile: `AnalyzeImageUseCase` agora recebe um `TagHistoryStore` opcional e
+grava/lê pelo mesmo histórico, então `analyze` -- e por extensão `compare`,
+`advisor` e `alternatives`, que reaproveitam o mesmo caso de uso -- também
+mostram `tag_drift_note` quando a tag pedida mudou de digest desde a última
+vez que esta ferramenta olhou para ela. Uma referência por digest
+(`name@sha256:...`) nunca entra nesse histórico: ela não tem tag para
+acompanhar.
 
 ---
 

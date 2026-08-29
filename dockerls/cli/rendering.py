@@ -24,8 +24,11 @@ if TYPE_CHECKING:
         HardeningRule,
     )
 
-# Valores de status renderizados, não senhas.
-_STATUS_ICONS = {  # nosec B105
+# Valores de status renderizados, não senhas. Bandit's B105 (hardcoded
+# password) matches on the dict *key* looking like a secret name -- "PASS"
+# does, "WARN"/"FAIL"/"SKIP" don't -- so only that one line ever needs the
+# suppression; the others never triggered anything to suppress.
+_STATUS_ICONS = {
     "PASS": "[green]PASS[/green]",  # nosec B105
     "WARN": "[yellow]WARN[/yellow]",
     "FAIL": "[red]FAIL[/red]",

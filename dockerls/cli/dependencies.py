@@ -128,6 +128,7 @@ async def build_repository(cache: SQLiteCache | None = None) -> DockerHubClient:
     return client
 
 
+@lru_cache(maxsize=1)
 def build_cache() -> SQLiteCache:
     # Import tardio: `SQLiteCache` puxa o SQLAlchemy, que sozinho responde por
     # cerca de um segundo do arranque do processo. Comandos que nunca tocam o
@@ -138,6 +139,21 @@ def build_cache() -> SQLiteCache:
 
     s = _settings()
     return SQLiteCache(s.db_path)
+
+
+def close_cache() -> None:
+    """Dispose the shared SQLite engine, if a command ever built one.
+
+    Called once, after the command finishes (see `cli/app.py`). Every
+    caller of `build_cache()` -- `recommend`, `cache`, `registry-audit`,
+    `_threat_intel`, `_exploitdb` -- gets the same memoized instance, so
+    there is exactly one engine to close per process, and a command that
+    never touched the cache (`version`, `--help`) never built one: this is
+    then a no-op that costs nothing.
+    """
+    if build_cache.cache_info().currsize:
+        build_cache().close()
+        build_cache.cache_clear()
 
 
 @lru_cache(maxsize=1)
@@ -423,6 +439,10 @@ async def build_analyze_use_case() -> AnalyzeImageUseCase:
         max_attempts=s.retry_max_attempts,
         backoff_base=s.retry_backoff_base,
     )
+    # Import tardio, como o resto do módulo: `TagHistoryStore` só custa algo
+    # quando algum comando de fato o usa.
+    from dockerls.application.services.tag_history_store import TagHistoryStore
+
     return AnalyzeImageUseCase(
         repository=repo,
         scanner=scanner,
@@ -430,6 +450,7 @@ async def build_analyze_use_case() -> AnalyzeImageUseCase:
         threat_intel=_threat_intel(),
         exploitdb=_exploitdb(),
         hardening=build_hardening_analyzer(),
+        tag_history=TagHistoryStore(build_cache()),
     )
 
 

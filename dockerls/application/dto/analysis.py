@@ -101,6 +101,13 @@ class ImageAnalysis(BaseModel):
     # Costs and caveats of moving to this image, stated alongside the
     # reasons. A recommendation that lists only upsides is advertising.
     trade_offs: list[str] = Field(default_factory=list)
+    # Set when this tag has previously been observed (by an earlier run) on
+    # a *different* digest than the one just resolved. Empty when this is
+    # the first time this tag was seen, or when it has stayed on the same
+    # digest since. `base` already reports this for Dockerfile-pinned bases
+    # (see `tag_history.py`/`base_cmd.py`); this is the same fact for a tag
+    # looked up directly with `analyze`.
+    tag_drift_note: str = ""
 
     @property
     def pinned_reference(self) -> str:
