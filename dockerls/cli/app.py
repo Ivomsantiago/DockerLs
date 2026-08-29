@@ -19,6 +19,7 @@ na CLI.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
@@ -271,4 +272,23 @@ def _bootstrap() -> None:
 
 
 def main() -> None:
-    app()
+    try:
+        app()
+    finally:
+        _dispose_cache_if_loaded()
+
+
+def _dispose_cache_if_loaded() -> None:
+    """Close the shared SQLite engine, without paying to import the module
+    that owns it when the command never touched it.
+
+    `cli.dependencies` pulls in SQLAlchemy and the rest of the application
+    stack, which is exactly what the lazy command table above exists to
+    keep `dockerls --help`/`version` from paying for. Checking
+    `sys.modules` instead of importing unconditionally means a command that
+    never built a cache -- which never imports `cli.dependencies` at all --
+    still doesn't, even after it finishes.
+    """
+    dependencies = sys.modules.get("dockerls.cli.dependencies")
+    if dependencies is not None:
+        dependencies.close_cache()

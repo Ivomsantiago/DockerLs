@@ -62,6 +62,24 @@ class SQLiteCache(CacheStoreInterface):
     def _session(self) -> Session:
         return self._session_factory()
 
+    def close(self) -> None:
+        """Dispose the SQLAlchemy engine and release its pooled connection.
+
+        Nothing here ever called this: the engine opened in `__init__` lived
+        until the process exited, which is why `pytest` -- which keeps the
+        interpreter running across thousands of these -- reported unclosed
+        `sqlite3.Connection` objects (`ResourceWarning`) from tests that
+        never mention caching at all. A short-lived CLI invocation masked
+        the same leak by exiting anyway.
+        """
+        self._engine.dispose()
+
+    def __enter__(self) -> SQLiteCache:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
     def _versioned_key(self, key: str) -> str:
         return f"{CACHE_SCHEMA_VERSION}:{key}"
 
