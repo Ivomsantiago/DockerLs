@@ -287,6 +287,8 @@ def _render_table(result: ImageAnalysis, wide: bool) -> None:
 
     if result.tag_drift_note:
         console.print(f"\n[dim]tag history: {safe(result.tag_drift_note)}[/dim]")
+    if result.vuln_trend_note:
+        console.print(f"[dim]vuln trend: {safe(result.vuln_trend_note)}[/dim]")
 
     if result.scan.vulnerabilities:
         console.print("\n[bold]Vulnerabilities[/bold]\n")

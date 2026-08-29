@@ -108,6 +108,13 @@ class ImageAnalysis(BaseModel):
     # (see `tag_history.py`/`base_cmd.py`); this is the same fact for a tag
     # looked up directly with `analyze`.
     tag_drift_note: str = ""
+    # Set when a previous `analyze` run of this exact reference recorded
+    # different vulnerability counts than this scan just found. Empty on the
+    # first scan ever recorded, or when the counts are unchanged since the
+    # last one. Unlike `tag_drift_note`, this applies to a digest reference
+    # too: the same bytes can gain a CVE between two scans as the scanner's
+    # database learns about it.
+    vuln_trend_note: str = ""
 
     @property
     def pinned_reference(self) -> str:

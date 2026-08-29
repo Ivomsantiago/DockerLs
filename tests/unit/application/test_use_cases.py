@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from dockerls.application.services.scan_history_store import ScanHistoryStore
 from dockerls.application.services.tag_history_store import TagHistoryStore
 from dockerls.application.use_cases.analyze_image import AnalyzeImageUseCase
 from dockerls.application.use_cases.compare_images import CompareImagesUseCase
@@ -335,6 +336,97 @@ class TestTagDriftDetection:
         uc = AnalyzeImageUseCase(MockRepo(tags), MockScanner(), MockEOL())
         result = await uc.execute("node:22-alpine")
         assert result.tag_drift_note == ""
+
+
+class TestVulnTrendDetection:
+    """Same idea as tag drift, one level down: not just 'did the bytes
+    change' but 'did the count of findings in them change'. Unlike tag
+    drift this applies to a digest reference too -- the scanner's own
+    database can learn about a new CVE for the exact same, unmoving bytes
+    between two runs."""
+
+    @staticmethod
+    def _image(digest: str) -> DockerImage:
+        return DockerImage(name="node", tag="22-alpine", digest=digest)
+
+    @pytest.mark.asyncio
+    async def test_a_changed_vuln_count_is_reported(self):
+        history = ScanHistoryStore(MockCache())
+        digest = "sha256:" + "a" * 64
+        crit_vuln = Vulnerability(cve_id="CVE-1", severity=Severity.CRITICAL, package_name="pkg")
+
+        first = AnalyzeImageUseCase(
+            repository=MockRepo([self._image(digest)]),
+            scanner=MockScanner(vulns=[]),
+            eol_checker=MockEOL(),
+            scan_history=history,
+        )
+        await first.execute("node:22-alpine")
+
+        second = AnalyzeImageUseCase(
+            repository=MockRepo([self._image(digest)]),
+            scanner=MockScanner(vulns=[crit_vuln]),
+            eol_checker=MockEOL(),
+            scan_history=history,
+        )
+        result = await second.execute("node:22-alpine")
+
+        assert "critical +1" in result.vuln_trend_note
+
+    @pytest.mark.asyncio
+    async def test_the_first_scan_has_nothing_to_compare_against(self):
+        history = ScanHistoryStore(MockCache())
+        uc = AnalyzeImageUseCase(
+            repository=MockRepo([self._image("sha256:" + "a" * 64)]),
+            scanner=MockScanner(),
+            eol_checker=MockEOL(),
+            scan_history=history,
+        )
+        result = await uc.execute("node:22-alpine")
+        assert result.vuln_trend_note == ""
+
+    @pytest.mark.asyncio
+    async def test_unchanged_counts_report_nothing(self):
+        history = ScanHistoryStore(MockCache())
+        digest = "sha256:" + "a" * 64
+
+        for _ in range(2):
+            uc = AnalyzeImageUseCase(
+                repository=MockRepo([self._image(digest)]),
+                scanner=MockScanner(vulns=[]),
+                eol_checker=MockEOL(),
+                scan_history=history,
+            )
+            result = await uc.execute("node:22-alpine")
+
+        assert result.vuln_trend_note == ""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_scan_is_never_recorded(self):
+        """A scan that did not complete has no counts worth trusting --
+        recording it would let a technical failure masquerade as 'zero
+        vulnerabilities found'."""
+        history = ScanHistoryStore(MockCache())
+        uc = AnalyzeImageUseCase(
+            repository=MockRepo([self._image("sha256:" + "a" * 64)]),
+            scanner=MockScanner(status=ScanStatus.ERROR),
+            eol_checker=MockEOL(),
+            scan_history=history,
+        )
+        result = await uc.execute("node:22-alpine")
+
+        assert result.vuln_trend_note == ""
+        assert (await history.get("node:22-alpine")).is_empty
+
+    @pytest.mark.asyncio
+    async def test_without_a_scan_history_store_nothing_is_reported(self):
+        uc = AnalyzeImageUseCase(
+            repository=MockRepo([self._image("sha256:" + "a" * 64)]),
+            scanner=MockScanner(),
+            eol_checker=MockEOL(),
+        )
+        result = await uc.execute("node:22-alpine")
+        assert result.vuln_trend_note == ""
 
 
 class TestCompareImages:
