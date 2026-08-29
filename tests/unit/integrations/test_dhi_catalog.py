@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from dockerls.domain.value_objects.tristate import Tristate
-from dockerls.integrations.dhi.catalog import DHICatalogClient
+from dockerls.integrations.dhi.catalog import DHICatalogClient, IndexState
 from dockerls.integrations.dhi.definition import DHI_CATALOG, parse_definition
 from dockerls.integrations.dhi.repository import DHI, DHIRepository
 from dockerls.utils.safe_yaml import safe_load_yaml
@@ -311,6 +311,89 @@ class TestCatalogIndex:
         client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: SLF001
         assert await client.variants("node") == {"debian-13": ["image/node/debian-13/22.yaml"]}
         assert calls == []
+
+
+class TestAnEmptyAnswerSaysWhichKindOfEmpty:
+    """`variants()` returns `{}` for three different things, and only one of
+    them is about the image: the catalogue has no such image, the catalogue
+    could not be read, and GitHub truncated the tree.
+
+    A caller that cannot tell them apart reports "DHI publishes no hardened
+    build of this" when what actually happened was that nobody asked -- an
+    unreachable catalogue turned into a finding about the image. The empty
+    dict is still what comes back (discovery degrades, it does not fail);
+    what is fixed is that the reason survives it.
+    """
+
+    async def test_a_complete_catalogue_makes_an_empty_answer_conclusive(self):
+        client = _client(
+            _transport({"tree": [{"type": "blob", "path": "image/node/d/22.yaml"}], "sha": "a" * 40})
+        )
+
+        assert await client.variants("ruby") == {}
+        assert client.index_state is IndexState.COMPLETE
+        assert client.index_state.is_conclusive
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            httpx.Response(403, text="rate limited"),
+            httpx.Response(500, text="server error"),
+            httpx.Response(200, text="not json"),
+        ],
+    )
+    async def test_an_unreadable_catalogue_is_unavailable_not_empty(self, response):
+        client = _client(httpx.MockTransport(lambda request: response))
+
+        assert await client.variants("node") == {}
+        assert client.index_state is IndexState.UNAVAILABLE
+        assert not client.index_state.is_conclusive
+
+    async def test_a_network_error_is_unavailable_too(self):
+        def boom(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("no route to host")
+
+        client = _client(httpx.MockTransport(boom))
+
+        assert await client.variants("node") == {}
+        assert client.index_state is IndexState.UNAVAILABLE
+
+    async def test_a_truncated_tree_is_not_a_complete_catalogue(self):
+        """GitHub truncates very large trees. The index it produces is real
+        and short: an image it does not name may still exist."""
+        client = _client(
+            _transport(
+                {
+                    "tree": [{"type": "blob", "path": "image/node/debian-13/22.yaml"}],
+                    "sha": "a" * 40,
+                    "truncated": True,
+                }
+            )
+        )
+
+        assert set(await client.variants("node")) == {"debian-13"}
+        assert client.index_state is IndexState.TRUNCATED
+        assert not client.index_state.is_conclusive
+
+    async def test_before_any_query_the_index_is_not_loaded(self):
+        client = _client(_transport({"tree": [], "sha": ""}))
+
+        assert client.index_state is IndexState.NOT_LOADED
+
+    async def test_the_repository_still_degrades_and_can_tell_why(self):
+        """`DHIRepository` returns no candidates either way -- discovery
+        degrades rather than failing the run. What changed is that the
+        reason is still readable afterwards instead of being flattened into
+        an empty list."""
+        unreachable = _client(httpx.MockTransport(lambda request: httpx.Response(503)))
+        assert await DHIRepository(catalog=unreachable).search_tags("node") == []
+        assert unreachable.index_state is IndexState.UNAVAILABLE
+
+        present = _client(
+            _transport({"tree": [{"type": "blob", "path": "image/go/d/1.yaml"}], "sha": "a" * 40})
+        )
+        assert await DHIRepository(catalog=present).search_tags("node") == []
+        assert present.index_state is IndexState.COMPLETE
 
 
 # --------------------------------------------------------------------------
