@@ -193,9 +193,7 @@ class TestAnUnbackedNotAffectedCannotBeConstructed:
         document = build_document(
             [
                 ExemptionInput(cve="CVE-2024-1", justification="accepted until Q3"),
-                ExemptionInput(
-                    cve="CVE-2024-2", vex_justification="vulnerable_code_not_present"
-                ),
+                ExemptionInput(cve="CVE-2024-2", vex_justification="vulnerable_code_not_present"),
             ],
             products=["pkg:oci/app"],
             author="ana@example.com",

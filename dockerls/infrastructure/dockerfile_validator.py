@@ -20,6 +20,88 @@ from dockerls.domain.interfaces.dockerfile_validator import (
     DockerfileValidatorInterface,
     HardeningTemplateProvider,
 )
+from dockerls.domain.value_objects.image_reference import split_repository_and_tag
+
+#: `sudo` como comando, e não como substring de `pseudo` ou de uma frase
+#: dentro de um `echo`.
+_SUDO = re.compile(r"(?:^|[\s;&|(])sudo(?:$|[\s;&|)])")
+
+#: Cada gerenciador de pacotes com uma borda de palavra em volta. Sem ela,
+#: `apt` casava com `adapt` e `pip` com `pipeline`.
+_PACKAGE_MANAGERS = {
+    name: re.compile(rf"(?:^|[\s;&|(]){re.escape(name)}(?:$|[\s;&|)])")
+    for name in ("apt-get", "apt", "apk", "yum", "dnf", "pip", "pip3", "npm", "yarn")
+}
+
+#: Texto entre aspas dentro de um `RUN`. Removido antes de procurar por
+#: comandos, porque `RUN echo 'no sudo here'` não usa sudo -- fala dele.
+_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+#: Quem baixa da rede, à esquerda de um pipe.
+_DOWNLOADER = re.compile(r"(?:^|[\s;&(]) *(?:curl|wget|fetch)\b", re.IGNORECASE)
+
+#: Um interpretador **no começo** do segmento à direita do pipe. A posição é
+#: a regra inteira: `curl ... | sh` executa o que veio da rede, enquanto
+#: `curl -o f && echo ... | sha256sum -c && sh f` também tem um `sh` depois
+#: de um pipe e é exatamente a forma correta. Só o primeiro é acusado.
+_SHELL_AT_HEAD = re.compile(r"^\s*(?:sudo\s+|env\s+\S+=\S+\s+)*(?:ba|z|k|da)?sh\b", re.IGNORECASE)
+
+#: Bit setuid/setgid posto na imagem, simbólico (`chmod u+s`) ou octal
+#: (`chmod 4755`). O primeiro dígito de um modo de quatro é o que carrega
+#: setuid(4), setgid(2) e sticky(1); só os dois primeiros interessam.
+_SETUID_BIT = re.compile(
+    r"\bchmod\b[^;&|]*?(?:\b[4267]\d{3}\b|[ugo]*[+=][a-z]*s\b)",
+    re.IGNORECASE,
+)
+
+#: Fontes que um `ADD` busca na rede. O Docker as baixa sem verificar
+#: assinatura nem checksum, e sem seguir o proxy configurado para o build.
+_ADD_REMOTE = re.compile(r"^(?:https?|ftp|git)://|^git@", re.IGNORECASE)
+
+#: Arquivos que o `ADD` **descompacta sozinho** ao copiar. É o
+#: comportamento que separa `ADD` de `COPY`, e o que transforma um tarball
+#: hostil em escrita de arquivo arbitrária dentro da imagem.
+_ADD_ARCHIVE = re.compile(
+    r"\.(?:tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz|tar\.zst|gz|bz2|xz)$",
+    re.IGNORECASE,
+)
+
+
+def _strip_quoted(command: str) -> str:
+    """O comando sem o que está entre aspas.
+
+    `RUN echo 'no sudo needed here'` não usa sudo: fala dele. Sem esta
+    remoção, toda menção a uma ferramenta dentro de uma mensagem vira uma
+    acusação, e uma regra que acusa texto perde a confiança de quem a lê.
+    """
+    return _QUOTED.sub(" ", command)
+
+
+def _pipes_remote_script_to_shell(command: str) -> bool:
+    """Se um download é canalizado direto para um interpretador.
+
+    Olha o **par**, e não cada metade: um baixador em algum segmento à
+    esquerda de um pipe, e um interpretador *no começo* do segmento à
+    direita. É essa segunda condição que separa
+
+        curl -fsSL https://x/i.sh | sh                      (acusado)
+
+    de
+
+        curl -o /tmp/i.sh https://x/i.sh \\
+          && echo '<sha>  /tmp/i.sh' | sha256sum -c \\
+          && sh /tmp/i.sh                                   (a forma certa)
+
+    -- que também tem um `sh` depois de um pipe, e é exatamente o que a
+    regra quer que as pessoas façam.
+    """
+    text = _strip_quoted(command)
+    # `||` é um operador, não um pipe.
+    segments = re.split(r"(?<!\|)\|(?!\|)", text)
+    for left, right in zip(segments, segments[1:], strict=False):
+        if _DOWNLOADER.search(left) and _SHELL_AT_HEAD.match(right):
+            return True
+    return False
 
 
 class UnknownHardeningTemplateError(ValueError):
@@ -59,6 +141,11 @@ class DockerfileParser:
         r"^COPY\s+(?:--chown=(\S+:\S+)\s+)?(?:--from=(\S+)\s+)?(\S+)\s+(\S+)$",
         re.IGNORECASE,
     )
+    #: `ADD` inteiro, argumentos incluídos. Ao contrário do `COPY_PATTERN`
+    #: acima, não exige exatamente dois operandos: `ADD a b c/` é legal, e
+    #: uma regex que não casasse com ele deixaria a diretiva invisível --
+    #: que é o modo de falhar que esta regra existe para não ter.
+    ADD_PATTERN = re.compile(r"^ADD\s+(.+)$", re.IGNORECASE)
     ENV_PREFIX = re.compile(r"^ENV\s+(.+)$", re.IGNORECASE)
     # Pares chave=valor de uma linha ENV, com valor opcionalmente entre aspas.
     ENV_KV = re.compile(r"""([\w.\-]+)=(?:"[^"]*"|'[^']*'|\S*)""")
@@ -68,7 +155,11 @@ class DockerfileParser:
     HEALTHCHECK_PATTERN = re.compile(r"^HEALTHCHECK\s+", re.IGNORECASE)
     ENTRYPOINT_PATTERN = re.compile(r"^ENTRYPOINT\s+(.+)$", re.IGNORECASE)
     CMD_PATTERN = re.compile(r"^CMD\s+(.+)$", re.IGNORECASE)
-    ARG_PATTERN = re.compile(r"^ARG\s+(\S+)(?:=(.*))?$", re.IGNORECASE)
+    #: `(\S+)` era ganancioso e engolia o `=valor` inteiro: em
+    #: `ARG TOKEN=abc` o nome saía como `TOKEN=abc` e o grupo do valor vinha
+    #: vazio, então nada nesta classe conseguia distinguir um ARG com valor
+    #: -- que é um segredo escrito no Dockerfile -- de um sem.
+    ARG_PATTERN = re.compile(r"^ARG\s+([A-Za-z_][\w.\-]*)(?:=(.*))?$", re.IGNORECASE)
     WORKDIR_PATTERN = re.compile(r"^WORKDIR\s+(\S+)$", re.IGNORECASE)
 
     # Secret patterns - variáveis que podem conter segredos
@@ -188,7 +279,7 @@ class DockerfileParser:
             if (
                 not is_stage_reference
                 and not self._is_scratch(image)
-                and (":latest" in image or (":" not in image and "@" not in image))
+                and self._is_moving_reference(image)
             ):
                 self._info.uses_latest_tag = True
 
@@ -197,15 +288,28 @@ class DockerfileParser:
             cmd = match.group(1)
             self._info.run_commands.append({"line": line_num, "command": cmd})
 
-            # Check for sudo
-            if "sudo" in cmd:
+            # `"sudo" in cmd` casava com `pseudo`, `sudoku` e com a palavra
+            # dentro de um `echo`. A borda de palavra é o que separa a
+            # ferramenta da string.
+            unquoted = _strip_quoted(cmd)
+            if _SUDO.search(unquoted):
                 self._info.uses_sudo = True
 
-            # Check package managers
-            pkg_managers = ["apt-get", "apt", "apk", "yum", "dnf", "pip", "npm", "yarn"]
-            for pm in pkg_managers:
-                if pm in cmd and pm not in self._info.package_managers_used:
+            # Idem: `"apt" in cmd` casava com `adapt` e `captured`, `"pip"`
+            # com `pipeline` e `pipx`. Um gerenciador de pacotes detectado
+            # onde não há nenhum acusa a DF005 de cache não limpo num
+            # Dockerfile que não instalou nada.
+            for pm, pattern in _PACKAGE_MANAGERS.items():
+                if pattern.search(unquoted) and pm not in self._info.package_managers_used:
                     self._info.package_managers_used.append(pm)
+
+            if _pipes_remote_script_to_shell(cmd):
+                self._info.pipes_remote_script_to_shell = True
+                self._info.remote_script_lines.append(line_num)
+
+            if _SETUID_BIT.search(unquoted):
+                self._info.sets_setuid_bit = True
+                self._info.setuid_lines.append(line_num)
 
             # Check cache cleaning
             cache_clean_patterns = [
@@ -235,6 +339,10 @@ class DockerfileParser:
                     "destination": dest,
                 }
             )
+
+        # ADD -- não é um COPY com outro nome, e a diferença é a regra.
+        elif match := self.ADD_PATTERN.match(line):
+            self._record_add(match.group(1), line_num)
 
         # ENV
         elif self.ENV_PREFIX.match(line):
@@ -277,11 +385,21 @@ class DockerfileParser:
         elif match := self.CMD_PATTERN.match(line):
             self._info.cmd = match.group(1).strip()
 
-        # ARG (BuildKit detection)
+        # ARG
         elif match := self.ARG_PATTERN.match(line):
             arg_name = match.group(1)
             if arg_name in ("BUILDKIT_INLINE_CACHE", "DOCKER_BUILDKIT"):
                 self._info.uses_buildkit = True
+            # Um ARG **com valor** é um segredo escrito no Dockerfile e no
+            # histórico de camadas; um ARG sem valor é um parâmetro de build,
+            # e acusá-lo transformaria a forma correta de passar um segredo
+            # numa infração. A DF004 já dizia no seu texto que cobria "ENV e
+            # ARG" -- e não olhava ARG nenhum. Uma regra que afirma cobrir o
+            # que não cobre é pior do que não existir.
+            if match.group(2) and self._is_secret_name(arg_name):
+                self._info.has_secrets_in_build_args = True
+                if arg_name not in self._info.secret_build_args:
+                    self._info.secret_build_args.append(arg_name)
 
     @staticmethod
     def _is_scratch(image: str) -> bool:
@@ -295,6 +413,40 @@ class DockerfileParser:
         # `FROM --platform=$BUILDPLATFORM scratch` também precisa casar.
         parts = [p for p in image.split() if not p.startswith("--")]
         return bool(parts) and parts[-1].lower() == "scratch"
+
+    @staticmethod
+    def _is_moving_reference(image: str) -> bool:
+        """Se este `FROM` aponta para algo que pode mudar debaixo do build.
+
+        A checagem anterior era `":latest" in image or (":" not in image and
+        "@" not in image)`, e errava nos dois sentidos:
+
+        * **Falso negativo, e é o grave.** `FROM registry.local:5000/app` não
+          tem tag -- o Docker resolve para `:latest` --, mas *tem* dois
+          pontos, no host. A regra concluía "está com tag" e dava PASS na
+          DF001, com severidade HIGH, exatamente para a base mais móvel que
+          existe. Toda organização com registry interno por porta escapava
+          da regra. `split_repository_and_tag` já sabia separar host de tag
+          e é a mesma pergunta sobre a mesma string, então é ela que
+          responde aqui -- duas leituras diferentes de "isto está fixado?"
+          no mesmo binário é como um dos dois lados fica errado sem que
+          ninguém note.
+        * **Falso positivo.** `:latest` como substring casa com
+          `FROM ghcr.io/org/app:latest-stable`, que é uma tag comum e não é
+          `latest`. A comparação agora é com a tag inteira.
+
+        Um digest (`@sha256:...`) nunca move, tenha tag ou não.
+        """
+        reference = next((p for p in image.split() if not p.startswith("--")), "")
+        if not reference or "$" in reference:
+            # `FROM $BASE_IMAGE` é resolvido por um ARG que este parser não
+            # avalia. Chamar isso de fixado ou de móvel seria inventar; a
+            # DF001 não fala sobre o que não leu.
+            return False
+        if "@sha256:" in reference:
+            return False
+        _, tag = split_repository_and_tag(reference)
+        return not tag or tag.lower() == "latest"
 
     def _env_names(self, line: str) -> list[str]:
         """Nomes de variáveis declarados numa linha ENV.
@@ -314,6 +466,47 @@ class DockerfileParser:
         if "=" not in first:
             return [first] if first else []
         return self.ENV_KV.findall(body)
+
+    def _record_add(self, body: str, line_num: int) -> None:
+        """Registra um `ADD` e o que nele é diferente de um `COPY`.
+
+        `ADD` faz duas coisas que `COPY` não faz, e as duas são a regra:
+
+        * **busca uma URL**, sem conferir assinatura nem checksum, e o
+          resultado vira uma camada da imagem. Quem controlar aquele host,
+          ou o caminho até ele, escolhe o que roda dentro do container;
+        * **descompacta um arquivo local sozinho**. Um tarball com
+          `../../etc/passwd` dentro escreve fora do destino, e o Dockerfile
+          não diz em lugar nenhum que uma extração vai acontecer.
+
+        Um `ADD --checksum=sha256:...` de uma URL é a forma que o BuildKit
+        oferece para fazer isso com integridade, e não é acusada: o que a
+        regra combate é o download não verificado, não a diretiva.
+        """
+        try:
+            parts = shlex.split(body)
+        except ValueError:
+            # Aspas desbalanceadas: a linha é registrada mesmo assim, com os
+            # tokens crus. Deixar de registrar seria a diretiva sumindo por
+            # causa de um erro de digitação.
+            parts = body.split()
+
+        flags = [p for p in parts if p.startswith("--")]
+        operands = [p for p in parts if not p.startswith("--")]
+        checksummed = any(f.lower().startswith("--checksum=") for f in flags)
+        sources = operands[:-1] if len(operands) > 1 else operands
+        self._info.add_commands.append(
+            {
+                "line": line_num,
+                "sources": sources,
+                "destination": operands[-1] if len(operands) > 1 else "",
+                "remote": [s for s in sources if _ADD_REMOTE.match(s)],
+                "archives": [
+                    s for s in sources if not _ADD_REMOTE.match(s) and _ADD_ARCHIVE.search(s)
+                ],
+                "checksummed": checksummed,
+            }
+        )
 
     def _is_secret_name(self, name: str) -> bool:
         """Verifica se um nome de variável parece ser um segredo."""
@@ -360,6 +553,9 @@ class DockerfileValidator(DockerfileValidatorInterface):
         self._check_entrypoint_form(info, result)
         self._check_shell_usage(info, result)
         self._check_dockerignore(info, result, path.parent)
+        self._check_add_vs_copy(info, result)
+        self._check_remote_script_execution(info, result)
+        self._check_setuid(info, result)
 
         return result
 
@@ -611,17 +807,41 @@ class DockerfileValidator(DockerfileValidatorInterface):
     def _check_secrets_in_env(
         self, info: DockerfileInfo, result: DockerfileValidationResult
     ) -> None:
-        """Verifica se há segredos em variáveis ENV."""
-        if info.has_secrets_in_env:
+        """Verifica se há segredos em ENV **ou em ARG**.
+
+        A DF004 se chama "Keep secrets out of ENV and ARG" desde sempre, no
+        catálogo de controles, e não olhava ARG nenhum: um
+        `ARG GITHUB_TOKEN=ghp_...` passava com PASS e a mensagem "No obvious
+        secrets". Uma regra que afirma cobrir o que não cobre é pior que
+        regra nenhuma, porque o PASS é lido como uma verificação que
+        aconteceu.
+
+        Um ARG **com valor** é o caso: o valor fica escrito no Dockerfile e
+        no histórico da camada. Um `ARG TOKEN` sem valor é a forma correta
+        de parametrizar um build e não é acusado.
+        """
+        env_vars = list(info.secret_env_vars)
+        arg_vars = list(info.secret_build_args)
+        if env_vars or arg_vars:
+            partes = []
+            if env_vars:
+                partes.append(f"ENV: {', '.join(env_vars)}")
+            if arg_vars:
+                partes.append(f"ARG with a default value: {', '.join(arg_vars)}")
             result.add_check(
                 ValidationCheck(
                     check="secrets_not_in_env",
                     status=ValidationStatus.FAIL,
-                    message=f"Potential secrets in ENV: {', '.join(info.secret_env_vars)}",
+                    message=f"Potential secrets in {'; '.join(partes)}",
                     severity=SeverityLevel.CRITICAL,
                     rule_id="DF004",
-                    fix_suggestion="Use BuildKit: RUN --mount=type=secret,id=token",
-                    details={"secret_vars": info.secret_env_vars},
+                    fix_suggestion=(
+                        "Use BuildKit: RUN --mount=type=secret,id=token\n"
+                        "An ARG default is written into the Dockerfile and the layer "
+                        "history; declare `ARG TOKEN` with no value and pass it at "
+                        "build time if it has to be an ARG at all."
+                    ),
+                    details={"secret_vars": env_vars, "secret_build_args": arg_vars},
                 )
             )
         else:
@@ -629,7 +849,7 @@ class DockerfileValidator(DockerfileValidatorInterface):
                 ValidationCheck(
                     check="secrets_not_in_env",
                     status=ValidationStatus.PASS,
-                    message="No obvious secrets in ENV variables",
+                    message="No obvious secrets in ENV variables or ARG defaults",
                     severity=SeverityLevel.INFO,
                     rule_id="DF004",
                 )
@@ -917,6 +1137,177 @@ class DockerfileValidator(DockerfileValidatorInterface):
                     fix_suggestion="Create .dockerignore with .git, .env, node_modules, etc.",
                 )
             )
+
+    def _check_add_vs_copy(self, info: DockerfileInfo, result: DockerfileValidationResult) -> None:
+        """DF013 -- `ADD` faz duas coisas que `COPY` não faz.
+
+        Não é estilo. `ADD` de uma URL baixa e assa na imagem bytes que nada
+        conferiu, e `ADD` de um tarball local o **descompacta sozinho**, o
+        que transforma um arquivo com `../../etc/` dentro em escrita fora do
+        destino. Nenhuma das duas está escrita na linha; quem lê o
+        Dockerfile vê o que parece um `COPY`.
+
+        `ADD --checksum=sha256:...` de uma URL é a forma que o BuildKit
+        oferece para baixar com integridade, e passa: o alvo é o download
+        não verificado, não a diretiva.
+        """
+        remote = [a for a in info.add_commands if a["remote"] and not a["checksummed"]]
+        archives = [a for a in info.add_commands if a["archives"]]
+
+        if not info.add_commands:
+            result.add_check(
+                ValidationCheck(
+                    check="add_not_used_for_copy",
+                    status=ValidationStatus.PASS,
+                    message="No ADD directives (COPY is used to bring files in)",
+                    severity=SeverityLevel.INFO,
+                    rule_id="DF013",
+                )
+            )
+            return
+
+        if remote:
+            sources = ", ".join(s for a in remote for s in a["remote"])
+            result.add_check(
+                ValidationCheck(
+                    check="add_not_used_for_copy",
+                    status=ValidationStatus.FAIL,
+                    message=(
+                        f"ADD fetches over the network without verifying what it got: {sources}"
+                    ),
+                    severity=SeverityLevel.HIGH,
+                    rule_id="DF013",
+                    line=remote[0]["line"],
+                    fix_suggestion=(
+                        "RUN curl -fsSL <url> -o /tmp/f && echo '<sha256>  /tmp/f' | sha256sum -c\n"
+                        "or, on BuildKit: ADD --checksum=sha256:<digest> <url> <dest>"
+                    ),
+                    details={"sources": sources},
+                )
+            )
+            return
+
+        if archives:
+            sources = ", ".join(s for a in archives for s in a["archives"])
+            result.add_check(
+                ValidationCheck(
+                    check="add_not_used_for_copy",
+                    status=ValidationStatus.WARN,
+                    message=(
+                        f"ADD auto-extracts these archives, which the line does not say: {sources}"
+                    ),
+                    severity=SeverityLevel.MEDIUM,
+                    rule_id="DF013",
+                    line=archives[0]["line"],
+                    fix_suggestion=(
+                        "COPY the archive and extract it explicitly:\n"
+                        "COPY app.tar.gz /tmp/\nRUN tar -xzf /tmp/app.tar.gz -C /app"
+                    ),
+                    details={"sources": sources},
+                )
+            )
+            return
+
+        result.add_check(
+            ValidationCheck(
+                check="add_not_used_for_copy",
+                status=ValidationStatus.WARN,
+                message="ADD used where COPY would do the same thing with fewer behaviours",
+                severity=SeverityLevel.LOW,
+                rule_id="DF013",
+                line=info.add_commands[0]["line"],
+                fix_suggestion="Replace ADD with COPY for plain files and directories",
+            )
+        )
+
+    def _check_remote_script_execution(
+        self, info: DockerfileInfo, result: DockerfileValidationResult
+    ) -> None:
+        """DF014 -- um script baixado da rede e executado sem ser conferido.
+
+        `curl ... | sh` não deixa o script em lugar nenhum: nada o assina,
+        nada compara um checksum, nada o registra numa camada onde alguém
+        pudesse lê-lo depois. Quem controlar aquele host -- ou o caminho até
+        ele, ou o DNS no meio -- escolhe o que roda como root dentro do
+        build, e o Dockerfile continua parecendo o mesmo.
+
+        `curl -o arquivo` seguido de um `sha256sum -c` é a forma correta, e
+        não casa aqui: a regra olha o pipe entre o baixador e o
+        interpretador, não cada metade sozinha.
+        """
+        if not info.pipes_remote_script_to_shell:
+            result.add_check(
+                ValidationCheck(
+                    check="no_unverified_remote_script",
+                    status=ValidationStatus.PASS,
+                    message="No remote script is piped straight into a shell",
+                    severity=SeverityLevel.INFO,
+                    rule_id="DF014",
+                )
+            )
+            return
+
+        result.add_check(
+            ValidationCheck(
+                check="no_unverified_remote_script",
+                status=ValidationStatus.FAIL,
+                message=(
+                    "A script is downloaded and piped into a shell: nothing verifies "
+                    "what runs, and it runs as root during the build"
+                ),
+                severity=SeverityLevel.HIGH,
+                rule_id="DF014",
+                line=info.remote_script_lines[0] if info.remote_script_lines else None,
+                fix_suggestion=(
+                    "Download, verify, then run:\n"
+                    "RUN curl -fsSL <url> -o /tmp/install.sh \\\n"
+                    "    && echo '<sha256>  /tmp/install.sh' | sha256sum -c \\\n"
+                    "    && sh /tmp/install.sh && rm /tmp/install.sh"
+                ),
+                details={"lines": list(info.remote_script_lines)},
+            )
+        )
+
+    def _check_setuid(self, info: DockerfileInfo, result: DockerfileValidationResult) -> None:
+        """DF015 -- bit setuid/setgid posto num binário da imagem.
+
+        Um binário setuid roda com o dono do arquivo, e o dono é root. Num
+        container que faz a coisa certa e roda como usuário sem privilégio,
+        é justamente o caminho pronto de volta para o uid 0: a única peça
+        que faltava para transformar uma execução de comando limitada numa
+        completa.
+        """
+        if not info.sets_setuid_bit:
+            result.add_check(
+                ValidationCheck(
+                    check="no_setuid_binaries_added",
+                    status=ValidationStatus.PASS,
+                    message="No setuid or setgid bit is set in the build",
+                    severity=SeverityLevel.INFO,
+                    rule_id="DF015",
+                )
+            )
+            return
+
+        result.add_check(
+            ValidationCheck(
+                check="no_setuid_binaries_added",
+                status=ValidationStatus.FAIL,
+                message=(
+                    "A setuid/setgid bit is set: the binary runs as its owner, and its "
+                    "owner is root -- a ready-made way back to uid 0"
+                ),
+                severity=SeverityLevel.HIGH,
+                rule_id="DF015",
+                line=info.setuid_lines[0] if info.setuid_lines else None,
+                fix_suggestion=(
+                    "Drop the setuid bit and give the process what it needs directly:\n"
+                    "RUN chmod 0755 /usr/local/bin/tool\n"
+                    "For port binding below 1024, listen high and map the port instead."
+                ),
+                details={"lines": list(info.setuid_lines)},
+            )
+        )
 
     def _calculate_security_score(self, validation: DockerfileValidationResult) -> int:
         """Calcula score de segurança baseado nos resultados."""

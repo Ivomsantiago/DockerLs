@@ -327,7 +327,9 @@ class TestAnEmptyAnswerSaysWhichKindOfEmpty:
 
     async def test_a_complete_catalogue_makes_an_empty_answer_conclusive(self):
         client = _client(
-            _transport({"tree": [{"type": "blob", "path": "image/node/d/22.yaml"}], "sha": "a" * 40})
+            _transport(
+                {"tree": [{"type": "blob", "path": "image/node/d/22.yaml"}], "sha": "a" * 40}
+            )
         )
 
         assert await client.variants("ruby") == {}

@@ -278,6 +278,39 @@ RULE_MAPPINGS: tuple[RuleMapping, ...] = (
         ),
         controls=(CIS_4_10, DOCKER_BUILD_CONTEXT),
     ),
+    RuleMapping(
+        rule_id="DF013",
+        summary="Use COPY instead of ADD",
+        rationale=(
+            "ADD does two things COPY does not, and neither is written on the line: "
+            "it fetches URLs with nothing verifying what came back, and it "
+            "auto-extracts local archives, so a tarball carrying '../../etc' writes "
+            "outside the destination. A reader sees what looks like a copy."
+        ),
+        controls=(CIS_4_9, NIST_4_1_5),
+    ),
+    RuleMapping(
+        rule_id="DF014",
+        summary="Do not pipe a downloaded script into a shell",
+        rationale=(
+            "`curl | sh` leaves the script nowhere: nothing signs it, nothing checks a "
+            "digest, and no layer records what ran. Whoever controls that host, the "
+            "path to it, or the DNS in between chooses what executes as root during "
+            "your build, and the Dockerfile keeps reading the same."
+        ),
+        controls=(NIST_4_1_5, OWASP_13),
+    ),
+    RuleMapping(
+        rule_id="DF015",
+        summary="Do not leave setuid or setgid binaries in the image",
+        rationale=(
+            "A setuid binary runs as its owner, and the owner is root. In a container "
+            "that correctly runs as an unprivileged user, it is the ready-made path "
+            "back to uid 0 -- the one piece missing to turn a limited command "
+            "execution into a complete one."
+        ),
+        controls=(CIS_4_8, OWASP_4, NIST_4_1_2),
+    ),
 )
 
 _BY_RULE: dict[str, RuleMapping] = {mapping.rule_id: mapping for mapping in RULE_MAPPINGS}
