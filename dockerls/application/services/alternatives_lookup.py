@@ -102,26 +102,35 @@ async def best_alternative(
     distinguir "não achamos nada melhor" de "não conseguimos medir", porque as
     duas coisas chegam como valores diferentes em vez de como `None`.
     """
+    # Uma medição que não aconteceu nunca vira baseline. A frase é a mesma
+    # para as duas formas de falhar, porque significam a mesma coisa.
+    unmeasured = (
+        f"{reference} could not be scanned, so no improvement over it can be measured. "
+        "This is a technical failure, not a verdict about the image"
+    )
     try:
         current = await analyzer.execute(reference)
     except (ValueError, RuntimeError) as e:
-        logger.debug(f"Não foi possível analisar {reference}: {e}")
-        return AlternativeFailure(
-            reference=reference,
-            reason=(
-                f"{reference} não pôde ser escaneada, então nenhuma melhora sobre ela "
-                "pode ser medida. Isso é falha técnica, não veredito sobre a imagem"
-            ),
-        )
+        logger.debug(f"Could not analyze {reference}: {e}")
+        return AlternativeFailure(reference=reference, reason=unmeasured)
+
+    # A falha chega de duas formas e as duas valem o mesmo aqui. A exceção
+    # é o caso antigo; hoje um scan que não completou devolve um
+    # `ImageAnalysis` com score 0.0 e tier F por construção, e aceitá-lo
+    # como baseline faria toda candidata aparecer como uma melhora enorme
+    # sobre uma imagem que ninguém mediu -- exatamente a substituição que a
+    # primeira recusa deste módulo existe para impedir.
+    if not current.scan.is_verified:
+        return AlternativeFailure(reference=reference, reason=unmeasured)
 
     repository = _repository_of(reference)
     try:
         result = await recommender.execute(repository)
     except (ValueError, RuntimeError) as e:
-        logger.debug(f"Não foi possível buscar alternativas para {repository}: {e}")
+        logger.debug(f"Could not search for alternatives to {repository}: {e}")
         return AlternativeFailure(
             reference=reference,
-            reason=f"a busca por alternativas a {repository} falhou: {e}",
+            reason=f"the search for alternatives to {repository} failed: {e}",
         )
 
     for candidate in result.recommendations or result.alternatives:
@@ -142,8 +151,7 @@ async def best_alternative(
     return AlternativeFailure(
         reference=reference,
         reason=(
-            f"nenhuma alternativa a {repository} foi medida com confiança suficiente "
-            "para ser recomendada"
+            f"no alternative to {repository} was measured with enough confidence to be recommended"
         ),
     )
 

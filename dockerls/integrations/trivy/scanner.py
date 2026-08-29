@@ -11,6 +11,7 @@ from loguru import logger
 from dockerls.domain.entities.scan_result import ScanErrorKind, ScanResult, ScanStatus
 from dockerls.domain.entities.vulnerability import Severity, Vulnerability
 from dockerls.domain.interfaces.scanner import ScannerInterface
+from dockerls.integrations.engine.batch import EngineBatchScanner
 from dockerls.integrations.scan_errors import classify_scanner_error
 from dockerls.integrations.scan_target import blocked_scan_result, blocked_target_reason
 from dockerls.integrations.trivy.cache_pool import TrivyCachePool, default_trivy_cache_dir
@@ -41,9 +42,11 @@ class TrivyScanner(ScannerInterface):
     ):
         self._timeout = timeout
         self._skip_db_update = skip_db_update
+        self._workers = max(1, workers)
         self._cache_pool = TrivyCachePool(cache_dir or default_trivy_cache_dir(), workers)
         self._evidence = evidence
         self._version: str | None = None
+        self._batch: EngineBatchScanner | None = None
         # Trivy performs its own pull, so the reference has to clear the
         # network policy here or it never clears it at all.
         self._guard = guard
@@ -51,6 +54,33 @@ class TrivyScanner(ScannerInterface):
     @property
     def cache_pool(self) -> TrivyCachePool:
         return self._cache_pool
+
+    @property
+    def batch(self) -> EngineBatchScanner:
+        """O caminho em lote, quando a engine Go estiver disponível."""
+        if self._batch is None:
+            self._batch = EngineBatchScanner(
+                scanner="trivy",
+                timeout_seconds=float(self._timeout),
+                skip_db_update=self._skip_db_update,
+                workers=self._workers,
+                guard=self._guard,
+                evidence=self._evidence,
+                raw_dir=self._evidence_raw_dir(),
+                cache_dirs=self._cache_pool.slot_paths,
+            )
+        return self._batch
+
+    def _evidence_raw_dir(self) -> Path | None:
+        """Onde a engine deposita o JSON cru para este lado redigir.
+
+        `None` quando a evidência está desligada: sem ninguém para ler e
+        arquivar, gravar o documento **não redigido** em disco seria deixar
+        para trás exatamente o que a redação existe para não deixar.
+        """
+        if self._evidence is None:
+            return None
+        return self._cache_pool.base_dir / "engine-raw"
 
     async def is_available(self) -> bool:
         return shutil.which("trivy") is not None

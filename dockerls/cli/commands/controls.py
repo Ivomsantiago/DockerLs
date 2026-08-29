@@ -30,9 +30,7 @@ console = Console()
 
 #: Shown when a rule carries no published control. Spelled out rather than
 #: left blank, because a blank reads as "citation omitted".
-UNDOCUMENTED_NOTE = (
-    "orientação do próprio DockerLs; nenhum controle publicado no catálogo cobre esta regra"
-)
+UNDOCUMENTED_NOTE = "DockerLs guidance; no published control in the catalogue covers this rule"
 
 
 def controls(
@@ -89,7 +87,7 @@ def _report_unknown(rule: str, output_format: OutputFormat) -> None:
     if output_format == OutputFormat.JSON:
         console.print(json.dumps({"error": message, "known_rules": known.split(", ")}))
         return
-    console.print(f"[red]Erro:[/red] {safe(message)}")
+    console.print(f"[red]Error:[/red] {safe(message)}")
     console.print(f"[dim]Regras catalogadas: {known}[/dim]")
 
 
@@ -107,6 +105,6 @@ def _render(mappings: tuple[RuleMapping, ...], *, detailed: bool) -> None:
     if not detailed:
         documented = sum(1 for mapping in mappings if mapping.is_documented)
         console.print(
-            f"[dim]{documented} de {len(mappings)} regras citam um controle publicado. "
-            "Use `dockerls controls DF002` para ver a justificativa de uma regra.[/dim]"
+            f"[dim]{documented} of {len(mappings)} rules cite a published control. "
+            "Run `dockerls controls DF002` to see the rationale for one rule.[/dim]"
         )

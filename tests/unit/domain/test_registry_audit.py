@@ -28,7 +28,7 @@ class TestAlerting:
 
         assert not finding.is_alert
         assert finding.is_unmeasured
-        assert "não foi possível" in finding.explain()
+        assert "could not be" in finding.explain()
 
     def test_acesso_publico_e_relatado_sem_juizo(self) -> None:
         """ "Público" é o estado correto de uma imagem base oficial e o estado
@@ -38,13 +38,13 @@ class TestAlerting:
 
         assert finding.is_informational
         assert not finding.is_alert
-        assert "só você sabe" in finding.explain()
+        assert "only you know that part" in finding.explain()
 
     def test_tag_que_ja_mudou_alerta(self) -> None:
         finding = AuditFinding(check=AuditCheck.TAG_STABLE, state=Tristate.FALSE)
 
         assert finding.is_alert
-        assert "evidência medida" in finding.explain()
+        assert "measured evidence" in finding.explain()
 
     def test_toda_checagem_explica_os_tres_estados(self) -> None:
         for check in AuditCheck:
@@ -65,15 +65,15 @@ class TestReport:
 
         assert len(audit.alerts) == 1
         assert len(audit.unmeasured) == 1
-        assert "1 não medido" in audit.summary()
+        assert "1 not measured" in audit.summary()
 
     def test_sem_achados_o_resumo_nao_finge_sucesso(self) -> None:
-        assert "nada pôde ser apurado" in RegistryAudit(reference="x").summary()
+        assert "nothing could be established" in RegistryAudit(reference="x").summary()
 
     def test_o_relatorio_diz_o_que_nao_le(self) -> None:
         caveat = RegistryAudit(reference="x").caveat()
 
-        assert "sem credencial de nuvem" in caveat
+        assert "no cloud credential" in caveat
         assert "IAM" in caveat
 
     def test_documento_traz_cada_achado(self) -> None:

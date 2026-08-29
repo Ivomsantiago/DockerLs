@@ -33,9 +33,10 @@ from rich.table import Table
 from dockerls.application.services.migration import MigrationPlan, plan_migration
 from dockerls.application.services.source_registry import UnknownSourceError
 from dockerls.cli.dependencies import build_analyze_use_case, build_recommend_use_case
-from dockerls.cli.image_names import display_reference
+from dockerls.cli.image_names import display_reference, split_repository_and_tag
 from dockerls.cli.options import OutputFormat, parse_output_format
 from dockerls.cli.progress import RichScanObserver
+from dockerls.cli.scan_failure import describe_scan_failure
 from dockerls.cli.text import safe
 from dockerls.cli.validators import check_workers
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK
@@ -121,7 +122,10 @@ async def _alternatives(
     all_sources: bool = False,
     show_progress: bool = True,
 ) -> None:
-    repository, tag = _split_reference(reference)
+    # A regra compartilhada, e não um `rsplit(":", 1)`: a porta de um
+    # registry (`registry.internal:5000/app`) não é tag, e procurar o
+    # repositório "registry.internal" não devolve nada.
+    repository, tag = split_repository_and_tag(reference)
 
     current = await _analyze_current(reference)
     if current is None:
@@ -173,13 +177,32 @@ async def _alternatives(
 
 
 async def _analyze_current(reference: str) -> ImageAnalysis | None:
-    """Scan the image the user runs today, or return None if it cannot be."""
+    """Scan the image the user runs today, or return None if it cannot be.
+
+    A falha do scan chega de duas formas, e as duas significam a mesma
+    coisa aqui. Uma exceção é o caso antigo; o caso comum é um
+    `ImageAnalysis` cujo scan não completou, que carrega score 0.0 e tier F
+    por construção. Tratar o segundo como medição faria a baseline desta
+    comparação valer zero, e toda alternativa apareceria como uma melhoria
+    enorme sobre uma imagem que ninguém mediu.
+    """
     use_case = await build_analyze_use_case()
     try:
-        return await use_case.execute(reference)
+        analysis = await use_case.execute(reference)
     except (ValueError, RuntimeError) as e:
         diagnostics.print(f"[yellow]Could not analyze {reference}: {e}[/yellow]")
         return None
+    finally:
+        # O scanner e o pool de conexões do repositório ficam abertos até
+        # alguém fechá-los, e este comando abre um segundo conjunto logo
+        # abaixo para a busca. `analyze` fecha no mesmo ponto.
+        await use_case.close()
+
+    if not analysis.scan.is_verified:
+        cause = describe_scan_failure(analysis.scan.error_kind, analysis.scan.error_message)
+        diagnostics.print(f"[yellow]Could not analyze {safe(reference)}: {safe(cause)}[/yellow]")
+        return None
+    return analysis
 
 
 def _report_unmeasurable(reference: str, output_format: OutputFormat) -> None:
@@ -191,19 +214,6 @@ def _report_unmeasurable(reference: str, output_format: OutputFormat) -> None:
         console.print(json.dumps({"error": message, "current": reference}), soft_wrap=True)
     else:
         console.print(f"[red]{message}[/red]")
-
-
-def _split_reference(reference: str) -> tuple[str, str]:
-    """Split `node:22` into ("node", "22"), tolerating a digest suffix.
-
-    The repository half is what discovery searches for; the tag half is
-    only shown, so a reference with no tag still works.
-    """
-    head = reference.split("@", 1)[0]
-    if ":" in head:
-        repository, tag = head.rsplit(":", 1)
-        return repository, tag
-    return head, ""
 
 
 def _render(

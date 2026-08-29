@@ -20,6 +20,7 @@ import re
 
 import pytest
 
+from dockerls.cli.app import COMMANDS as APP_COMMANDS
 from dockerls.infrastructure.config.settings import Settings
 
 PACKAGE = pathlib.Path(__file__).resolve().parents[2] / "dockerls"
@@ -94,6 +95,8 @@ def _public_definitions() -> dict[str, list[str]]:
 # Reached by a framework rather than by a call in our own source.
 FRAMEWORK_INVOKED = {
     "main",  # console_scripts entry point
+    "get_command",  # click.Group override, called by click/typer
+    "list_commands",  # click.Group override, called by click/typer
     "model_post_init",  # pydantic hook
     "settings_customise_sources",  # pydantic-settings hook
     "cache_clear",  # typer subcommand
@@ -118,12 +121,18 @@ FRAMEWORK_INVOKED = {
 # import inside the package.
 ENTRY_POINT_MODULES = {"cli.app"}
 
+# Os subcomandos da CLI são importados sob demanda por `cli/app.py`, que os
+# nomeia numa tabela (`COMMANDS`) em vez de num `import`. Continuam
+# alcançáveis -- só que por `importlib`, que uma varredura estática não vê.
+LAZY_COMMAND_MODULES = {f"cli.commands.{spec.module}" for spec in APP_COMMANDS}
+
 # Implemented against an interface and dispatched dynamically via getattr,
 # so a static scan cannot see the call site.
 DYNAMICALLY_DISPATCHED = {
     "tag_exists",  # getattr(repo, "tag_exists", None) in the use case
     "refresh_db",  # getattr(scanner, "refresh_db", None)
     "close",  # getattr(scanner, "close", None)
+    "verify_blob",  # getattr(cosign, "verify_blob", None) no instalador
 }
 
 
@@ -152,7 +161,7 @@ class TestNoUnreachablePublicCode:
             if path.name == "__init__.py":
                 continue
             module = path.relative_to(PACKAGE).with_suffix("").as_posix().replace("/", ".")
-            if module in ENTRY_POINT_MODULES:
+            if module in ENTRY_POINT_MODULES or module in LAZY_COMMAND_MODULES:
                 continue
             importers = len(re.findall(rf"\bdockerls\.{re.escape(module)}\b", ALL_SOURCE))
             # Its own module docstring/imports do not count as an importer.

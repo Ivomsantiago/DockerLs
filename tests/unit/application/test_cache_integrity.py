@@ -352,3 +352,37 @@ class TestCacheIsKeyedByDigestNotTag:
         b = DockerImage(name="node", tag="20-alpine")
 
         assert uc._cache_key(a) != uc._cache_key(b)
+
+
+class TestFingerprintCoversTheToolItself:
+    """A cached `ImageAnalysis` carries the score, the tier and the readiness
+    verdict -- all decided by policy that lives in this package. Keying only
+    on the scanner meant a release that changed a penalty weight or a
+    blocking rule kept serving verdicts decided under the previous rules
+    until the TTL expired. `CACHE_SCHEMA_VERSION` does not catch it: the
+    payload's shape is unchanged, so validation accepts it and only the
+    meaning has moved.
+    """
+
+    def _use_case(self):
+        return RecommendImagesUseCase(
+            repository=_Repo(), scanner=_CountingScanner(), eol_checker=_EOL()
+        )
+
+    def test_the_dockerls_version_is_part_of_the_key(self, monkeypatch):
+        from dockerls.application.use_cases import recommend_images as module
+
+        use_case = self._use_case()
+        before = use_case._compute_analysis_fingerprint()
+        monkeypatch.setattr(module, "__version__", "999.999.999")
+        after = use_case._compute_analysis_fingerprint()
+        assert before != after, (
+            "an upgrade that changes scoring policy must not reuse the previous "
+            "release's cached verdicts"
+        )
+
+    def test_the_scanner_identity_is_still_part_of_the_key(self):
+        use_case = self._use_case()
+        before = use_case._compute_analysis_fingerprint()
+        use_case._scanner_identity = "grype 0.90.0"
+        assert use_case._compute_analysis_fingerprint() != before

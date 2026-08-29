@@ -30,7 +30,7 @@ def export(
         None, "--workers", "-w", help="Concurrent workers [config: workers, default 10]"
     ),
     limit: int | None = typer.Option(
-        None, "--limit", "-l", help="Max tags to scan [config: max_tags, default 100]"
+        None, "--limit", "-l", help="Max tags to discover [config: max_tags, default 100]"
     ),
 ) -> None:
     """Export analysis results in various formats."""

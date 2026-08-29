@@ -10,6 +10,7 @@ from loguru import logger
 
 from dockerls.domain.entities.image import DockerImage
 from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
+from dockerls.infrastructure.network.guarded_client import guarded_async_client
 from dockerls.integrations.dockerhub.urls import build_tag_api_url
 from dockerls.utils.retry import (
     DEFAULT_BACKOFF_BASE,
@@ -20,6 +21,7 @@ from dockerls.utils.validation import sanitize_image_name
 
 if TYPE_CHECKING:
     from dockerls.domain.interfaces.cache_store import CacheStoreInterface
+    from dockerls.infrastructure.network.host_guard import HostGuard
 
 # Anonymous Docker Hub requests are rate limited, and a `recommend` run
 # checks one tag per candidate. Existence of a tag changes rarely, so a
@@ -42,7 +44,13 @@ class DockerHubClient(ImageRepositoryInterface):
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         backoff_base: float = DEFAULT_BACKOFF_BASE,
         tag_ttl_seconds: int = TAG_EXISTS_TTL_SECONDS,
+        guard: HostGuard | None = None,
     ):
+        # hub.docker.com is a fixed host, but it answers with redirects and
+        # this client follows them. A redirect target is chosen by the far
+        # end, so it is policed per hop rather than trusted because the
+        # first hop was fine.
+        self._guard = guard
         self._username = username
         self._token = token
         self._timeout = timeout
@@ -71,7 +79,8 @@ class DockerHubClient(ImageRepositoryInterface):
         if self._client is None:
             async with self._client_lock:
                 if self._client is None:
-                    self._client = httpx.AsyncClient(
+                    self._client = guarded_async_client(
+                        self._guard,
                         timeout=self._timeout,
                         headers={"Accept": "application/json"},
                         follow_redirects=True,

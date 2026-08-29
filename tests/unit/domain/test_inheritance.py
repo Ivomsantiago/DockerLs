@@ -89,7 +89,7 @@ class TestShare:
         report = attribute([], [], base_reference="b:1")
 
         assert report.inherited_share == 0.0
-        assert "nenhuma vulnerabilidade" in report.explain()
+        assert "no vulnerabilities" in report.explain()
 
 
 class TestUnavailable:
@@ -99,7 +99,7 @@ class TestUnavailable:
 
         assert not report.available
         assert not report.findings
-        assert "seria inventar" in report.explain()
+        assert "would be inventing" in report.explain()
 
     def test_indisponivel_entra_no_documento_com_o_motivo(self) -> None:
         payload = unavailable("node:22", "trivy não encontrado").to_dict()
@@ -118,14 +118,14 @@ class TestReport:
         )
 
         frase = report.explain()
-        assert "1 de 2 vem da base node:22-alpine" in frase
-        assert "1 vem das camadas" in frase
+        assert "1 of 2 comes from the base node:22-alpine" in frase
+        assert "1 comes from the layers" in frase
 
     def test_documento_traz_a_acao_de_cada_grupo(self) -> None:
         payload = attribute([_v("CVE-1", "a")], [], base_reference="b:1").to_dict()
 
         acoes = payload["actions"]
-        assert "poder direto" in acoes["INTRODUCED"]  # type: ignore[index]
+        assert "direct power over" in acoes["INTRODUCED"]  # type: ignore[index]
         assert "dockerls base" in acoes["INHERITED"]  # type: ignore[index]
 
 
@@ -156,7 +156,7 @@ class TestPlan:
         report = attribute(list(base), base, base_reference="debian:12")
 
         acao = report.plan()[0].action()
-        assert "atualizar a base não resolve nada aqui" in acao
+        assert "updating the base resolves nothing here" in acao
         assert "--alternatives" in acao
 
     def test_herdada_com_correcao_nao_promete_que_atualizar_resolve(self) -> None:
@@ -166,20 +166,20 @@ class TestPlan:
         report = attribute(list(base), base, base_reference="debian:12")
 
         acao = report.plan()[0].action()
-        assert "pode resolver" in acao
-        assert "não significa que quem publica a base já reconstruiu" in acao
+        assert "may resolve it" in acao
+        assert "does not mean whoever publishes the base has rebuilt" in acao
 
     def test_introduzida_com_correcao_manda_subir_a_dependencia(self) -> None:
         report = attribute([_fixable("CVE-3", "requests")], [], base_reference="b:1")
 
-        assert "suba a versão da dependência" in report.plan()[0].action()
+        assert "raise the dependency version" in report.plan()[0].action()
 
     def test_introduzida_sem_correcao_e_onde_uma_isencao_cabe(self) -> None:
         report = attribute([_v("CVE-4", "libfoo")], [], base_reference="b:1")
 
         acao = report.plan()[0].action()
         assert ".dockerls-ignore.yaml" in acao
-        assert "com prazo" in acao
+        assert "with an expiry date" in acao
 
     def test_removidas_ficam_fora_do_plano(self) -> None:
         """Um plano que lista o que já não existe faz a lista parecer maior do
@@ -231,7 +231,7 @@ class TestFixability:
         base = [_fixable("CVE-1", "openssl"), _v("CVE-2", "perl-base")]
         report = attribute(list(base), base, base_reference="debian:12")
 
-        assert "1 das herdadas tem correção publicada upstream" in report.explain()
+        assert "1 of the inherited has a fix published upstream" in report.explain()
 
     def test_o_plano_entra_no_documento(self) -> None:
         payload = attribute([_fixable("CVE-1", "a")], [], base_reference="b:1").to_dict()
@@ -249,22 +249,22 @@ class TestAgreement:
         base = [_v("CVE-1", "a")]
         frase = attribute(list(base), base, base_reference="b:1").explain()
 
-        assert "1 de 1 vem da base" in frase
+        assert "1 of 1 comes from the base" in frase
 
     def test_plural(self) -> None:
         base = [_v("CVE-1", "a"), _v("CVE-2", "b")]
         frase = attribute(list(base), base, base_reference="b:1").explain()
 
-        assert "2 de 2 vêm da base" in frase
+        assert "2 of 2 come from the base" in frase
 
     def test_removida_no_singular(self) -> None:
         base = [_v("CVE-1", "a"), _v("CVE-9", "z")]
         frase = attribute([base[0]], base, base_reference="b:1").explain()
 
-        assert "1 que a base tinha foi removida no build" in frase
+        assert "1 the base had was removed by the build" in frase
 
     def test_imagem_limpa_com_remocao_nao_esconde_a_boa_noticia(self) -> None:
         """É o melhor resultado possível, e "nada a atribuir" o escondia."""
         frase = attribute([], [_v("CVE-9", "z")], base_reference="b:1").explain()
 
-        assert "não sobreviveu ao build" in frase
+        assert "did not survive the build" in frase

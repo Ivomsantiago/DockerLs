@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -84,6 +85,39 @@ API_RATE = 10
 API_PERIOD = 60.0
 
 
+class IndexState(StrEnum):
+    """How much of the catalogue the current index actually describes.
+
+    Without this, `variants()` returning `{}` meant three different things
+    with one shape: the catalogue has no such image, the catalogue could not
+    be reached, and the catalogue answered with a tree GitHub had truncated.
+    Only the first is a fact about the image. The other two are absences of
+    an answer, and a caller that cannot tell them apart reports "DHI has no
+    hardened build of this" when what happened was that nobody asked.
+
+    Nothing here changes what the client returns -- discovery still degrades
+    to no candidates rather than failing the run. What it changes is that
+    the *reason* survives the degradation instead of being flattened into
+    an empty dict.
+    """
+
+    #: Not loaded yet. No query has been answered from it.
+    NOT_LOADED = "NOT_LOADED"
+    #: Loaded, and it describes the whole catalogue.
+    COMPLETE = "COMPLETE"
+    #: GitHub truncated the tree. The index is real and it is short: images
+    #: it does not name may still exist in the catalogue.
+    TRUNCATED = "TRUNCATED"
+    #: The catalogue could not be read at all. Every answer from it is an
+    #: absence, and none of them is a statement about any image.
+    UNAVAILABLE = "UNAVAILABLE"
+
+    @property
+    def is_conclusive(self) -> bool:
+        """Whether "no variants" from this index means "the catalogue has none"."""
+        return self is IndexState.COMPLETE
+
+
 class DHICatalogClient:
     """Fetches and caches the DHI catalogue index and its definition files."""
 
@@ -104,6 +138,7 @@ class DHICatalogClient:
         self._client_lock = asyncio.Lock()
         self._index: dict[str, dict[str, list[str]]] | None = None
         self._index_lock = asyncio.Lock()
+        self._index_state = IndexState.NOT_LOADED
         self._revision: str = ""
         self._limiter = RateLimiter(rate=API_RATE, period=API_PERIOD, burst=API_RATE)
         self._breaker = CircuitBreaker()
@@ -119,6 +154,16 @@ class DHICatalogClient:
         the reader can tell *which* version of the catalogue said it.
         """
         return self._revision
+
+    @property
+    def index_state(self) -> IndexState:
+        """Whether an empty answer from this client is a fact or an absence.
+
+        `variants()` returns `{}` for "the catalogue has no such image" and
+        for "the catalogue could not be read", and the caller has to be able
+        to tell those apart before it says anything about the image.
+        """
+        return self._index_state
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -218,9 +263,17 @@ class DHICatalogClient:
         if fetched is None:
             # An unreachable catalogue contributes nothing. Memoised as an
             # empty index so a run with ten queries makes one failed attempt
-            # rather than ten.
+            # rather than ten -- but memoised *as unavailable*, so the empty
+            # dict is never read back as "the catalogue has no such image".
+            self._index_state = IndexState.UNAVAILABLE
+            logger.warning(
+                "DHI catalogue could not be read: this run reports no hardened "
+                "candidates from it, which is an absence of an answer and not a "
+                "statement that none exist"
+            )
             return {}
-        index, revision = fetched
+        index, revision, truncated = fetched
+        self._index_state = IndexState.TRUNCATED if truncated else IndexState.COMPLETE
         self._revision = revision
         await self._store_index(index, revision)
         return index
@@ -247,6 +300,7 @@ class DHICatalogClient:
             logger.warning("Discarding DHI catalogue index from cache: unexpected paths")
             return None
         self._revision = revision
+        self._index_state = IndexState.COMPLETE
         logger.info(f"DHI catalogue index served from cache ({len(cleaned)} images, @{revision})")
         return cleaned
 
@@ -260,8 +314,14 @@ class DHICatalogClient:
         except Exception as e:
             logger.warning(f"Could not cache the DHI catalogue index: {e}")
 
-    async def _fetch_index(self) -> tuple[dict[str, dict[str, list[str]]], str] | None:
-        """One API call: the recursive tree, reduced to definition paths."""
+    async def _fetch_index(self) -> tuple[dict[str, dict[str, list[str]]], str, bool] | None:
+        """One API call: the recursive tree, reduced to definition paths.
+
+        Returns `(index, revision, truncated)`, or None when the catalogue
+        could not be read. `truncated` travels with the index because a
+        short index and a complete one are not the same answer, and the
+        difference used to end at a log line.
+        """
         url = (
             f"https://{API_HOST}/repos/{CATALOG_OWNER}/{CATALOG_REPO}"
             f"/git/trees/{CATALOG_BRANCH}?recursive=1"
@@ -276,10 +336,12 @@ class DHICatalogClient:
             return None
         if not isinstance(payload, dict):
             return None
-        if payload.get("truncated"):
-            # GitHub truncates very large trees. A truncated tree would
-            # silently hide images, so it is reported rather than used as
-            # if it were the whole catalogue.
+        truncated = payload.get("truncated") is True
+        if truncated:
+            # GitHub truncates very large trees. A truncated tree silently
+            # hides images, so the fact travels with the index (see
+            # `IndexState.TRUNCATED`) rather than only into a log line that
+            # nothing downstream reads.
             logger.warning("DHI catalogue tree came back truncated; discovery may be incomplete")
 
         index: dict[str, dict[str, list[str]]] = {}
@@ -299,7 +361,7 @@ class DHICatalogClient:
 
         revision = str(payload.get("sha") or "")[:40]
         logger.info(f"DHI catalogue index built: {len(index)} images (@{revision or 'unknown'})")
-        return index, revision
+        return index, revision, truncated
 
     async def _get_text(self, url: str, *, max_bytes: int, api: bool = False) -> str | None:
         """GET `url` under the rate limiter, breaker and a size bound.

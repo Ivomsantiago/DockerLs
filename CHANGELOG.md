@@ -5,6 +5,161 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [Não publicado]
+
+### Corrigido -- a política de rede só julgava o primeiro salto
+
+O `HostGuard` era consultado sobre o host da referência e sobre mais nada. Duas
+coisas escolhidas pela outra ponta acontecem depois desse teste, e as duas
+emitem requisição:
+
+- **Redirecionamentos.** `OCIRegistryClient` e `DockerHubClient` seguem
+  redirect (`follow_redirects=True`). Um registry respondendo `302 Location:
+  http://169.254.169.254/latest/meta-data/` fazia essa requisição sair de
+  dentro do runner com o veredito sobre o host *original* ainda valendo.
+- **`WWW-Authenticate`.** A dança de token do OCI tira de um cabeçalho a URL
+  contra a qual vai autenticar (`Bearer realm="..."`). Isso é a outra ponta
+  nomeando uma URL que este processo busca -- a mesma primitiva de um open
+  redirect, entrando por outra porta. Não havia validação nenhuma: `realm`
+  podia ser `file://` ou apontar para a rede interna.
+
+O guard agora viaja com o cliente e roda **por salto**, via event hook do
+`httpx`, e o `realm` precisa ser uma URL http(s) absoluta antes de ser pedido.
+Uma recusa é um `httpx.HTTPError`, então cai nos tratadores que já existem e
+vira "não deu para determinar" -- nunca um traceback e nunca uma lista vazia
+fingindo ser resposta.
+
+### Corrigido -- três grafias de um endereço proibido passavam
+
+O classificador de endereços deixava passar:
+
+- **`0.0.0.0/8` inteiro.** `is_unspecified` só é verdadeiro para o `0.0.0.0`
+  exato, e o Linux roteia o bloco todo para a própria máquina.
+- **Encapsulamentos IPv6 que carregam um IPv4**: 6to4 (`2002:7f00:1::`),
+  NAT64 (`64:ff9b::7f00:1`) e Teredo alcançam 127.0.0.1 num host com a
+  tradução configurada, e nenhum é reconhecido por `is_loopback`.
+- **CGNAT (`100.64.0.0/10`)**, onde a Alibaba Cloud serve credenciais de
+  instância em `100.100.100.200`, além de multicast e faixas reservadas.
+
+Registries internos em RFC1918 continuam funcionando exatamente como antes.
+
+### Corrigido -- um NaN vindo de um feed certificava a imagem como perfeita
+
+`float()` aceita `"nan"`, `"inf"` e `"-1"`, e o EPSS chega como JSON de
+terceiro. O NaN se propagava pela soma de penalidades, e o
+`max(0.0, min(100.0, score))` final responde **100.0** para uma entrada NaN --
+toda comparação com NaN é falsa, então o clamp devolvia o próprio limite. Uma
+imagem cheia de CRITICAL pontuava 100 porque um feed respondeu mal. Uma
+probabilidade negativa tinha a versão branda do mesmo efeito: subtraía da
+penalidade, comprando pontos de volta.
+
+Limitado em três lugares, porque o valor entra por três: o parser do feed
+descarta, a entidade valida (a mesma linha é reconstruída do SQLite, onde um
+valor ruim já pode estar gravado) e o score se recusa a reportar um resultado
+não-finito como qualquer coisa que não o fundo da escala.
+
+O catálogo KEV ganhou o piso de plausibilidade que o próprio comentário já
+prometia. Um 200 carregando três entradas -- página de erro de proxy,
+transferência truncada -- era aceito como o feed, e todo CVE fora daquelas três
+passava a ser reportado como "conferido, não consta como explorado".
+
+### Corrigido -- uma release que muda a política continuava servindo o veredito antigo
+
+A impressão digital do cache cobria as regras de ignore, a chave de threat
+intel e a identidade do scanner, mas não a versão deste pacote -- e um
+`ImageAnalysis` em cache carrega score, tier e veredito de produção, todos
+decididos por política que mora aqui. `CACHE_SCHEMA_VERSION` não pega isso: a
+*forma* do payload não muda, então a validação aceita e só o significado se
+moveu.
+
+### Corrigido -- uma assinatura que falha na verificação era relatada como "sem assinatura"
+
+`cosign verify --certificate-identity-regexp ...` anuncia uma assinatura feita
+pela parte errada como `Error: no matching signatures`, e `CosignClient.verify`
+testava `_looks_unsigned` primeiro -- esse texto casa com o helper errado, e uma
+imagem assinada por um atacante voltava como `UNSIGNED`. A única falha que
+restringir a identidade existe para pegar era relatada como o veredito mais
+brando: ninguém assinou. Novo `SignatureStatus.VERIFICATION_FAILED` (conclusivo,
+nunca confiável), a ordem dos testes é invertida, `dockerls verify` imprime em
+vermelho negrito com a razão e sai com `EXIT_POLICY` -- veredito, não falha de
+medição.
+
+### Corrigido -- um catálogo inalcançável respondia igual a um catálogo vazio
+
+`DhiCatalog._resolve_index` devolvia (e memoizava) `{}` tanto para "imagem
+ausente" quanto para "catálogo ilegível", então um único 403 desligava o DHI
+para o processo inteiro. Novo `IndexState` (NOT_LOADED/COMPLETE/TRUNCATED/
+UNAVAILABLE) com `is_conclusive`.
+
+### Corrigido -- uma linha em branco em .dockerls-ignore.yaml silenciava todo achado sem nome
+
+`IgnoreRule.cve` aceitava `""`, e como o filtro é
+`vuln.cve_id.upper() not in ignored_cves`, uma única entrada em branco
+descartava do score e do veredito de produção todo achado sem advisory ID
+publicado -- e o Trivy emite alguns assim. `VexStatement` também passa a
+recusar `not_affected` sem justificativa.
+
+### Corrigido -- o validador de Dockerfile
+
+- **DF001 (base pinada).** `":" not in image` decidia "sem tag", então
+  `FROM registry.local:5000/app` (porta de registry, sem tag -- resolve para
+  `:latest`) passava. Passa a reusar `split_repository_and_tag`.
+- **Falsos positivos por substring.** `sudo` casava dentro de `pseudo`, `apt`
+  dentro de `adapt`, `pip` dentro de `pipeline`.
+- **DF004 (segredo em ARG).** O catálogo já afirmava que a regra olhava `ARG`;
+  o código nunca olhou. Passa a inspecionar de verdade.
+- **Três regras novas**, cada uma com detecção, severidade, rationale,
+  remediação e teste: DF013 (`ADD` para o que deveria ser `COPY`), DF014
+  (`curl | sh` / `wget | sh` sem verificação), DF015 (bit setuid/setgid
+  deixado na imagem).
+
+### Corrigido -- ReDoS na regex de detecção de shell do validador de Dockerfile
+
+O CodeQL sinalizou (alta severidade) `_SHELL_AT_HEAD`: o ramo `env` usava dois
+`\S+` sem limite compartilhando um espaço de busca sem limite ao redor de um
+único `=` (`\S+=\S+`) -- a forma clássica de backtracking catastrófico, já que
+`\S` inclui o próprio `=` e os dois lados podem renegociar onde cai a divisão.
+Multiplicado pela repetição externa `(?:...)*`, uma linha `RUN` malformada
+podia travar a análise. Corrigido excluindo `=` da metade da chave
+(`[^\s=]+=\S+`): agora só existe um lugar onde a atribuição pode se dividir.
+
+### Corrigido -- um score não-finito invalidava o documento SARIF inteiro
+
+`json.dumps` aceita `NaN`/`Infinity` por padrão e escreve o token bruto --
+que não é JSON válido pela RFC 8259. Um `security_score` (ou score de
+hardening/attack-surface) não-finito em qualquer achado fazia o GitHub code
+scanning, que analisa com rigor, rejeitar o **upload inteiro**: todo achado
+descartado em silêncio, sem aviso nenhum na tela. Corrigido com um
+`_json_safe` recursivo (não-finito vira `null`) e `allow_nan=False` como
+verificação de guarda. Junto: `security-severity` podia sair como a string
+`"inf"` (GitHub lê esse campo como número; agora cai para a banda de
+severidade fora de `0 < s <= 10`, a mesma regra que o EPSS já aplica na
+entrada); `artifactLocation.uri` podia ser só `":"` quando nome e tag vinham
+vazios (agora cai para `scan.image_reference` ou `"unknown-image"`); e
+`$schema` apontava para uma URL que hoje devolve 404 (o repositório upstream
+renomeou a branch padrão). Validado contra o JSON Schema oficial do SARIF
+2.1.0 (OASIS, vendorizado em `tests/fixtures/`).
+
+### Corrigido -- dois defeitos achados por fuzzing dos parsers
+
+- **`EXPOSE <4301+ dígitos>` ou `USER app:<4301+ dígitos>` abortava a
+  validação inteira.** A partir do Python 3.11, `int()` recusa strings com
+  mais de 4300 dígitos e a recusa é um `ValueError` que o parser não
+  capturava -- uma única linha retirava o Dockerfile de **todas** as regras
+  de uma vez. Corrigido com limite explícito de porta/UID antes de
+  converter.
+- **`split_repository_and_tag` violava o próprio contrato documentado** em
+  referências como `a.io/b.io:5000/app`: fazia `rsplit(":", 1)` sobre a
+  cauda inteira em vez do último segmento, lendo `5000/app` como tag. Uma
+  tag não pode conter `/` nem `:`, então a base ficava marcada como
+  "pinada" quando na verdade não carrega tag nenhuma -- a mesma classe do
+  DF013 (porta de registry escondendo base sem tag), um nível mais fundo.
+
+Achado por Hypothesis, ~210 mil casos por propriedade (`DOCKERLS_HYPOTHESIS_EXAMPLES`
+ajusta o orçamento). A varredura confirmou negativo em duas frentes: nenhum
+dos 30+ padrões compilados do validador de Dockerfile reabre o ReDoS
+corrigido acima, e o invariante tag/digest (F13) não diverge sob fuzzing.
+
 ## [2.10.1] -- 2026-08-22
 
 ### Corrigido -- os alertas abertos no code scanning do próprio repositório

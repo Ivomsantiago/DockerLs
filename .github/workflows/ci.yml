@@ -41,6 +41,39 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: python -m mypy dockerls/
 
+  engine:
+    # A engine Go é opcional em produção -- sem o binário o pipeline
+    # Python roda inteiro --, mas o código dela não é opcional: um
+    # `go vet` quebrado ou um teste vermelho aqui é um caminho de
+    # execução que alguém vai instalar e usar.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: engine/go.mod
+          # Sem dependência externa alguma, então não há `go.sum`: o
+          # módulo é stdlib puro, o que também é a política aqui --
+          # uma engine de segurança não herda árvore de terceiros.
+          cache-dependency-path: engine/go.mod
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l engine)
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+        working-directory: engine
+      - run: go test -race ./...
+        working-directory: engine
+      - run: go build -trimpath -ldflags="-s -w" -o bin/dockerls-engine ./cmd/dockerls-engine
+        working-directory: engine
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dockerls-engine-linux-amd64
+          path: engine/bin/dockerls-engine
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -51,6 +84,17 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+      # A engine é compilada aqui também: os testes de integração pulam
+      # sem o binário, e um `skip` silencioso não é uma passagem.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: engine/go.mod
+          # Sem dependência externa alguma, então não há `go.sum`: o
+          # módulo é stdlib puro, o que também é a política aqui --
+          # uma engine de segurança não herda árvore de terceiros.
+          cache-dependency-path: engine/go.mod
+      - run: go build -o bin/dockerls-engine ./cmd/dockerls-engine
+        working-directory: engine
       - run: pip install -e ".[dev]"
       - run: pytest tests/ -v --cov=dockerls --cov-report=xml
       - uses: actions/upload-artifact@v7

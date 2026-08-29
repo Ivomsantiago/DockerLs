@@ -14,16 +14,21 @@ from dockerls.application.use_cases.analyze_image import AnalyzeImageUseCase
 from dockerls.application.use_cases.compare_images import CompareImagesUseCase
 from dockerls.application.use_cases.recommend_images import RecommendImagesUseCase
 from dockerls.application.use_cases.search_images import SearchImagesUseCase
+from dockerls.cli.runtime import (
+    _settings,
+    configure_logging,
+    current_log_file,
+    enable_console_logging,
+)
 from dockerls.domain.entities.image import DOCKER_HUB
 from dockerls.domain.value_objects.network_policy import NetworkPolicy
-from dockerls.infrastructure.config.settings import Settings
 from dockerls.infrastructure.evidence import EvidenceStore
-from dockerls.infrastructure.logging.setup import setup_logging
 from dockerls.infrastructure.network.host_guard import HostGuard
 from dockerls.integrations.dhi.catalog import DHICatalogClient
 from dockerls.integrations.dhi.repository import DHI, DHIRepository
 from dockerls.integrations.dockerhub.client import DockerHubClient
 from dockerls.integrations.endoflife.checker import EndOfLifeChecker
+from dockerls.integrations.exploitdb.client import ExploitDBClient
 from dockerls.integrations.registry.hardened import (
     CHAINGUARD,
     DISTROLESS,
@@ -38,54 +43,24 @@ from dockerls.utils.validation import validate_threshold, validate_workers
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from pathlib import Path
 
     from dockerls.application.services.progress import ScanObserver
     from dockerls.application.services.source_registry import SourceBuilder
     from dockerls.cache.sqlite_cache import SQLiteCache
     from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
 
-# Populated by _settings() on first use; exposed so commands can tell the
-# user exactly which file the run's diagnostics landed in.
-_LOG_FILE: Path | None = None
-
-
-@lru_cache(maxsize=1)
-def _settings() -> Settings:
-    global _LOG_FILE
-    s = Settings()
-    s.ensure_dirs()
-    _LOG_FILE = setup_logging(s.log_level, log_dir=s.log_dir)
-    return s
-
-
-def current_log_file() -> Path | None:
-    _settings()
-    return _LOG_FILE
-
-
-def configure_logging() -> None:
-    """Detach loguru's default stderr sink before any command runs.
-
-    Until a sink is configured, loguru logs everything from DEBUG up to
-    stderr. Commands that never touched Settings -- `build` was one --
-    inherited that default and leaked INFO lines into the terminal.
-    """
-    _settings()
-
-
-def enable_console_logging() -> None:
-    """Re-attach the stderr sink (``--verbose``) on top of the file sink.
-
-    The stderr sink runs at the configured `log_level` here (INFO by
-    default, DEBUG via DOCKERLS_LOG_LEVEL) rather than the WARNING floor
-    that applies without ``--verbose``.
-    """
-    s = _settings()
-    global _LOG_FILE
-    _LOG_FILE = setup_logging(
-        s.log_level, log_dir=s.log_dir, console=True, console_level=s.log_level
-    )
+# As Settings e o logging moram em `cli/runtime.py`, que não arrasta este
+# módulo junto: o callback de bootstrap precisa deles antes de todo
+# subcomando, e importar o contêiner inteiro para configurar um sink era o
+# que fazia `dockerls version` custar o mesmo que `dockerls advisor`.
+# Reexportados aqui porque todo chamador -- e todo teste -- já os importa
+# deste módulo.
+__all__ = [
+    "_settings",
+    "configure_logging",
+    "current_log_file",
+    "enable_console_logging",
+]
 
 
 def resolve_workers(requested: int | None = None) -> int:
@@ -147,12 +122,14 @@ async def build_repository(cache: SQLiteCache | None = None) -> DockerHubClient:
         max_attempts=s.retry_max_attempts,
         backoff_base=s.retry_backoff_base,
         tag_ttl_seconds=s.tag_cache_ttl_seconds,
+        guard=build_host_guard(),
     )
     if username and token:
         await client.authenticate()
     return client
 
 
+@lru_cache(maxsize=1)
 def build_cache() -> SQLiteCache:
     # Import tardio: `SQLiteCache` puxa o SQLAlchemy, que sozinho responde por
     # cerca de um segundo do arranque do processo. Comandos que nunca tocam o
@@ -165,12 +142,51 @@ def build_cache() -> SQLiteCache:
     return SQLiteCache(s.db_path)
 
 
+def close_cache() -> None:
+    """Dispose the shared SQLite engine, if a command ever built one.
+
+    Called once, after the command finishes (see `cli/app.py`). Every
+    caller of `build_cache()` -- `recommend`, `cache`, `registry-audit`,
+    `_threat_intel`, `_exploitdb` -- gets the same memoized instance, so
+    there is exactly one engine to close per process, and a command that
+    never touched the cache (`version`, `--help`) never built one: this is
+    then a no-op that costs nothing.
+    """
+    if build_cache.cache_info().currsize:
+        build_cache().close()
+        build_cache.cache_clear()
+
+
 @lru_cache(maxsize=1)
 def _threat_intel() -> ThreatIntelClient | None:
+    """KEV catalogue and EPSS scores, cached to disk like Exploit-DB below.
+
+    Both feeds move roughly once a day, so without a disk cache every single
+    invocation re-downloaded the whole KEV catalogue and re-queried FIRST.org
+    for every CRITICAL/HIGH CVE from scratch -- including two `recommend`
+    runs back to back against the same image a minute apart.
+    """
     s = _settings()
     if not s.enable_threat_intel:
         return None
-    return ThreatIntelClient(timeout=s.http_timeout)
+    return ThreatIntelClient(timeout=s.http_timeout, cache=build_cache())
+
+
+@lru_cache(maxsize=1)
+def _exploitdb() -> ExploitDBClient | None:
+    """O catálogo do Exploit-DB, atrás da mesma chave que KEV/EPSS.
+
+    Segue `enable_threat_intel` porque responde à mesma pergunta -- quão
+    explorável é isto -- e quem desliga o enriquecimento não quer que este
+    fique de fora. Recebe o cache em disco pelo mesmo motivo do
+    `ThreatIntelClient`: o CSV tem cerca de 10 MB, e rebaixá-lo a cada
+    invocação seria pagar o download inteiro para reler o mesmo dia de
+    catálogo.
+    """
+    s = _settings()
+    if not s.enable_threat_intel:
+        return None
+    return ExploitDBClient(timeout=s.http_timeout, cache=build_cache(), guard=build_host_guard())
 
 
 def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
@@ -195,7 +211,9 @@ def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
         SourceSpec(
             name="chainguard",
             label=CHAINGUARD,
-            build=_source_builder(lambda: ChainguardRepository(timeout=s.http_timeout)),
+            build=_source_builder(
+                lambda: ChainguardRepository(timeout=s.http_timeout, guard=build_host_guard())
+            ),
             default_enabled=s.include_hardened_sources,
             description="Chainguard free tier (cgr.dev)",
         )
@@ -204,7 +222,9 @@ def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
         SourceSpec(
             name="distroless",
             label=DISTROLESS,
-            build=_source_builder(lambda: DistrolessRepository(timeout=s.http_timeout)),
+            build=_source_builder(
+                lambda: DistrolessRepository(timeout=s.http_timeout, guard=build_host_guard())
+            ),
             default_enabled=s.include_hardened_sources,
             description="Google Distroless (gcr.io/distroless)",
         )
@@ -300,6 +320,7 @@ async def build_recommend_use_case(
     use_cache: bool = True,
     sources: Sequence[str] | None = None,
     all_sources: bool = False,
+    scan_budget: int | None = None,
 ) -> RecommendImagesUseCase:
     s = _settings()
     # None means "not given on the command line", so the configured value
@@ -341,7 +362,13 @@ async def build_recommend_use_case(
     secondary = None
     if s.cross_validate if cross_validate is None else cross_validate:
         secondary = await ScannerFactory.create_secondary(
-            scanner, timeout=s.scanner_timeout, evidence=evidence, guard=build_host_guard()
+            scanner,
+            timeout=s.scanner_timeout,
+            evidence=evidence,
+            guard=build_host_guard(),
+            # O mesmo teto do passo principal: a cross-validação roda depois
+            # dele e herda o orçamento, em vez de abrir um segundo maior.
+            workers=min(resolve_workers(s.cross_validate_workers or None), workers),
         )
 
     return RecommendImagesUseCase(
@@ -356,6 +383,7 @@ async def build_recommend_use_case(
         max_medium=max_medium,
         workers=workers,
         threat_intel=_threat_intel(),
+        exploitdb=_exploitdb(),
         observer=observer,
         cross_validator=CrossValidator(
             secondary,
@@ -368,6 +396,7 @@ async def build_recommend_use_case(
         verify_hub_tags=s.verify_hub_tags if verify_hub_tags is None else verify_hub_tags,
         log_file=current_log_file(),
         cache_ttl_seconds=s.cache_ttl_seconds,
+        scan_budget=s.scan_budget if scan_budget is None else scan_budget,
     )
 
 
@@ -415,12 +444,21 @@ async def build_analyze_use_case() -> AnalyzeImageUseCase:
         max_attempts=s.retry_max_attempts,
         backoff_base=s.retry_backoff_base,
     )
+    # Import tardio, como o resto do módulo: essas duas stores só custam algo
+    # quando algum comando de fato as usa.
+    from dockerls.application.services.scan_history_store import ScanHistoryStore
+    from dockerls.application.services.tag_history_store import TagHistoryStore
+
+    cache = build_cache()
     return AnalyzeImageUseCase(
         repository=repo,
         scanner=scanner,
         eol_checker=eol,
         threat_intel=_threat_intel(),
+        exploitdb=_exploitdb(),
         hardening=build_hardening_analyzer(),
+        tag_history=TagHistoryStore(cache),
+        scan_history=ScanHistoryStore(cache),
     )
 
 

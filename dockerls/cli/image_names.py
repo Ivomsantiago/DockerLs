@@ -21,6 +21,10 @@ copia para um Dockerfile.
 
 from __future__ import annotations
 
+from dockerls.domain.value_objects.image_reference import (
+    split_repository_and_tag,
+)
+
 #: Prefixos de catálogos que a coluna `Source` já nomeia.
 _REDUNDANT_PREFIXES = (
     "cgr.dev/chainguard/",
@@ -45,38 +49,6 @@ def display_reference(name: str, tag: str) -> str:
     return f"{short}:{tag}" if tag else short
 
 
-def _looks_like_registry(segment: str) -> bool:
-    """A leading path segment is a registry host, not a repository owner,
-    when it carries a port (`:`), a domain (`.`) or is `localhost`.
-
-    Docker's own reference grammar uses exactly this rule to tell
-    `registry.internal:5000/app` (host, no tag) from `node:18` (no host, a
-    tag): a bare repository component never contains a colon or a dot.
-    """
-    return ":" in segment or "." in segment or segment == "localhost"
-
-
-def split_repository_and_tag(reference: str) -> tuple[str, str]:
-    """Split an image reference into (repository, tag).
-
-    Unlike a plain `rsplit(":", 1)`, this never mistakes a `host:port`
-    registry prefix for a tag: only a colon in the *last* path segment
-    counts. A digest suffix (`@sha256:...`) is stripped first and never
-    treated as part of the tag.
-    """
-    ref = reference.split("@", 1)[0]
-    parts = ref.split("/")
-    prefix = ""
-    if len(parts) > 1 and _looks_like_registry(parts[0]):
-        prefix = parts[0] + "/"
-        parts = parts[1:]
-    tail = "/".join(parts)
-    if ":" in tail:
-        repo_tail, tag = tail.rsplit(":", 1)
-        return prefix + repo_tail, tag
-    return ref, ""
-
-
 def reject_tagged_reference(image: str, command: str) -> str | None:
     """An error message when `image` names a tag instead of a bare
     repository, or None when the argument is fine as given.
@@ -91,7 +63,17 @@ def reject_tagged_reference(image: str, command: str) -> str | None:
     if not tag:
         return None
     return (
-        f"Erro: '{command}' recebe o nome da imagem, não uma tag específica. "
-        f"Você quis dizer 'dockerls {command} {repository}'? "
-        f"Para analisar uma tag específica, use 'dockerls analyze {image}'."
+        f"Error: '{command}' takes the image name, not a specific tag. "
+        f"Did you mean 'dockerls {command} {repository}'? "
+        f"To analyze one specific tag, use 'dockerls analyze {image}'."
     )
+
+
+# Reexportado: a regra mora no domínio (a `application` também precisa dela),
+# e os chamadores da CLI seguem importando daqui.
+__all__ = [
+    "display_name",
+    "display_reference",
+    "reject_tagged_reference",
+    "split_repository_and_tag",
+]

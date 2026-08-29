@@ -169,6 +169,24 @@ class TestUnknownIsNotFalse:
         analysis = _finalized(_analysis(vulns=vulns))
         assert any("no known-exploited" in reason for reason in analysis.why)
 
+    def test_a_known_exploited_vulnerability_is_never_a_selling_point(self):
+        """Exploitation observed in the wild belongs in trade_offs, never
+        in why -- the regression this reproduces printed a log4j RCE under
+        active exploitation (CVE-2021-44228, CISA KEV) as a `+` reason to
+        pick the image."""
+        vulns = [
+            Vulnerability(
+                cve_id="CVE-2021-44228",
+                severity=Severity.CRITICAL,
+                package_name="log4j-core",
+                kev_status=Tristate.TRUE,
+                exploit_known=True,
+            ),
+        ]
+        analysis = _finalized(_analysis(vulns=vulns))
+        assert all("known-exploited" not in reason for reason in analysis.why)
+        assert any("known-exploited" in cost for cost in analysis.trade_offs)
+
 
 class TestProductionReadinessPolicy:
     @pytest.mark.parametrize(

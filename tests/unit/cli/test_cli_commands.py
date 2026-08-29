@@ -11,6 +11,7 @@ from dockerls.cli.app import app
 from dockerls.domain.entities.image import DockerImage
 from dockerls.domain.entities.scan_result import ScanResult
 from dockerls.domain.entities.vulnerability import Severity, Vulnerability
+from dockerls.exit_codes import EXIT_ERROR
 
 runner = CliRunner()
 
@@ -384,3 +385,121 @@ class TestMalformedImageReferencesAreUserErrors:
 
         assert result.exit_code == 1
         assert "Could not write" in result.stdout
+
+
+class TestSbomAttestation:
+    """Sem `--attest` o SBOM é um arquivo no seu disco: útil, e invisível
+    para quem baixa a imagem. É a atestação que o `registry-audit` procura
+    -- e que, até agora, ele nunca encontrava para imagens construídas por
+    esta própria ferramenta."""
+
+    _DIGEST = "reg.io/app@sha256:" + "a" * 64
+
+    def _trivy(self, monkeypatch, content='{"bomFormat":"CycloneDX"}'):
+        from unittest.mock import AsyncMock
+
+        scanner = AsyncMock()
+        scanner.is_available = AsyncMock(return_value=True)
+        scanner.generate_sbom = AsyncMock(return_value=content)
+        monkeypatch.setattr("dockerls.cli.commands.sbom.TrivyScanner", lambda *a, **k: scanner)
+        return scanner
+
+    def test_a_tag_is_refused_before_the_image_is_scanned(self, monkeypatch):
+        """Descobrir isso depois de escanear a imagem inteira desperdiça o
+        trabalho, e a correção é outra referência, não outra flag."""
+        scanner = self._trivy(monkeypatch)
+
+        result = CliRunner().invoke(app, ["sbom", "node:22", "--attest"])
+
+        assert result.exit_code == EXIT_ERROR
+        assert "needs a digest reference" in result.output
+        scanner.generate_sbom.assert_not_called()
+
+    def test_the_sbom_is_attested_by_digest(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from dockerls.integrations.signing.cosign import SignatureResult, SignatureStatus
+
+        self._trivy(monkeypatch)
+        client = AsyncMock()
+        client.attest = AsyncMock(
+            return_value=SignatureResult(reference=self._DIGEST, status=SignatureStatus.SIGNED)
+        )
+        monkeypatch.setattr(
+            "dockerls.integrations.signing.cosign.CosignClient", lambda *a, **k: client
+        )
+
+        result = CliRunner().invoke(app, ["sbom", self._DIGEST, "--attest"])
+
+        assert result.exit_code == 0
+        assert "attested" in result.output
+        assert client.attest.await_args.kwargs["predicate_type"] == "cyclonedx"
+
+    def test_the_predicate_file_does_not_survive_the_command(self, monkeypatch):
+        """O SBOM é o inventário completo da imagem. Deixá-lo em `/tmp`
+        vazaria por descuido o que o comando existe para publicar de forma
+        controlada."""
+        from pathlib import Path
+        from unittest.mock import AsyncMock
+
+        from dockerls.integrations.signing.cosign import SignatureResult, SignatureStatus
+
+        self._trivy(monkeypatch)
+        seen: dict[str, str] = {}
+
+        async def capture(reference, *, predicate, predicate_type, **kwargs):
+            seen["path"] = predicate
+            seen["content"] = Path(predicate).read_text(encoding="utf-8")
+            return SignatureResult(reference=reference, status=SignatureStatus.SIGNED)
+
+        client = AsyncMock()
+        client.attest = capture
+        monkeypatch.setattr(
+            "dockerls.integrations.signing.cosign.CosignClient", lambda *a, **k: client
+        )
+
+        CliRunner().invoke(app, ["sbom", self._DIGEST, "--attest"])
+
+        assert seen["content"] == '{"bomFormat":"CycloneDX"}'
+        assert not Path(seen["path"]).exists()
+
+    def test_spdx_is_attested_with_the_spdx_predicate_type(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from dockerls.integrations.signing.cosign import SignatureResult, SignatureStatus
+
+        self._trivy(monkeypatch)
+        client = AsyncMock()
+        client.attest = AsyncMock(
+            return_value=SignatureResult(reference=self._DIGEST, status=SignatureStatus.SIGNED)
+        )
+        monkeypatch.setattr(
+            "dockerls.integrations.signing.cosign.CosignClient", lambda *a, **k: client
+        )
+
+        CliRunner().invoke(app, ["sbom", self._DIGEST, "--attest", "--format", "spdx"])
+
+        assert client.attest.await_args.kwargs["predicate_type"] == "spdxjson"
+
+    def test_a_missing_cosign_says_the_sbom_was_generated_anyway(self, monkeypatch):
+        """Ausência de ferramenta, não falha da imagem: o SBOM existe e
+        continua válido; o que não aconteceu foi a publicação."""
+        from unittest.mock import AsyncMock
+
+        from dockerls.integrations.signing.cosign import SignatureResult, SignatureStatus
+
+        self._trivy(monkeypatch)
+        client = AsyncMock()
+        client.attest = AsyncMock(
+            return_value=SignatureResult(
+                reference=self._DIGEST, status=SignatureStatus.SIGNER_MISSING
+            )
+        )
+        monkeypatch.setattr(
+            "dockerls.integrations.signing.cosign.CosignClient", lambda *a, **k: client
+        )
+
+        result = CliRunner().invoke(app, ["sbom", self._DIGEST, "--attest"])
+
+        assert result.exit_code == EXIT_ERROR
+        assert "generated but not attested" in result.output

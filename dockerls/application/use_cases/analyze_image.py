@@ -11,6 +11,7 @@ from dockerls.application.use_cases.recommend_images import (
     _eol_status,
 )
 from dockerls.domain.entities.image import DockerImage
+from dockerls.domain.value_objects.image_reference import split_repository_and_tag
 from dockerls.domain.value_objects.remediation_score import RemediationScore
 from dockerls.domain.value_objects.security_score import SecurityScore
 from dockerls.domain.value_objects.security_tier import SecurityTier
@@ -20,9 +21,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from dockerls.application.services.hardening_analysis import HardeningAnalyzer
+    from dockerls.application.services.scan_history_store import ScanHistoryStore
+    from dockerls.application.services.tag_history_store import TagHistoryStore
     from dockerls.domain.interfaces.eol_checker import EOLCheckerInterface
     from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
     from dockerls.domain.interfaces.scanner import ScannerInterface
+    from dockerls.integrations.exploitdb.client import ExploitDBClient
     from dockerls.integrations.threat_intel.client import ThreatIntelClient
 
 
@@ -35,6 +39,9 @@ class AnalyzeImageUseCase:
         ignore_path: Path | None = None,
         threat_intel: ThreatIntelClient | None = None,
         hardening: HardeningAnalyzer | None = None,
+        exploitdb: ExploitDBClient | None = None,
+        tag_history: TagHistoryStore | None = None,
+        scan_history: ScanHistoryStore | None = None,
     ):
         self._repository = repository
         self._scanner = scanner
@@ -42,12 +49,21 @@ class AnalyzeImageUseCase:
         self._ignored_cves = active_ignored_cve_ids(load_ignore_rules(ignore_path))
         self._threat_intel = threat_intel
         self._hardening = hardening
+        self._exploitdb = exploitdb
+        self._tag_history = tag_history
+        self._scan_history = scan_history
 
     async def execute(self, image_reference: str) -> ImageAnalysis:
         name, tag = self._parse_reference(image_reference)
         image = await self._repository.get_image_metadata(name, tag)
         if not image:
             image = DockerImage(name=name, tag=tag)
+            if "@" in image_reference:
+                # Um digest é a identidade exata de um conjunto de bytes, e
+                # `name:tag` não o reproduz: reconstruir mandaria o scanner
+                # medir `node:latest` no lugar do digest que foi pedido --
+                # outra imagem, apresentada com o nome desta.
+                image.full_reference = image_reference
 
         scan = await self._scanner.scan(image.full_reference)
         if self._ignored_cves:
@@ -57,7 +73,7 @@ class AnalyzeImageUseCase:
             if len(filtered) != len(scan.vulnerabilities):
                 scan = scan.model_copy(update={"vulnerabilities": filtered})
         if self._threat_intel is not None:
-            scan = await _enrich_with_threat_intel(scan, self._threat_intel)
+            scan = await _enrich_with_threat_intel(scan, self._threat_intel, self._exploitdb)
 
         product = name.split("/")[-1]
         match = re.match(r"^\d+(?:\.\d+){0,3}", tag)
@@ -101,6 +117,34 @@ class AnalyzeImageUseCase:
             if digest and not image.digest:
                 image.digest = digest
             apply_facts(analysis, facts)
+
+        # A digest is the identity of a fixed set of bytes; `name@sha256:...`
+        # was asked for exactly that byte set and has no *tag* to track a
+        # move for. Only a mutable `name:tag` reference has history worth
+        # keeping -- the same distinction `base` already draws for
+        # Dockerfile-pinned bases (`tag_history.py`).
+        if self._tag_history is not None and image.digest_known and "@" not in image_reference:
+            history = await self._tag_history.observe(f"{name}:{tag}", image.digest)
+            if history.moves:
+                analysis.tag_drift_note = history.explain()
+
+        # Unlike tag history, this is worth keeping for a digest reference
+        # too: a scanner's database learning about a new CVE can change the
+        # count for the exact same, unmoving digest between two runs.
+        if self._scan_history is not None and scan.is_verified and image.digest_known:
+            before = await self._scan_history.get(image.full_reference)
+            after = await self._scan_history.observe(
+                image.full_reference,
+                digest=image.digest,
+                critical=scan.critical_count,
+                high=scan.high_count,
+                medium=scan.medium_count,
+                low=scan.low_count,
+                total=scan.total_count,
+            )
+            if len(after.observations) > 1 and after.latest != before.latest:
+                analysis.vuln_trend_note = after.explain()
+
         finalize_verdict(analysis, cross_validated=False)
         return analysis
 
@@ -114,7 +158,16 @@ class AnalyzeImageUseCase:
         await close_quietly(self._scanner, self._hardening, *sources_of(self._repository))
 
     def _parse_reference(self, reference: str) -> tuple[str, str]:
-        if ":" in reference:
-            parts = reference.rsplit(":", 1)
-            return parts[0], parts[1]
-        return reference, "latest"
+        """Repositório e tag, sem confundir a porta do registry com uma tag.
+
+        O `rsplit(":", 1)` que morava aqui lia `registry.internal:5000/app`
+        como ("registry.internal", "5000/app") e `node@sha256:...` como
+        ("node@sha256", "..."). O alvo do scan sobrevivia por acidente --
+        `full_reference` reconstrói a string original a partir dos dois
+        pedaços errados --, mas o produto e a versão não: a consulta de
+        EOL/LTS recebia o produto "registry.internal" na versão "5000", e
+        `registry_host` perdia a porta. É a mesma regra que `search`,
+        `recommend`, `export`, `advisor` e `alternatives` já usam.
+        """
+        repository, tag = split_repository_and_tag(reference)
+        return repository, tag or "latest"

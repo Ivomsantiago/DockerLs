@@ -46,58 +46,58 @@ console = Console()
 
 def base_image(
     output: str = typer.Option(
-        "Dockerfile", "--output", "-o", help="Onde escrever o Dockerfile gerado"
+        "Dockerfile", "--output", "-o", help="Where to write the generated Dockerfile"
     ),
     os_family: str | None = typer.Option(None, "--os", help="alpine, debian, ubuntu ou distroless"),
     runtime: str | None = typer.Option(None, "--runtime", help="none, java, node, python ou go"),
     with_packages: str | None = typer.Option(
-        None, "--with", help="Pacotes separados por vírgula, sem menu (para pipeline)"
+        None, "--with", help="Comma-separated packages, no menu (for pipelines)"
     ),
-    owner: str | None = typer.Option(None, "--owner", help="Time ou pessoa responsável"),
-    source_url: str | None = typer.Option(None, "--source", help="URL do repositório"),
-    title: str | None = typer.Option(None, "--title", help="Nome da imagem nos rótulos"),
+    owner: str | None = typer.Option(None, "--owner", help="Owning team or person"),
+    source_url: str | None = typer.Option(None, "--source", help="Repository URL"),
+    title: str | None = typer.Option(None, "--title", help="Image name in the labels"),
     keep_manager: bool = typer.Option(
         False,
         "--keep-manager",
         help=(
-            "Mantém o gerenciador de pacotes que a imagem oficial embute (npm, yarn). "
-            "Por padrão ele é removido: numa base de execução, as dependências que ele "
-            "carrega dentro de si são superfície pura e ficam fora do apk/apt"
+            "Keep the package manager the official image bundles (npm, yarn). It is "
+            "removed by default: in a runtime base, the dependencies it carries inside "
+            "itself are pure surface and sit outside apk/apt"
         ),
     ),
     no_pin: bool = typer.Option(
-        False, "--no-pin", help="Não resolver o digest da base (deixa a tag móvel)"
+        False, "--no-pin", help="Do not resolve the base digest (leaves the tag moving)"
     ),
-    force: bool = typer.Option(False, "--force", help="Sobrescreve o arquivo de saída"),
+    force: bool = typer.Option(False, "--force", help="Overwrite the output file"),
     build: bool = typer.Option(
         False,
         "--build",
-        help="Constrói e escaneia a imagem logo após gerar, com o portão em critical",
+        help="Build and scan the image right after generating it, gated at critical",
     ),
     tag: str | None = typer.Option(
-        None, "--tag", "-t", help="Tag da imagem quando --build é usado (padrão: <titulo>:latest)"
+        None, "--tag", "-t", help="Image tag when --build is used (default: <title>:latest)"
     ),
     compare: str | None = typer.Option(
         None,
         "--compare",
         help=(
-            "Compara esta receita com a mesma sobre outra família (alpine, debian, "
-            "ubuntu, distroless) e mostra a diferença de superfície. Não escreve nada"
+            "Compare this recipe with the same one on another family (alpine, debian, "
+            "ubuntu, distroless) and show the surface difference. Writes nothing"
         ),
     ),
     compare_with: str | None = typer.Option(
         None,
         "--compare-with",
-        help="Pacotes do lado comparado, separados por vírgula (padrão: os mesmos)",
+        help="Packages on the compared side, comma-separated (default: the same ones)",
     ),
 ) -> None:
-    """Gera o Dockerfile de uma imagem base a partir de um menu de escolhas."""
+    """Generate the Dockerfile for a base image from a menu of choices."""
     try:
         family = _resolve_family(os_family)
         chosen_runtime = _resolve_runtime(runtime, family)
         packages = _resolve_packages(with_packages, family)
     except UnsupportedCombinationError as e:
-        console.print(f"[red]Erro:[/red] {safe(str(e))}")
+        console.print(f"[red]Error:[/red] {safe(str(e))}")
         raise typer.Exit(EXIT_ERROR) from e
 
     strip = _resolve_strip(chosen_runtime, family, keep_manager=keep_manager)
@@ -122,23 +122,24 @@ def base_image(
             recipe = BaseRecipe(**{**recipe.__dict__, "digest": digest})
         else:
             console.print(
-                "[yellow]O registry não respondeu qual digest a tag aponta.[/yellow]\n"
-                "[dim]O Dockerfile sai sem digest e diz isso em voz alta -- uma imagem "
-                "base com tag móvel propaga a incerteza para todo projeto que a "
-                "consome.[/dim]"
+                "[yellow]The registry did not say which digest the tag points "
+                "at.[/yellow]\n"
+                "[dim]The Dockerfile goes out without a digest and says so out loud -- "
+                "a base image on a moving tag propagates that uncertainty to every "
+                "project consuming it.[/dim]"
             )
 
     try:
         content = render(recipe)
     except UnsupportedCombinationError as e:
-        console.print(f"[red]Erro:[/red] {safe(str(e))}")
+        console.print(f"[red]Error:[/red] {safe(str(e))}")
         raise typer.Exit(EXIT_ERROR) from e
 
     destination = Path(output)
     if destination.exists() and not force:
         console.print(
-            f"[red]Erro:[/red] {destination} já existe. Use --force para sobrescrever "
-            "ou --output para escrever em outro lugar."
+            f"[red]Error:[/red] {destination} already exists. Use --force to "
+            "overwrite, or --output to write elsewhere."
         )
         raise typer.Exit(EXIT_ERROR)
 
@@ -147,11 +148,11 @@ def base_image(
 
     if not build:
         console.print(
-            "\n[bold]Próximo passo[/bold]\n"
+            "\n[bold]Next step[/bold]\n"
             f"  [dim]dockerls build -t {safe(recipe.title)}:1.0 --fail-on critical "
             f"{safe(str(destination.parent))}[/dim]\n"
-            "  [dim]Construir e escanear é o que transforma esta receita numa "
-            "afirmação sobre segurança; até lá ela é só uma intenção.[/dim]"
+            "  [dim]Building and scanning is what turns this recipe into a claim "
+            "about security; until then it is only an intention.[/dim]"
         )
         raise typer.Exit(EXIT_OK)
 
@@ -168,14 +169,14 @@ def _compare_recipes(left: BaseRecipe, family_name: str, packages: str | None) -
     try:
         outra = _resolve_family(family_name)
     except UnsupportedCombinationError as e:
-        console.print(f"[red]Erro:[/red] {safe(str(e))}")
+        console.print(f"[red]Error:[/red] {safe(str(e))}")
         raise typer.Exit(EXIT_ERROR) from e
 
     if packages is not None:
         try:
             escolhidos = tuple(_resolve_packages(packages, outra))
         except UnsupportedCombinationError as e:
-            console.print(f"[red]Erro:[/red] {safe(str(e))}")
+            console.print(f"[red]Error:[/red] {safe(str(e))}")
             raise typer.Exit(EXIT_ERROR) from e
     elif outra.installs_packages:
         # Sem gerenciador de pacotes não há o que carregar: os pacotes viram
@@ -205,7 +206,7 @@ def _compare_recipes(left: BaseRecipe, family_name: str, packages: str | None) -
         right.validate()
         left.validate()
     except UnsupportedCombinationError as e:
-        console.print(f"[red]Erro:[/red] {safe(str(e))}")
+        console.print(f"[red]Error:[/red] {safe(str(e))}")
         raise typer.Exit(EXIT_ERROR) from e
 
     _render_diff(compare_recipes(left, right))
@@ -224,7 +225,7 @@ def _render_diff(diff: RecipeDiff) -> None:
     console.print(f"\n[bold]{safe(esquerda)}[/bold]  ->  [bold]{safe(direita)}[/bold]\n")
 
     if not diff.has_changes:
-        console.print("[dim]As duas receitas produzem a mesma superfície.[/dim]")
+        console.print("[dim]The two recipes produce the same surface.[/dim]")
         return
 
     for delta in diff.added:
@@ -274,7 +275,7 @@ def _build_now(
     )
 
     image_tag = (tag or f"{recipe.title}:latest").strip()
-    console.print(f"\n[bold]Construindo {safe(image_tag)}[/bold]  [dim]portão: critical[/dim]\n")
+    console.print(f"\n[bold]Building {safe(image_tag)}[/bold]  [dim]gate: critical[/dim]\n")
 
     identity = BuildIdentity(
         owner=(owner or "").strip(),
@@ -296,7 +297,7 @@ def _build_now(
     )
 
     if response.success:
-        console.print(f"[green]Imagem {safe(image_tag)} construída e escaneada.[/green]")
+        console.print(f"[green]Image {safe(image_tag)} built and scanned.[/green]")
         raise typer.Exit(EXIT_OK)
 
     console.print(f"[red]{safe(response.error or 'build falhou')}[/red]")
@@ -328,16 +329,16 @@ def _resolve_strip(
         if quiet:
             return False
         console.print(
-            f"\n[yellow]{base.bundled_manager_note} ficam na imagem.[/yellow]\n"
-            "[dim]As dependências que eles carregam dentro de si costumam ser a "
-            "origem de quase toda CVE desta base, e o upgrade do sistema não as "
-            "alcança.[/dim]"
+            f"\n[yellow]{base.bundled_manager_note} stay in the image.[/yellow]\n"
+            "[dim]The dependencies they carry inside themselves are usually where "
+            "almost every CVE in this base comes from, and a system upgrade does not "
+            "reach them.[/dim]"
         )
         return False
     if not quiet:
         console.print(
-            f"\n[dim]{base.bundled_manager_note} serão removidos da imagem final "
-            "(--keep-manager mantém).[/dim]"
+            f"\n[dim]{base.bundled_manager_note} will be removed from the final image "
+            "(--keep-manager keeps them).[/dim]"
         )
     return True
 
@@ -348,12 +349,12 @@ def _resolve_family(value: str | None) -> OsFamily:
             return OsFamily(value.strip().lower())
         except ValueError as e:
             escolhas = ", ".join(f.value for f in OsFamily)
-            raise UnsupportedCombinationError(f"--os inválido: {value!r}. Use: {escolhas}") from e
+            raise UnsupportedCombinationError(f"invalid --os: {value!r}. Use: {escolhas}") from e
 
-    console.print("\n[bold]Sistema operacional da base[/bold]")
+    console.print("\n[bold]Base operating system[/bold]")
     for index, family in enumerate(OsFamily, 1):
         nota = (
-            "sem shell nem gerenciador de pacotes -- a menor superfície, e nada pode ser instalado"
+            "no shell and no package manager -- the smallest surface, and nothing can be installed"
             if family is OsFamily.DISTROLESS
             else f"libc {family.libc}"
         )
@@ -373,12 +374,12 @@ def _resolve_runtime(value: str | None, family: OsFamily) -> Runtime:
             escolhido = Runtime(value.strip().lower())
         except ValueError as e:
             raise UnsupportedCombinationError(
-                f"--runtime inválido: {value!r}. Use: {', '.join(r.value for r in Runtime)}"
+                f"invalid --runtime: {value!r}. Use: {', '.join(r.value for r in Runtime)}"
             ) from e
         if escolhido not in disponiveis:
             raise UnsupportedCombinationError(
-                f"não há imagem base publicada para {escolhido} sobre {family}. "
-                f"Disponíveis nesta família: {', '.join(r.value for r in disponiveis)}"
+                f"no base image is published for {escolhido} on {family}. "
+                f"Available in this family: {', '.join(r.value for r in disponiveis)}"
             )
         return escolhido
 
@@ -396,12 +397,11 @@ def _resolve_packages(value: str | None, family: OsFamily) -> list[str]:
     if not family.installs_packages:
         if value:
             raise UnsupportedCombinationError(
-                "distroless não tem gerenciador de pacotes nem shell: não é possível "
-                "instalar nada nela"
+                "distroless has no package manager and no shell: nothing can be instalar nada nela"
             )
         console.print(
-            "\n[dim]distroless não instala pacotes -- é exatamente o ponto dela. "
-            "Nenhum menu a mostrar.[/dim]"
+            "\n[dim]distroless installs no packages -- that is precisely its point. "
+            "There is no menu to show.[/dim]"
         )
         return []
 
@@ -410,24 +410,25 @@ def _resolve_packages(value: str | None, family: OsFamily) -> list[str]:
         for pedido in pedidos:
             if pedido in REFUSED_PACKAGES:
                 raise UnsupportedCombinationError(
-                    f"{pedido} não é oferecido: {REFUSED_PACKAGES[pedido]}"
+                    f"{pedido} is not offered: {REFUSED_PACKAGES[pedido]}"
                 )
         return pedidos
 
-    console.print("\n[bold]Pacotes na imagem base[/bold]")
+    console.print("\n[bold]Packages in the base image[/bold]")
     console.print(
-        "[dim]Cada um existe em toda aplicação que consumir esta base, e toda CVE "
-        "dele vira triagem para quem nem sabe que ele está lá.[/dim]\n"
+        "[dim]Each one exists in every application that consumes this base, and every "
+        "CVE in it becomes triage for someone who does not even know it is "
+        "there.[/dim]\n"
     )
     disponiveis = [c for c in PACKAGE_CATALOG if c.package_for(family)]
     for index, choice in enumerate(disponiveis, 1):
-        marca = " [dim](já presente na maioria das bases)[/dim]" if choice.usually_present else ""
+        marca = " [dim](already present in most bases)[/dim]" if choice.usually_present else ""
         console.print(f"  {index}. [cyan]{choice.key}[/cyan]{marca}")
-        console.print(f"       [dim]serve para: {choice.purpose}[/dim]")
+        console.print(f"       [dim]used for: {choice.purpose}[/dim]")
         console.print(f"       [yellow]custa:[/yellow] [dim]{choice.cost}[/dim]")
 
     resposta = Prompt.ask(
-        "\nNúmeros separados por vírgula (vazio = nenhum pacote)", default="", show_default=False
+        "\nComma-separated numbers (empty = no packages)", default="", show_default=False
     ).strip()
     if not resposta:
         return []
@@ -436,14 +437,14 @@ def _resolve_packages(value: str | None, family: OsFamily) -> list[str]:
     for parte in resposta.split(","):
         parte = parte.strip()
         if not parte.isdigit() or not (1 <= int(parte) <= len(disponiveis)):
-            raise UnsupportedCombinationError(f"escolha inválida: {parte!r}")
+            raise UnsupportedCombinationError(f"invalid choice: {parte!r}")
         escolhidos.append(disponiveis[int(parte) - 1].key)
 
     console.print(f"\n[dim]Marcados: {', '.join(escolhidos)}[/dim]")
     # `s`/`n`, não `y`/`n`: a interface inteira está em português, e um prompt
     # que recusa "s" faz a pessoa duvidar do que ela acabou de marcar.
     if Prompt.ask("Confirma?", choices=["s", "n"], default="s", console=console) == "n":
-        console.print("[dim]Nada foi escrito.[/dim]")
+        console.print("[dim]Nothing was written.[/dim]")
         raise typer.Exit(EXIT_OK)
     return escolhidos
 
@@ -469,5 +470,5 @@ def _default_title(family: OsFamily, runtime: Runtime) -> str:
 
 def _default_description(family: OsFamily, runtime: Runtime) -> str:
     if runtime is Runtime.NONE:
-        return f"Imagem base {family.value}, sem runtime de linguagem"
-    return f"Imagem base {family.value} + {runtime.value}"
+        return f"Base image {family.value}, with no language runtime"
+    return f"Base image {family.value} + {runtime.value}"

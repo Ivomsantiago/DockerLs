@@ -85,6 +85,19 @@ class DHIRepository(ImageRepositoryInterface):
 
         variants = await self._catalog.variants(catalogue_name)
         if not variants:
+            # Empty has three causes and only one of them is about the
+            # image. Saying which one happened is the difference between
+            # "DHI publishes no hardened build of this" and "nobody asked",
+            # and the second must not be reported as the first.
+            state = self._catalog.index_state
+            if state.is_conclusive:
+                logger.info(f"{DHI}: the catalogue has no {catalogue_name}")
+            else:
+                logger.warning(
+                    f"{DHI}: no candidates for {catalogue_name}, and the catalogue index "
+                    f"is {state} -- this is an absence of an answer, not a finding that "
+                    "no hardened build exists"
+                )
             return []
 
         candidates: list[DockerImage] = []

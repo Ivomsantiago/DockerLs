@@ -85,12 +85,12 @@ class TestRefusals:
         """Um arquivo presente que não exige nada é indistinguível de um
         portão desligado."""
         path = _write(tmp_path, "require_scan: false\n")
-        with pytest.raises(PolicyFileError, match="nenhuma regra"):
+        with pytest.raises(PolicyFileError, match="no rule was declared"):
             load_policy(path)
 
     def test_documento_que_nao_e_mapa_e_erro(self, tmp_path: Path) -> None:
         path = _write(tmp_path, "- require_scan\n")
-        with pytest.raises(PolicyFileError, match="mapa de regras"):
+        with pytest.raises(PolicyFileError, match="must be a map of rules"):
             load_policy(path)
 
     def test_yaml_quebrado_e_erro(self, tmp_path: Path) -> None:
@@ -100,7 +100,7 @@ class TestRefusals:
 
     def test_flag_com_tipo_errado_e_erro(self, tmp_path: Path) -> None:
         path = _write(tmp_path, "require_scan: sim\n")
-        with pytest.raises(PolicyFileError, match="true ou false"):
+        with pytest.raises(PolicyFileError, match="must be true or false"):
             load_policy(path)
 
     def test_severidade_inexistente_em_fail_on_e_erro(self, tmp_path: Path) -> None:
@@ -110,29 +110,29 @@ class TestRefusals:
 
     def test_severidade_inexistente_em_teto_e_erro(self, tmp_path: Path) -> None:
         path = _write(tmp_path, "max_vulnerabilities:\n  urgente: 3\n")
-        with pytest.raises(PolicyFileError, match="severidade desconhecida"):
+        with pytest.raises(PolicyFileError, match="unknown severity"):
             load_policy(path)
 
     def test_teto_booleano_nao_vira_um(self, tmp_path: Path) -> None:
         """`bool` é subclasse de `int`: `high: true` passaria como teto de 1,
         que não é o que ninguém quis dizer."""
         path = _write(tmp_path, "max_vulnerabilities:\n  high: true\n")
-        with pytest.raises(PolicyFileError, match="inteiro"):
+        with pytest.raises(PolicyFileError, match="must be an integer"):
             load_policy(path)
 
     def test_teto_negativo_e_erro(self, tmp_path: Path) -> None:
         path = _write(tmp_path, "max_vulnerabilities:\n  high: -1\n")
-        with pytest.raises(PolicyFileError, match="inteiro"):
+        with pytest.raises(PolicyFileError, match="must be an integer"):
             load_policy(path)
 
     def test_lista_com_item_nao_texto_e_erro(self, tmp_path: Path) -> None:
         path = _write(tmp_path, "required_labels:\n  - 7\n")
-        with pytest.raises(PolicyFileError, match="lista de textos"):
+        with pytest.raises(PolicyFileError, match="must be a list of strings"):
             load_policy(path)
 
     def test_lista_so_com_espacos_e_erro(self, tmp_path: Path) -> None:
         path = _write(tmp_path, 'required_labels:\n  - "   "\n')
-        with pytest.raises(PolicyFileError, match="sem nenhum valor útil"):
+        with pytest.raises(PolicyFileError, match="no usable value"):
             load_policy(path)
 
     def test_documento_com_tag_python_e_recusado(self, tmp_path: Path) -> None:

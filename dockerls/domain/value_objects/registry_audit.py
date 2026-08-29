@@ -97,55 +97,56 @@ class AuditFinding:
 
 _EXPLANATIONS: dict[AuditCheck, dict[str, str]] = {
     AuditCheck.RESOLVABLE: {
-        "true": "o registry respondeu qual digest esta referência aponta",
+        "true": "the registry answered which digest this reference points at",
         "false": (
-            "o registry não resolveu esta referência: sem digest, nada mais aqui pode ser medido"
+            "the registry did not resolve this reference: without a digest, nothing "
+            "else here can be measured"
         ),
-        "unknown": "não foi possível perguntar ao registry",
+        "unknown": "the registry could not be asked",
     },
     AuditCheck.PINNED_REFERENCE: {
-        "true": "a referência já é um digest: aponta para bytes específicos",
+        "true": "the reference is already a digest: it points at specific bytes",
         "false": (
-            "a referência é uma tag: o que foi testado e o que roda podem ser bytes "
-            "diferentes sem nenhuma mudança sua"
+            "the reference is a tag: what was tested and what runs can be different "
+            "bytes with no change of yours"
         ),
-        "unknown": "não foi possível determinar a forma da referência",
+        "unknown": "the shape of the reference could not be determined",
     },
     AuditCheck.TAG_STABLE: {
-        "true": "esta tag não mudou de digest desde que passamos a observá-la",
+        "true": "this tag has not changed digest since we started watching it",
         "false": (
-            "esta tag já mudou de digest: é a evidência medida de que ela é mutável, "
-            "independente do que a configuração de imutabilidade do registry diga"
+            "this tag has already changed digest: measured evidence that it is "
+            "mutable, whatever the registry immutability setting says"
         ),
         "unknown": (
-            "não há histórico desta tag: o que aconteceu antes da primeira observação "
-            "é desconhecido, não ausente"
+            "there is no history for this tag: what happened before the first "
+            "observation is unknown, not absent"
         ),
     },
     AuditCheck.SIGNATURE_PRESENT: {
-        "true": "há assinatura cosign publicada para este digest",
+        "true": "a cosign signature is published for this digest",
         "false": (
-            "não há assinatura cosign publicada para este digest: ninguém atestou "
-            "publicamente quem produziu estes bytes"
+            "no cosign signature is published for this digest: nobody publicly "
+            "attested to producing these bytes"
         ),
-        "unknown": "não foi possível perguntar ao registry sobre a assinatura",
+        "unknown": "the registry could not be asked about the signature",
     },
     AuditCheck.ATTESTATION_PRESENT: {
-        "true": "há atestação cosign publicada para este digest",
+        "true": "a cosign attestation is published for this digest",
         "false": (
-            "não há atestação publicada para este digest: não existe registro no "
-            "registry de como esta imagem foi construída"
+            "no attestation is published for this digest: the registry holds no "
+            "record of how this image was built"
         ),
-        "unknown": "não foi possível perguntar ao registry sobre a atestação",
+        "unknown": "the registry could not be asked about the attestation",
     },
     AuditCheck.PUBLICLY_READABLE: {
         "true": (
-            "o registry respondeu sem nenhuma credencial: qualquer pessoa da internet "
-            "consegue baixar esta imagem e inspecionar o que há dentro dela. Se isso é "
-            "problema depende de para que ela existe, e essa parte só você sabe"
+            "the registry answered with no credential at all: anyone on the internet "
+            "can pull this image and inspect what is inside it. Whether that is a "
+            "problem depends on what it exists for, and only you know that part"
         ),
-        "false": "o registry exigiu credencial para responder",
-        "unknown": "não foi possível determinar se o acesso anônimo é permitido",
+        "false": "the registry required a credential to answer",
+        "unknown": "whether anonymous access is allowed could not be determined",
     },
 }
 
@@ -168,18 +169,18 @@ class RegistryAudit:
 
     def summary(self) -> str:
         if not self.findings:
-            return "nada pôde ser apurado sobre esta referência"
-        partes = [f"{len(self.alerts)} achado(s) que pedem atenção"]
+            return "nothing could be established about this reference"
+        partes = [f"{len(self.alerts)} finding(s) that want attention"]
         if self.unmeasured:
-            partes.append(f"{len(self.unmeasured)} não medido(s)")
+            partes.append(f"{len(self.unmeasured)} not measured")
         return ", ".join(partes)
 
     def caveat(self) -> str:
         return (
-            "esta auditoria usa só o protocolo OCI, sem credencial de nuvem: ela não "
-            "lê políticas de retenção, IAM nem configuração de imutabilidade do "
-            "provedor. O que ela mede, mede de verdade; o que não mede, diz que não "
-            "mediu"
+            "this audit uses the OCI protocol alone, with no cloud credential: it "
+            "does not read retention policies, IAM, or the provider immutability "
+            "settings. What it measures, it measures for real; what it does not, it "
+            "says it did not"
         )
 
     def to_dict(self) -> dict[str, object]:

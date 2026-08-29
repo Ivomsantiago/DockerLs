@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -31,6 +32,12 @@ from dockerls.domain.value_objects.build_policy import (
     PolicyViolation,
     evaluate,
 )
+from dockerls.domain.value_objects.gate import (
+    Finding,
+    GateOutcome,
+    GateSet,
+    GateVerdict,
+)
 from dockerls.domain.value_objects.image_reference import registry_host_of
 from dockerls.domain.value_objects.inheritance import (
     InheritanceReport,
@@ -53,6 +60,7 @@ if TYPE_CHECKING:
         DockerfileValidatorInterface,
         HardeningTemplateProvider,
     )
+    from dockerls.integrations.threat_intel.client import ThreatIntelClient
 
 
 @dataclass
@@ -199,9 +207,13 @@ class BuildImageUseCase:
         self,
         validator: DockerfileValidatorInterface,
         template_provider: HardeningTemplateProvider,
+        threat_intel: ThreatIntelClient | None = None,
     ):
         self.validator = validator
         self.template_provider = template_provider
+        # Opcional: sem ele os portões `kev` e `epss` não têm o que
+        # consultar, e dizem isso em vez de aprovar por omissão.
+        self.threat_intel = threat_intel
 
     def execute(self, request: BuildImageRequest) -> BuildImageResponse:
         """Executa o build seguro da imagem."""
@@ -232,8 +244,8 @@ class BuildImageUseCase:
                 if response.policy_violations and response.exit_code == EXIT_OK:
                     response.success = False
                     response.error = (
-                        f"{len(response.policy_violations)} regra(s) de política não "
-                        "cumprida(s) no que dá para conferir sem construir"
+                        f"{len(response.policy_violations)} policy rule(s) not met among what can "
+                        "be checked without building"
                     )
                     response.exit_code = EXIT_POLICY
                 return response
@@ -294,7 +306,7 @@ class BuildImageUseCase:
             # 6. Scan pós-build
             scan_result = None
             if request.scan:
-                scan_result = self._scan_image(request.tag)
+                scan_result = self._enrich(self._scan_image(request.tag))
 
             # 6b. Ciclo de Auto-Remediação Iterativo (Zero Vulnerabilidades)
             remediation_history: list[dict[str, Any]] = []
@@ -343,7 +355,7 @@ class BuildImageUseCase:
                     build_result = new_build
                     current_df_path = remediated_path
                     prev_scan = scan_result
-                    new_scan = self._scan_image(request.tag)
+                    new_scan = self._enrich(self._scan_image(request.tag))
                     if new_scan:
                         scan_result = new_scan
                         remediation_history.append(
@@ -360,7 +372,7 @@ class BuildImageUseCase:
                         )
                         if new_scan.total_vulnerabilities == 0:
                             logger.info(
-                                "✨ Success: Image achieved ZERO "
+                                "Success: image achieved ZERO "
                                 f"vulnerabilities in round {round_num}!"
                             )
                             break
@@ -438,9 +450,7 @@ class BuildImageUseCase:
                         analysis=validation_result.analysis,
                         policy_violations=violations,
                         inheritance=inheritance,
-                        error=(
-                            f"{len(violations)} regra(s) de .dockerls-policy.yaml não cumprida(s)"
-                        ),
+                        error=(f"{len(violations)} .dockerls-policy.yaml rule(s) not met"),
                         exit_code=EXIT_POLICY,
                     )
 
@@ -459,9 +469,9 @@ class BuildImageUseCase:
                         validation=validation,
                         analysis=validation_result.analysis,
                         error=(
-                            "publicação recusada: o Dockerfile ou o contexto mudaram "
-                            "durante o build, então a imagem não corresponde à entrada "
-                            "que foi medida. Reconstrua a partir de uma árvore estável."
+                            "publish refused: the Dockerfile or the context changed "
+                            "during the build, so the image does not correspond to the "
+                            "input that was measured. Rebuild from a stable tree."
                         ),
                         exit_code=EXIT_POLICY,
                     )
@@ -517,7 +527,7 @@ class BuildImageUseCase:
             )
 
         except Exception as e:
-            logger.exception(f"Erro no build: {e}")
+            logger.exception(f"Build error: {e}")
             return BuildImageResponse(
                 success=False,
                 error=str(e),
@@ -693,7 +703,7 @@ class BuildImageUseCase:
             base_image=template,
             output_path=output_path,
         )
-        logger.debug(f"Dockerfile hardened gerado: {output_path}")
+        logger.debug(f"Hardened Dockerfile generated: {output_path}")
         return str(output_path)
 
     def _derive_and_write_remediated_dockerfile(
@@ -905,7 +915,7 @@ class BuildImageUseCase:
                 logs=logs,
             )
         except Exception as e:
-            logger.exception(f"Erro no build: {e}")
+            logger.exception(f"Build error: {e}")
             return BuildResult(
                 success=False,
                 error_message=str(e),
@@ -924,12 +934,12 @@ class BuildImageUseCase:
         target = destination.strip() or tag
         if target != tag:
             retag_error = self._run_docker(
-                ["tag", tag, target], timeout=60, action=f"Retag para {target}"
+                ["tag", tag, target], timeout=60, action=f"Retag to {target}"
             )
             if retag_error is not None:
                 return retag_error
 
-        logger.debug(f"Publicando imagem: {target}")
+        logger.debug(f"Publishing image: {target}")
         return self._run_docker(["push", target], timeout=1800, action=f"Push de {target}")
 
     @staticmethod
@@ -969,12 +979,12 @@ class BuildImageUseCase:
 
             return {}
         except Exception as e:
-            logger.warning(f"Não foi possível obter info da imagem: {e}")
+            logger.warning(f"Could not read the image info: {e}")
             return {}
 
     def _scan_image(self, image_tag: str) -> ScanResult | None:
         """Executa scan de segurança na imagem."""
-        logger.info(f"Iniciando scan da imagem: {image_tag}")
+        logger.info(f"Starting the image scan: {image_tag}")
         start_time = datetime.now()
 
         try:
@@ -1002,9 +1012,9 @@ class BuildImageUseCase:
             logger.warning(f"Trivy falhou (exit {result.returncode}), tentando Grype...")
 
         except ExecutableNotFoundError:
-            logger.warning("Trivy não encontrado, tentando Grype...")
+            logger.warning("Trivy not found, trying Grype...")
         except Exception as e:
-            logger.warning(f"Erro no scan com Trivy: {e}")
+            logger.warning(f"Trivy scan error: {e}")
 
         # Fallback: tentar Grype
         try:
@@ -1027,9 +1037,9 @@ class BuildImageUseCase:
                 return scan
 
         except Exception as e:
-            logger.warning(f"Grype também falhou: {e}")
+            logger.warning(f"Grype failed as well: {e}")
 
-        logger.warning("Nenhuma ferramenta de scan disponível")
+        logger.warning("No scanner available")
         return None
 
     @staticmethod
@@ -1145,85 +1155,149 @@ class BuildImageUseCase:
     #: Cada um reprova também tudo que for pior que ele.
     FAIL_ON_THRESHOLDS = ("critical", "high", "medium", "low")
 
+    def _enrich(self, scan_result: ScanResult | None) -> ScanResult | None:
+        """Anota os achados com CISA KEV e EPSS, quando há quem consultar.
+
+        O `build` escaneia direto com Trivy/Grype, fora do pipeline de
+        `recommend` que faz esse enriquecimento -- então os portões `kev` e
+        `epss` não tinham dado nenhum para olhar. Sem isto eles não
+        reprovariam nunca, o que é a pior falha possível num portão de
+        segurança: a que não aparece.
+
+        Como no `recommend`, só CRITICAL e HIGH são consultados. O que fica
+        de fora permanece UNKNOWN por construção -- e isso é correto: não
+        foi consultado.
+
+        O que **não** acontece aqui: marcar um achado como não explorado
+        porque o catálogo não respondeu. Um feed fora do ar deixa tudo em
+        UNKNOWN, e é o portão que decide o que fazer com isso.
+        """
+        if scan_result is None or self.threat_intel is None:
+            return scan_result
+        notable = [
+            v
+            for v in scan_result.vulnerabilities
+            if str(v.get("severity") or "").upper() in ("CRITICAL", "HIGH") and v.get("cve_id")
+        ]
+        if not notable:
+            return scan_result
+
+        ids = [str(v["cve_id"]) for v in notable]
+        try:
+            kev_ids, epss = asyncio.run(_lookup_threat_intel(self.threat_intel, ids))
+        except (OSError, RuntimeError) as e:
+            # Consulta que não aconteceu deixa tudo UNKNOWN, e o portão diz
+            # que não pôde avaliar. Derrubar o build aqui trocaria uma
+            # medição ausente por um erro técnico.
+            logger.warning(f"Threat intelligence lookup failed: {e}")
+            return scan_result
+
+        kev_answered = self.threat_intel.kev_available
+        for v in notable:
+            cve = str(v["cve_id"])
+            if kev_answered is True:
+                v["kev"] = str(Tristate.TRUE if cve in kev_ids else Tristate.FALSE)
+            if cve in epss:
+                v["epss"] = epss[cve]
+        return scan_result
+
+    def _findings(self, scan_result: ScanResult) -> list[Finding]:
+        """Os achados retidos, na forma que o portão entende.
+
+        A amostra, e não o scan inteiro: o relatório retém um número
+        limitado de achados, e é dela que saem os nomes citados na
+        mensagem. A **contagem** que reprova vem separada, do scan
+        completo -- ver `Gate.evaluate`.
+        """
+        return [
+            Finding(
+                cve_id=str(v.get("cve_id") or ""),
+                severity=str(v.get("severity") or ""),
+                kev=_tristate(v.get("kev")),
+                epss=_as_probability(v.get("epss")),
+                package=str(v.get("package") or ""),
+                fixed_version=str(v.get("fixed_version") or ""),
+            )
+            for v in scan_result.vulnerabilities
+        ]
+
+    @staticmethod
+    def _severity_counts(scan_result: ScanResult) -> dict[str, int]:
+        return {
+            "critical": scan_result.critical,
+            "high": scan_result.high,
+            "medium": scan_result.medium,
+            "low": scan_result.low,
+        }
+
+    def _gate_verdicts(self, scan_result: ScanResult, threshold: str) -> tuple[GateVerdict, ...]:
+        """Os portões que **não** passaram. Vazio significa aprovado.
+
+        Um limiar desconhecido é recusado aqui, e não ignorado: um valor que
+        caísse num `return False` seria um portão que nunca reprova, em
+        silêncio -- e esse bug já existiu neste arquivo com
+        `--fail-on medium`.
+        """
+        gates = GateSet.parse(threshold)
+        return gates.evaluate(self._findings(scan_result), self._severity_counts(scan_result))
+
+    def _should_fail(self, scan_result: ScanResult, threshold: str) -> bool:
+        """Se o build não deve prosseguir. Predicado sobre `_gate_verdicts`.
+
+        Um `UNMEASURED` conta como falha: quem pediu `--fail-on kev` pediu
+        que a exploração fosse conferida, e não conseguir conferir deixa a
+        pergunta sem resposta. Aprovar aí gastaria a ausência de medição
+        como tranquilidade -- e, pior, desligaria um portão de segurança em
+        silêncio numa oscilação de rede.
+        """
+        return bool(self._gate_verdicts(scan_result, threshold))
+
     def _gate_failure_summary(
         self,
         scan_result: ScanResult,
         threshold: str,
         inheritance: InheritanceReport | None = None,
     ) -> str:
-        """Nomeia os CVEs que dispararam o portão.
+        """Nomeia o que disparou cada portão.
 
-        "Vulnerabilities exceed threshold (critical)" obriga quem lê o log do
-        CI a reabrir o relatório para descobrir *o quê*. O portão passa a
-        dizer qual achado o disparou, com pacote e versão de correção.
+        "Vulnerabilities exceed threshold (critical)" obrigava quem lê o log
+        do CI a reabrir o relatório para descobrir *o quê*. Cada portão diz
+        agora qual achado o disparou, com pacote e versão de correção.
 
-        Quando a atribuição rodou, a linha do portão também diz **de onde** os
-        achados vieram. É a informação mais cara de obter e a mais barata de
-        mostrar aqui: quem lê o log do CI está decidindo, naquele segundo, se
-        mexe no Dockerfile ou na base -- e sem isso a decisão é um palpite.
+        Quando a atribuição rodou, a linha também diz **de onde** os achados
+        vieram. É a informação mais cara de obter e a mais barata de mostrar
+        aqui: quem lê o log está decidindo, naquele segundo, se mexe no
+        Dockerfile ou na base -- e sem isso a decisão é um palpite.
+
+        Um portão `UNMEASURED` sai com palavras diferentes de propósito: ele
+        não é um veredito sobre a imagem, é a constatação de que a pergunta
+        ficou sem resposta, e confundir os dois faria o log do CI acusar uma
+        imagem por uma falha de rede.
         """
-        cutoff = self.FAIL_ON_THRESHOLDS.index(threshold.strip().lower())
-        levels = self.FAIL_ON_THRESHOLDS[: cutoff + 1]
-        # A contagem vem do scan completo, nunca da amostra: foi a amostra
-        # dizendo "0 finding(s)" numa reprovação que tornou o portão
-        # incompreensível. O número que reprova e o número que se lê têm de
-        # ser o mesmo número.
-        counts = {
-            "critical": scan_result.critical,
-            "high": scan_result.high,
-            "medium": scan_result.medium,
-            "low": scan_result.low,
-        }
-        total = sum(counts[level] for level in levels)
-        tripping = {level.upper() for level in levels}
-        offenders = [
-            v for v in scan_result.vulnerabilities if str(v.get("severity", "")).upper() in tripping
-        ]
-        header = (
-            f"Vulnerabilities exceed threshold ({threshold}): "
-            f"{total} finding(s) at or above {threshold.upper()}"
-        )
-        if not offenders:
-            # Não deveria acontecer agora que a amostra é ordenada por
-            # severidade, mas se acontecer o leitor precisa saber que o
-            # silêncio é falta de amostra, não falta de achado.
-            return (
-                header
-                if total == 0
-                else f"{header}{_origin_hint(inheritance)} "
-                "(não retidos na amostra do relatório; rode o scanner para a lista)"
+        parts: list[str] = []
+        for verdict in self._gate_verdicts(scan_result, threshold):
+            if verdict.outcome is GateOutcome.UNMEASURED:
+                parts.append(f"Gate not evaluated ({verdict.kind.value.lower()}): {verdict.reason}")
+                continue
+            header = f"Gate failed ({verdict.kind.value.lower()}): {verdict.reason}"
+            if not verdict.offenders:
+                parts.append(
+                    f"{header}{_origin_hint(inheritance)} "
+                    "(not kept in the report sample; run the scanner for the full list)"
+                )
+                continue
+            listed = "; ".join(
+                f"{f.cve_id or '?'} ({f.severity}) in {f.package or '?'}".strip()
+                + (f" -> {f.fixed_version}" if f.fixed_version else " (no fix)")
+                for f in verdict.offenders[:10]
             )
-        listed = "; ".join(
-            f"{v.get('cve_id') or '?'} ({v.get('severity')}) in "
-            f"{v.get('package') or '?'} {v.get('installed_version') or ''}".strip()
-            + (f" -> {v['fixed_version']}" if v.get("fixed_version") else " (no fix)")
-            for v in offenders[:10]
-        )
-        more = f"; ... and {len(offenders) - 10} more" if len(offenders) > 10 else ""
-        return f"{header}{_origin_hint(inheritance)} -- {listed}{more}"
-
-    def _should_fail(self, scan_result: ScanResult, threshold: str) -> bool:
-        """Verifica se deve falhar o build baseado no threshold.
-
-        Só `critical` e `high` eram tratados; qualquer outro valor caía num
-        `return False`, então `--fail-on medium` era um portão que nunca
-        reprovava -- silenciosamente. Valores desconhecidos agora são
-        rejeitados na CLI, antes do build começar.
-        """
-        counts = {
-            "critical": scan_result.critical,
-            "high": scan_result.high,
-            "medium": scan_result.medium,
-            "low": scan_result.low,
-        }
-        normalized = threshold.strip().lower()
-        if normalized not in self.FAIL_ON_THRESHOLDS:
-            raise ValueError(
-                f"Unknown --fail-on threshold {threshold!r}; "
-                f"expected one of: {', '.join(self.FAIL_ON_THRESHOLDS)}"
+            more = (
+                f"; ... and {len(verdict.offenders) - 10} more"
+                if len(verdict.offenders) > 10
+                else ""
             )
-        cutoff = self.FAIL_ON_THRESHOLDS.index(normalized)
-        return any(counts[level] > 0 for level in self.FAIL_ON_THRESHOLDS[: cutoff + 1])
+            parts.append(f"{header}{_origin_hint(inheritance)} -- {listed}{more}")
+        return f"[--fail-on {threshold}] " + " | ".join(parts)
 
     def _preflight(
         self, request: BuildImageRequest, validation: AnalyzeDockerfileResponse
@@ -1252,7 +1326,7 @@ class BuildImageUseCase:
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
-            logger.debug(f"Não foi possível reler {path}: {e}")
+            logger.debug(f"Could not re-read {path}: {e}")
             return ()
         return tuple(
             BaseFact(
@@ -1284,14 +1358,14 @@ class BuildImageUseCase:
         if not request.attribute_findings:
             return None
         if scan_result is None:
-            return unavailable("", "a imagem construída não pôde ser escaneada")
+            return unavailable("", "the built image could not be scanned")
 
         analysis = validation.analysis
         base_reference = (analysis.info.final_base_image or "") if analysis else ""
         if not base_reference:
             return unavailable(
                 "",
-                "não foi possível determinar a base do estágio final a partir do Dockerfile",
+                "the final stage base could not be determined from the Dockerfile",
             )
         if base_reference.lower() == "scratch":
             # `scratch` não é uma imagem: não há o que escanear, e tudo que a
@@ -1301,12 +1375,12 @@ class BuildImageUseCase:
                 _as_vulnerabilities(scan_result.vulnerabilities), [], base_reference=base_reference
             )
 
-        logger.info(f"Escaneando a base {base_reference} para atribuir os achados")
+        logger.info(f"Scanning the base {base_reference} to attribute the findings")
         base_scan = self._scan_image(base_reference)
         if base_scan is None:
             return unavailable(
                 base_reference,
-                f"a base {base_reference} não pôde ser escaneada",
+                f"the base {base_reference} could not be scanned",
             )
         return attribute(
             _as_vulnerabilities(scan_result.vulnerabilities),
@@ -1406,13 +1480,13 @@ class BuildImageUseCase:
                 dockerfile_digest = hash_file(dockerfile)
                 base_images = self._declared_bases(dockerfile)
             except OSError as e:
-                logger.warning(f"Não foi possível digerir {dockerfile}: {e}")
+                logger.warning(f"Could not digest {dockerfile}: {e}")
 
         context_digest, counted = "", 0
         try:
             context_digest, counted = hash_context(root)
         except (OSError, ContextTooLargeError) as e:
-            logger.warning(f"Não foi possível digerir o contexto {root}: {e}")
+            logger.warning(f"Could not digest the context {root}: {e}")
 
         revision, dirty = self._git_state(root)
         return SourceDigests(
@@ -1493,9 +1567,9 @@ class BuildImageUseCase:
             path.write_text(
                 json.dumps(provenance.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
             )
-            logger.info(f"Procedência arquivada em {path}")
+            logger.info(f"Provenance archived at {path}")
         except OSError as e:
-            logger.warning(f"Não foi possível arquivar a procedência: {e}")
+            logger.warning(f"Could not archive the provenance: {e}")
 
     def _generate_report(
         self,
@@ -1601,7 +1675,7 @@ class BuildImageUseCase:
 
     def _get_docker_version(self) -> str:
         """Obtém versão do Docker."""
-        return self._capture_output(["docker", "--version"], "versão do Docker") or "unknown"
+        return self._capture_output(["docker", "--version"], "the Docker version") or "unknown"
 
     @staticmethod
     def _capture_output(argv: list[str], what: str) -> str | None:
@@ -1621,11 +1695,11 @@ class BuildImageUseCase:
                 check=False,
             )
         except (ExecutableNotFoundError, OSError, subprocess.SubprocessError) as e:
-            logger.debug(f"Não foi possível obter {what}: {e}")
+            logger.debug(f"Could not read {what}: {e}")
             return None
 
         if result.returncode != 0:
-            logger.debug(f"Não foi possível obter {what}: exit {result.returncode}")
+            logger.debug(f"Could not read {what}: exit {result.returncode}")
             return None
         return result.stdout.strip()
 
@@ -1659,6 +1733,49 @@ def _as_vulnerabilities(raw: list[dict[str, Any]]) -> list[Vulnerability]:
     return findings
 
 
+async def _lookup_threat_intel(
+    client: ThreatIntelClient, cve_ids: list[str]
+) -> tuple[set[str], dict[str, float]]:
+    """As duas consultas, numa corrida só."""
+    kev = await client.known_exploited(cve_ids)
+    epss = await client.epss_scores(cve_ids)
+    return kev, epss
+
+
+def _tristate(value: object) -> Tristate:
+    """Lê o campo `kev` de um achado, com UNKNOWN como padrão honesto.
+
+    Ausente, ilegível ou de outro tipo é UNKNOWN: nada foi consultado. Só
+    um `TRUE`/`FALSE` explícito -- escrito pelo enriquecimento, depois de o
+    catálogo responder -- vira veredito.
+    """
+    if isinstance(value, Tristate):
+        return value
+    if isinstance(value, str):
+        try:
+            # `Tristate` é minúsculo por dentro (`"true"`), e o campo pode
+            # chegar escrito de qualquer jeito de um JSON que não é nosso.
+            return Tristate(value.strip().lower())
+        except ValueError:
+            return Tristate.UNKNOWN
+    return Tristate.UNKNOWN
+
+
+def _as_probability(value: object) -> float | None:
+    """O EPSS de um achado, ou None quando ninguém consultou.
+
+    `0.0` é uma resposta -- o FIRST pontuou em zero -- e `None` é a falta
+    dela. Colapsar as duas faria o portão comparar uma ausência com um
+    piso e concluir "abaixo do limiar", que é ausência de medição gasta
+    como tranquilidade.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
 def _origin_hint(inheritance: InheritanceReport | None) -> str:
     """Uma frase curta sobre de onde vieram os achados, quando se sabe.
 
@@ -1673,6 +1790,6 @@ def _origin_hint(inheritance: InheritanceReport | None) -> str:
         return ""
     corrigiveis = inheritance.fixable_inherited
     return (
-        f" [{herdadas} da base {inheritance.base_reference}"
-        f" ({corrigiveis} com correção publicada), {suas} das suas camadas]"
+        f" [{herdadas} from the base {inheritance.base_reference}"
+        f" ({corrigiveis} with a published fix), {suas} from your layers]"
     )

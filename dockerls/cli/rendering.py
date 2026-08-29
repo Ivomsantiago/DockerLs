@@ -24,12 +24,15 @@ if TYPE_CHECKING:
         HardeningRule,
     )
 
-# Valores de status renderizados, não senhas.
-_STATUS_ICONS = {  # nosec B105
-    "PASS": "[green]✅ PASS[/green]",  # nosec B105
-    "WARN": "[yellow]⚠️ WARN[/yellow]",
-    "FAIL": "[red]❌ FAIL[/red]",
-    "SKIP": "[dim]➖ SKIP[/dim]",
+# Valores de status renderizados, não senhas. Bandit's B105 (hardcoded
+# password) matches on the dict *key* looking like a secret name -- "PASS"
+# does, "WARN"/"FAIL"/"SKIP" don't -- so only that one line ever needs the
+# suppression; the others never triggered anything to suppress.
+_STATUS_ICONS = {
+    "PASS": "[green]PASS[/green]",  # nosec B105
+    "WARN": "[yellow]WARN[/yellow]",
+    "FAIL": "[red]FAIL[/red]",
+    "SKIP": "[dim]SKIP[/dim]",
 }
 
 _SEVERITY_STYLES = {
@@ -74,9 +77,9 @@ def _render_summary(console: Console, validation: DockerfileValidationResult) ->
     status_color = "green" if validation.errors == 0 else "red"
     console.print(
         f"[{status_color} bold]Summary:[/{status_color} bold] "
-        f"✅ {validation.passed} passed | "
-        f"⚠️ {validation.warnings} warnings | "
-        f"❌ {validation.errors} errors"
+        f"[green]{validation.passed} passed[/green] | "
+        f"[yellow]{validation.warnings} warnings[/yellow] | "
+        f"[red]{validation.errors} errors[/red]"
     )
     console.print()
 
@@ -127,7 +130,7 @@ def _render_controls(console: Console, validation: DockerfileValidationResult) -
     if not actionable:
         return
 
-    console.print("[bold]Controles de referência[/bold]")
+    console.print("[bold]Reference controls[/bold]")
     seen: set[str] = set()
     for check in actionable:
         rule_id = check.rule_id or ""
@@ -141,8 +144,8 @@ def _render_controls(console: Console, validation: DockerfileValidationResult) -
             console.print(f"    [green]->[/green] {reference}")
         if not check.references:
             console.print(
-                "    [dim]-> orientação do próprio DockerLs; nenhum controle publicado "
-                "no catálogo cobre esta regra[/dim]"
+                "    [dim]-> DockerLs guidance; no published control in the catalogue "
+                "covers this rule[/dim]"
             )
     console.print()
 
@@ -162,7 +165,7 @@ def _render_score(console: Console, analysis: DockerfileAnalysis) -> None:
 
 
 def _render_suggestions(console: Console, suggestions: list[HardeningRule]) -> None:
-    console.print(Panel("[bold yellow]💡 Recommendations[/bold yellow]", expand=False))
+    console.print(Panel("[bold yellow]Recommendations[/bold yellow]", expand=False))
 
     for i, suggestion in enumerate(suggestions, 1):
         priority_style = _SEVERITY_STYLES.get(suggestion.priority.value, "")

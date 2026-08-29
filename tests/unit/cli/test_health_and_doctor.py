@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from dockerls.cli.app import app
 from dockerls.cli.commands import health as health_cmd
+from dockerls.exit_codes import EXIT_ERROR, EXIT_OK
 
 runner = CliRunner()
 
@@ -71,6 +72,7 @@ class TestHealthDetectsOutages:
             "endoflife.date",
             "cisa.gov",
             "first.org",
+            "gitlab.com",
         )
         result = _run_health(monkeypatch, _responder(dict.fromkeys(all_hosts, "error")))
 
@@ -107,3 +109,90 @@ class TestDoctorDetectsMissingScanners:
 
         assert "Available" in result.stdout
         assert result.stdout.count("Not found") == 0
+
+
+class TestDoctorReportsHowOldTheAnswersAre:
+    """`doctor` conferia que o scanner existe. Não conferia que ele mede: um
+    Trivy com base de três semanas devolve um scan limpo, verde e sem erro
+    nenhum que não conhece os CVEs do último mês."""
+
+    def _with_scanners(self, monkeypatch, *, trivy=True, grype=False):
+        monkeypatch.setattr(
+            "dockerls.cli.commands.doctor.shutil.which",
+            lambda name: (
+                f"/usr/bin/{name}"
+                if (name == "trivy" and trivy) or (name == "grype" and grype)
+                else None
+            ),
+        )
+
+    def _with_age(self, monkeypatch, hours: float | None, detail: str = ""):
+        from datetime import UTC, datetime, timedelta
+
+        built = None if hours is None else datetime.now(tz=UTC) - timedelta(hours=hours)
+        monkeypatch.setattr(
+            "dockerls.cli.commands.doctor.read_trivy_built_at", lambda *a, **k: (built, detail)
+        )
+
+    def test_a_fresh_database_is_reported_as_fresh(self, monkeypatch):
+        self._with_scanners(monkeypatch)
+        self._with_age(monkeypatch, 2)
+
+        result = CliRunner().invoke(app, ["doctor"])
+
+        assert "Vulnerability database" in result.output
+        assert "Fresh" in result.output
+
+    def test_a_stale_database_warns_without_changing_the_exit_code(self, monkeypatch):
+        """O código de saída deste comando sempre significou "os componentes
+        estão presentes". Mudar isso em silêncio quebraria pipelines que já
+        dependem do contrato."""
+        self._with_scanners(monkeypatch)
+        self._with_age(monkeypatch, 24 * 21)
+
+        result = CliRunner().invoke(app, ["doctor"])
+
+        flat = " ".join(result.output.split())
+        assert "Stale" in flat
+        assert "would look exactly like a clean one" in flat
+        assert result.exit_code == EXIT_OK
+
+    def test_require_fresh_db_turns_the_warning_into_a_failure(self, monkeypatch):
+        self._with_scanners(monkeypatch)
+        self._with_age(monkeypatch, 24 * 21)
+
+        result = CliRunner().invoke(app, ["doctor", "--require-fresh-db"])
+
+        assert result.exit_code == EXIT_ERROR
+        assert "not fit to measure with" in " ".join(result.output.split())
+
+    def test_an_unreadable_age_is_never_reported_as_fresh(self, monkeypatch):
+        """Não conseguir ler a data não é a base estar atualizada."""
+        self._with_scanners(monkeypatch)
+        self._with_age(monkeypatch, None, detail="metadata.json is not there")
+
+        result = CliRunner().invoke(app, ["doctor"])
+        # A tabela do Rich quebra linha dentro da frase; o que importa é o
+        # texto, não onde ele coube.
+        flat = " ".join(result.output.split())
+
+        assert "Unknown" in flat
+        assert "not the same as up to date" in flat
+
+    def test_an_unreadable_age_also_fails_under_require_fresh_db(self, monkeypatch):
+        self._with_scanners(monkeypatch)
+        self._with_age(monkeypatch, None, detail="no metadata")
+
+        assert CliRunner().invoke(app, ["doctor", "--require-fresh-db"]).exit_code == EXIT_ERROR
+
+    def test_a_scanner_that_is_not_installed_is_not_reported_as_unknown(self, monkeypatch):
+        """Dizer que a base do Grype tem idade desconhecida numa máquina sem
+        Grype seria ruído -- e ruído é como um aviso de verdade deixa de ser
+        lido."""
+        self._with_scanners(monkeypatch, trivy=True, grype=False)
+        self._with_age(monkeypatch, 2)
+
+        result = CliRunner().invoke(app, ["doctor"])
+        database_block = result.output.split("Vulnerability database")[1].split("Image sources")[0]
+
+        assert "grype" not in database_block

@@ -42,6 +42,10 @@ def _analysis(
         scan=ScanResult(
             image_reference=image.full_reference,
             status=ScanStatus.OK,
+            # `is_verified` exige status OK **e** carimbo de tempo: sem ele
+            # este fixture descrevia um scan que não completou, e o baseline
+            # da comparação valia zero sem ninguém notar.
+            scan_timestamp="2026-01-01T00:00:00+00:00",
             vulnerabilities=vulnerabilities,
         ),
         security_score=score,
@@ -92,7 +96,37 @@ class TestBestAlternative:
         result = await best_alternative("node:22", analyzer=analyzer, recommender=_recommender())
 
         assert isinstance(result, AlternativeFailure)
-        assert "falha técnica" in result.reason
+        assert "technical failure" in result.reason
+
+    async def test_scan_que_nao_completou_nao_vira_baseline(self) -> None:
+        """A falha chega sem exceção, e continua sendo falha.
+
+        `AnalyzeImageUseCase` deixou de levantar para um scan que não
+        completou e passou a devolver `ImageAnalysis` com score 0.0 e tier
+        F. Aceitá-lo aqui faria toda candidata aparecer como uma melhora de
+        ~95 pontos sobre uma imagem que ninguém mediu.
+        """
+        unscannable = ImageAnalysis(
+            image=DockerImage(name="node", tag="22"),
+            scan=ScanResult(
+                image_reference="node:22",
+                status=ScanStatus.ERROR,
+                error_message="manifest unknown",
+            ),
+            security_score=0.0,
+            tier="F",
+            remediation_score=0,
+        )
+        candidate = _analysis("chainguard/node", "latest", critical=0, score=95)
+
+        result = await best_alternative(
+            "node:22",
+            analyzer=_analyzer(unscannable),
+            recommender=_recommender(candidate),
+        )
+
+        assert isinstance(result, AlternativeFailure)
+        assert "technical failure" in result.reason
 
     async def test_busca_que_falha_e_reportada_como_falha(self) -> None:
         recommender = AsyncMock()
@@ -105,7 +139,7 @@ class TestBestAlternative:
         )
 
         assert isinstance(result, AlternativeFailure)
-        assert "falhou" in result.reason
+        assert "failed" in result.reason
 
     async def test_nenhuma_candidata_recomendavel_e_falha_explicada(self) -> None:
         """Confiança baixa não vira sugestão: seria transferir a incerteza
@@ -119,7 +153,7 @@ class TestBestAlternative:
         )
 
         assert isinstance(result, AlternativeFailure)
-        assert "confiança suficiente" in result.reason
+        assert "enough confidence" in result.reason
 
     async def test_a_propria_imagem_nao_e_sugerida_como_alternativa(self) -> None:
         current = _analysis("node", "22")

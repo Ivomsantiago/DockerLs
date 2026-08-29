@@ -27,7 +27,7 @@ _DIGEST = "sha256:" + "a" * 64
 class TestRefusals:
     def test_distroless_refuses_packages_and_explains_why(self):
         recipe = BaseRecipe(family=OsFamily.DISTROLESS, runtime=Runtime.JAVA, packages=("curl",))
-        with pytest.raises(UnsupportedCombinationError, match="gerenciador de pacotes"):
+        with pytest.raises(UnsupportedCombinationError, match="no package manager"):
             recipe.validate()
 
     def test_distroless_without_packages_is_fine(self):
@@ -45,11 +45,11 @@ class TestRefusals:
         assert "sudo" not in {choice.key for choice in PACKAGE_CATALOG}
 
     def test_an_unknown_package_is_refused(self):
-        with pytest.raises(UnsupportedCombinationError, match="desconhecido"):
+        with pytest.raises(UnsupportedCombinationError, match="unknown package"):
             BaseRecipe(family=OsFamily.ALPINE, packages=("inexistente",)).validate()
 
     def test_a_runtime_without_a_published_base_is_refused(self):
-        with pytest.raises(UnsupportedCombinationError, match="não há imagem base"):
+        with pytest.raises(UnsupportedCombinationError, match="no base image is published"):
             BaseRecipe(family=OsFamily.UBUNTU, runtime=Runtime.GO).validate()
 
 
@@ -65,8 +65,8 @@ class TestRendering:
     def test_without_a_digest_the_file_says_so_out_loud(self):
         out = render(BaseRecipe(family=OsFamily.ALPINE))
         # Uma base móvel propaga a incerteza para todo projeto que consome.
-        assert "ATENÇÃO" in out
-        assert "não fixada por digest" in out
+        assert "WARNING" in out
+        assert "not pinned by digest" in out
 
     def test_alpine_uses_apk_and_debian_uses_apt(self):
         alpine = self._render(family=OsFamily.ALPINE, packages=("curl",))

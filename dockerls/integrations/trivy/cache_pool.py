@@ -50,6 +50,10 @@ class TrivyCachePool:
         self._base = base_cache_dir
         self._size = max(1, size)
         self._slots: asyncio.Queue[Path] | None = None
+        # A mesma lista que alimenta a fila, guardada para quem faz o
+        # próprio rodízio -- a engine Go recebe todos os slots de uma vez e
+        # os reveza por dentro, em vez de pedir um por scan.
+        self._slot_paths: list[Path] = []
         self._temp_dirs: list[Path] = []
         self._isolated = False
         # prepare() awaits before assigning _slots, so concurrent first
@@ -97,6 +101,7 @@ class TrivyCachePool:
             queue: asyncio.Queue[Path] = asyncio.Queue()
             for slot in slots:
                 queue.put_nowait(slot)
+            self._slot_paths = list(slots)
             self._slots = queue
             return queue
 
@@ -135,6 +140,16 @@ class TrivyCachePool:
             # Partial pools are still safe, but an empty one is not usable.
             logger.warning(f"Prepared {len(slots)}/{self._size} isolated Trivy cache dirs")
         return slots
+
+    async def slot_paths(self) -> list[Path]:
+        """Todos os slots do pool, para um chamador que faz o próprio rodízio.
+
+        `acquire()` empresta um slot por vez, que é o que o pipeline Python
+        precisa. A engine Go recebe o lote inteiro e reveza por dentro, e
+        para isso precisa da lista.
+        """
+        await self._ensure_slots()
+        return list(self._slot_paths)
 
     @contextlib.asynccontextmanager
     async def acquire(self) -> AsyncIterator[Path]:

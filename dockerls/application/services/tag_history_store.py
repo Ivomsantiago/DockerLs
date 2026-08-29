@@ -48,7 +48,7 @@ class TagHistoryStore:
         try:
             raw = await self._cache.get(_key(reference))
         except Exception as e:  # pragma: no cover - o cache é o caminho instável
-            logger.debug(f"Não foi possível ler o histórico de {reference}: {e}")
+            logger.debug(f"Could not read the history of {reference}: {e}")
             return TagHistory(reference=reference)
         return TagHistory.from_dict(reference, raw)
 
@@ -68,7 +68,7 @@ class TagHistoryStore:
                 _key(reference), updated.to_dict(), ttl_seconds=HISTORY_TTL_SECONDS
             )
         except Exception as e:  # pragma: no cover - o cache é o caminho instável
-            logger.debug(f"Não foi possível gravar o histórico de {reference}: {e}")
+            logger.debug(f"Could not write the history of {reference}: {e}")
         return updated
 
 

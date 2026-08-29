@@ -8,6 +8,7 @@ from dockerls.domain.entities.recommendation import Recommendation
 from dockerls.domain.entities.scan_result import ScanResult
 from dockerls.domain.entities.vulnerability import Vulnerability
 from dockerls.domain.value_objects.confidence import Confidence
+from dockerls.domain.value_objects.scan_plan import DeferredTag
 from dockerls.domain.value_objects.tristate import Tristate
 
 
@@ -100,6 +101,20 @@ class ImageAnalysis(BaseModel):
     # Costs and caveats of moving to this image, stated alongside the
     # reasons. A recommendation that lists only upsides is advertising.
     trade_offs: list[str] = Field(default_factory=list)
+    # Set when this tag has previously been observed (by an earlier run) on
+    # a *different* digest than the one just resolved. Empty when this is
+    # the first time this tag was seen, or when it has stayed on the same
+    # digest since. `base` already reports this for Dockerfile-pinned bases
+    # (see `tag_history.py`/`base_cmd.py`); this is the same fact for a tag
+    # looked up directly with `analyze`.
+    tag_drift_note: str = ""
+    # Set when a previous `analyze` run of this exact reference recorded
+    # different vulnerability counts than this scan just found. Empty on the
+    # first scan ever recorded, or when the counts are unchanged since the
+    # last one. Unlike `tag_drift_note`, this applies to a digest reference
+    # too: the same bytes can gain a CVE between two scans as the scanner's
+    # database learns about it.
+    vuln_trend_note: str = ""
 
     @property
     def pinned_reference(self) -> str:
@@ -201,15 +216,42 @@ class AnalysisResult(BaseModel):
     # Catalogues that returned at least one candidate for this query.
     sources_searched: list[str] = []
     metrics: RunMetrics = Field(default_factory=RunMetrics)
+    #: Tags que a busca encontrou e que este run deliberadamente **não
+    #: mediu**, com o motivo de cada uma. Deliberadamente separado de
+    #: `unverified`: ali estão as medições que falharam, aqui as que nunca
+    #: foram tentadas. As duas são ausência de medição, e nenhuma das duas
+    #: é um veredito sobre a imagem -- mas confundi-las esconderia que uma
+    #: é escolha desta ferramenta e a outra é uma falha.
+    deferred: list[DeferredTag] = []
+    #: Quantas tags a busca trouxe, antes de qualquer corte.
+    tags_discovered: int = 0
 
     @property
     def unverified_count(self) -> int:
         return len(self.unverified)
 
+    @property
+    def deferred_count(self) -> int:
+        return len(self.deferred)
+
 
 class ComparisonResult(BaseModel):
+    """O que a comparação mediu, e o que ela não conseguiu medir.
+
+    `images` carrega **apenas** as imagens cujo scan completou. Uma imagem
+    que ninguém conseguiu escanear não entra aqui em hipótese alguma: ela
+    tem `security_score` 0.0 e tier F por construção (o fallback de
+    `AnalyzeImageUseCase`), e uma linha na tabela de comparação com esses
+    valores afirma que a imagem foi medida e foi mal -- que é exatamente a
+    substituição que esta ferramenta existe para não fazer. As que
+    falharam ficam em `unverified`, com a causa classificada.
+    """
+
     images: list[ImageAnalysis]
     winner: str = ""
     summary: str = ""
     common_vulns: list[Vulnerability] = []
     unique_vulns: dict[str, list[Vulnerability]] = {}
+    #: As referências pedidas que não puderam ser medidas, na ordem em que
+    #: foram pedidas. Nunca recebem score nem tier.
+    unverified: list[UnverifiedImage] = []

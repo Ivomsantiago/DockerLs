@@ -30,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from dockerls.domain.value_objects.gate import SEVERITY_THRESHOLDS, merge_gates
 from dockerls.domain.value_objects.tristate import Tristate
 
 #: Severidades que uma contagem pode nomear. `unknown` entra: um scanner que
@@ -47,7 +48,9 @@ SEVERITY_ORDER: tuple[str, ...] = ("critical", "high", "medium", "low", "unknown
 #: `unknown` fica de fora porque o portão não sabe avaliá-lo: aceitá-lo na
 #: política produziria um build que morre com erro técnico no meio do
 #: caminho, em vez de uma política recusada na leitura do arquivo.
-GATE_THRESHOLDS: tuple[str, ...] = ("critical", "high", "medium", "low")
+#: Reexportado de `gate.py`, que é onde a escala mora agora: duas
+#: definições de "mais estrito" divergiriam na primeira mudança.
+GATE_THRESHOLDS: tuple[str, ...] = SEVERITY_THRESHOLDS
 
 
 class PolicyRule(StrEnum):
@@ -105,8 +108,9 @@ class PolicyViolation:
 class BuildPolicy:
     """As exigências declaradas em `.dockerls-policy.yaml`."""
 
-    #: Severidade a partir da qual o build reprova. Vazio deixa a decisão com
-    #: a linha de comando.
+    #: O portão que reprova o build: uma severidade (`critical`), `kev`,
+    #: `epss>=N`, ou vários separados por vírgula. Vazio deixa a decisão
+    #: com a linha de comando.
     fail_on: str = ""
     #: Teto por severidade (`{"high": 5}`). Um teto de zero é diferente de
     #: `fail_on`: permite tolerar 3 HIGH e nenhum CRITICAL no mesmo arquivo.
@@ -136,21 +140,21 @@ class BuildPolicy:
         )
 
     def effective_fail_on(self, requested: str) -> str:
-        """O limiar que vale, entre o da política e o da linha de comando.
+        """O portão que vale, entre o da política e o da linha de comando.
 
-        Vence o mais estrito, nos dois sentidos: um arquivo no repositório não
-        desliga um portão que o pipeline pediu, e uma flag não afrouxa a
-        política da organização.
+        Severidade contra severidade continua sendo a regra antiga: vence o
+        limiar **mais baixo na escala**, e não a palavra mais assustadora --
+        `--fail-on low` reprova em LOW e em tudo acima, enquanto `critical`
+        só olha CRITICAL. Nem o arquivo do repositório desliga um portão que
+        o pipeline pediu, nem uma flag afrouxa a política da organização.
 
-        "Mais estrito" é o limiar **mais baixo na escala de severidade**, e não
-        a palavra mais assustadora: `--fail-on low` reprova em LOW e em tudo
-        acima, enquanto `--fail-on critical` só olha para CRITICAL. Entre
-        `high` e `critical` vence `high`.
+        Portões de tipos diferentes não competem: somam. `kev` e `high` são
+        perguntas diferentes sobre coisas diferentes, e escolher uma
+        descartaria a outra em silêncio. A regra vive em
+        `domain/value_objects/gate.py` para que a política e o portão do
+        build não possam divergir sobre o que "mais estrito" significa.
         """
-        candidates = [s for s in (self.fail_on, requested) if s in GATE_THRESHOLDS]
-        if not candidates:
-            return requested or self.fail_on
-        return max(candidates, key=GATE_THRESHOLDS.index)
+        return merge_gates(self.fail_on, requested)
 
     @staticmethod
     def production() -> BuildPolicy:
@@ -267,8 +271,8 @@ def _check_scan(policy: BuildPolicy, facts: PolicyFacts, violations: list[Policy
             PolicyViolation(
                 rule=PolicyRule.REQUIRE_SCAN,
                 message=(
-                    "a política exige scan e nenhum scanner rodou: uma imagem que não "
-                    "pôde ser medida não é uma imagem sem vulnerabilidades"
+                    "the policy requires a scan and no scanner ran: an image that "
+                    "could not be measured is not an image without vulnerabilities"
                 ),
             )
         )
@@ -287,8 +291,8 @@ def _check_ceilings(
             PolicyViolation(
                 rule=PolicyRule.MAX_VULNERABILITIES,
                 message=(
-                    "a política declara tetos por severidade e nenhum scanner rodou: "
-                    "não há contagem para conferir contra eles"
+                    "the policy declares per-severity ceilings and no scanner ran: "
+                    "there is no count to check them against"
                 ),
             )
         )
@@ -303,8 +307,8 @@ def _check_ceilings(
                 PolicyViolation(
                     rule=PolicyRule.MAX_VULNERABILITIES,
                     message=(
-                        f"{found} vulnerabilidade(s) {severity.upper()} contra um teto "
-                        f"de {limit} na política"
+                        f"{found} {severity.upper()} vulnerability(ies) against a "
+                        f"policy ceiling of {limit}"
                     ),
                 )
             )
@@ -319,8 +323,8 @@ def _check_bases(
                 PolicyViolation(
                     rule=PolicyRule.REQUIRE_PINNED_BASES,
                     message=(
-                        "a política exige bases fixadas por digest e nenhuma base pôde "
-                        "ser lida do Dockerfile"
+                        "the policy requires digest-pinned bases and no base could "
+                        "be read from the Dockerfile"
                     ),
                 )
             )
@@ -330,9 +334,9 @@ def _check_bases(
                     PolicyViolation(
                         rule=PolicyRule.REQUIRE_PINNED_BASES,
                         message=(
-                            f"{base.reference} não está fixada por digest: o que foi "
-                            "testado e o que vai para produção podem ser bytes "
-                            "diferentes sem nenhuma mudança sua"
+                            f"{base.reference} is not pinned by digest: what was "
+                            "tested and what ships to production can be different "
+                            "bytes with no change of yours"
                         ),
                     )
                 )
@@ -349,8 +353,8 @@ def _check_bases(
                 PolicyViolation(
                     rule=PolicyRule.ALLOWED_BASE_REGISTRIES,
                     message=(
-                        f"{base.reference} vem de {registry}, que não está entre os "
-                        f"registries permitidos ({', '.join(sorted(permitidos))})"
+                        f"{base.reference} comes from {registry}, which is not among "
+                        f"the allowed registries ({', '.join(sorted(permitidos))})"
                     ),
                 )
             )
@@ -362,15 +366,15 @@ def _check_nonroot(
     if not policy.require_nonroot or facts.nonroot.is_true:
         return
     motivo = (
-        "a imagem roda como root"
+        "the image runs as root"
         if facts.nonroot.is_false
-        else "não foi possível determinar com que usuário a imagem roda, e não "
-        "determinar não é o mesmo que estar em ordem"
+        else "the user the image runs as could not be determined, and not "
+        "determining is not the same as being in order"
     )
     violations.append(
         PolicyViolation(
             rule=PolicyRule.REQUIRE_NONROOT,
-            message=f"a política exige execução sem privilégio: {motivo}",
+            message=f"the policy requires running without privilege: {motivo}",
         )
     )
 
@@ -384,9 +388,9 @@ def _check_labels(
                 PolicyViolation(
                     rule=PolicyRule.REQUIRED_LABELS,
                     message=(
-                        f"rótulo obrigatório ausente ou vazio: {label} -- sem ele "
-                        "ninguém sabe a quem recorrer quando esta imagem aparecer num "
-                        "alerta às três da manhã"
+                        f"required label missing or empty: {label} -- without it "
+                        "nobody knows who to turn to when this image shows up in an "
+                        "alert at three in the morning"
                     ),
                 )
             )
@@ -399,10 +403,10 @@ def _check_provenance(
         return
     if facts.provenance_status == "VERIFIED":
         return
-    detalhe = facts.provenance_status or "nenhum registro foi produzido"
+    detalhe = facts.provenance_status or "no record was produced"
     violations.append(
         PolicyViolation(
             rule=PolicyRule.REQUIRE_PROVENANCE,
-            message=(f"a política exige procedência verificada, e o registro está: {detalhe}"),
+            message=(f"the policy requires verified provenance, and the record is: {detalhe}"),
         )
     )

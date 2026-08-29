@@ -88,15 +88,17 @@ def detect_provider(host: str) -> RegistryProvider:
 #: todo push recusado, e porque a mensagem genérica do Docker ("denied")
 #: não diz qual comando resolve.
 LOGIN_HINTS: dict[RegistryProvider, str] = {
-    RegistryProvider.DOCKER_HUB: "docker login  (ou `dockerls login`, que guarda no keyring)",
-    RegistryProvider.AZURE_ACR: "az acr login --name <registro>",
+    RegistryProvider.DOCKER_HUB: (
+        "docker login  (or `dockerls login`, which stores it in the keyring)"
+    ),
+    RegistryProvider.AZURE_ACR: "az acr login --name <registry>",
     RegistryProvider.GOOGLE_ARTIFACT_REGISTRY: (
-        "gcloud auth configure-docker <região>-docker.pkg.dev"
+        "gcloud auth configure-docker <region>-docker.pkg.dev"
     ),
     RegistryProvider.GOOGLE_CONTAINER_REGISTRY: "gcloud auth configure-docker gcr.io",
-    RegistryProvider.DHI: "docker login dhi.io  (exige assinatura Docker Hardened Images)",
+    RegistryProvider.DHI: "docker login dhi.io  (requires a Docker Hardened Images subscription)",
     RegistryProvider.GITHUB_GHCR: (
-        "echo $GITHUB_TOKEN | docker login ghcr.io -u <usuário> --password-stdin"
+        "echo $GITHUB_TOKEN | docker login ghcr.io -u <username> --password-stdin"
     ),
     RegistryProvider.OTHER: "docker login <host>",
 }
@@ -148,14 +150,14 @@ class RegistryTarget:
         malformado descoberto depois do scan custa o build inteiro.
         """
         if not self.repository.strip():
-            raise InvalidRegistryTargetError("o repositório de destino não pode ser vazio")
+            raise InvalidRegistryTargetError("the destination repository cannot be empty")
         if not _TAG.match(self.tag or ""):
-            raise InvalidRegistryTargetError(f"tag inválida: {self.tag!r}")
+            raise InvalidRegistryTargetError(f"invalid tag: {self.tag!r}")
         for component in self.path.split("/"):
             if not _PATH_COMPONENT.match(component):
                 raise InvalidRegistryTargetError(
-                    f"componente de caminho inválido: {component!r} "
-                    "(minúsculas, dígitos, e separadores . _ -)"
+                    f"invalid path component: {component!r} "
+                    "(lowercase, digits, and the . _ - separators)"
                 )
         self._validate_provider()
 
@@ -167,27 +169,27 @@ class RegistryTarget:
             # a mensagem não explica por quê.
             if not self.namespace.strip("/"):
                 raise InvalidRegistryTargetError(
-                    "o Docker Hub exige o usuário ou a organização como namespace "
-                    "(ex.: minhaorg/dockerls); sem ele o push mira library/, que é "
-                    "reservado às imagens oficiais"
+                    "Docker Hub requires the user or organization as the namespace "
+                    "(e.g. myorg/dockerls); without it the push targets library/, "
+                    "which is reserved for official images"
                 )
             if self.namespace.strip("/").lower() == "library":
                 raise InvalidRegistryTargetError(
-                    "`library` é o namespace das imagens oficiais do Docker Hub "
-                    "e não aceita publicação de terceiros"
+                    "`library` is the namespace of Docker Hub official images and "
+                    "does not accept third-party publishing"
                 )
         elif provider is RegistryProvider.GOOGLE_ARTIFACT_REGISTRY:
             # gcr.io aceitava `projeto/imagem`; o Artifact Registry exige o
             # repositório no caminho, e omiti-lo falha só na hora do push.
             if len(self.path.split("/")) < 3:
                 raise InvalidRegistryTargetError(
-                    "o Artifact Registry exige <projeto>/<repositório>/<imagem> "
-                    "no caminho (ex.: meu-projeto/containers/dockerls)"
+                    "Artifact Registry requires <project>/<repository>/<image> in the "
+                    "path (e.g. my-project/containers/dockerls)"
                 )
         elif provider is RegistryProvider.DHI:
             raise InvalidRegistryTargetError(
-                "dhi.io é um catálogo de imagens da Docker, não um destino de "
-                "publicação: ele distribui imagens endurecidas e não aceita push"
+                "dhi.io is a Docker image catalogue, not a publish destination: it "
+                "distributes hardened images and does not accept pushes"
             )
 
     @classmethod
@@ -200,13 +202,14 @@ class RegistryTarget:
         """
         value = destination.strip().strip("/")
         if not value:
-            raise InvalidRegistryTargetError("destino vazio")
+            raise InvalidRegistryTargetError("empty destination")
         # Uma tag embutida no destino é ambiguidade, não conveniência: qual
         # das duas vale, a de `--tag` ou a colada aqui?
         head = value.split("/", 1)[0]
         if ":" in value.rsplit("/", 1)[-1]:
             raise InvalidRegistryTargetError(
-                "informe o destino sem tag; a tag vem de --tag para não haver duas"
+                "give the destination without a tag; the tag comes from --tag so "
+                "there are never two"
             )
 
         if "." in head or ":" in head or head.lower() == "localhost":
@@ -214,7 +217,9 @@ class RegistryTarget:
         else:
             host, rest = "", value
         if not rest:
-            raise InvalidRegistryTargetError(f"o destino {destination!r} não nomeia um repositório")
+            raise InvalidRegistryTargetError(
+                f"the destination {destination!r} does not name a repository"
+            )
 
         namespace, _, repository = rest.rpartition("/")
         return cls(host=host, repository=repository, tag=tag, namespace=namespace)

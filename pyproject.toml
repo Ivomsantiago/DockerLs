@@ -1,16 +1,16 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=83.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dockerls"
-version = "2.10.1"
+version = "3.0.0"
 description = "Enterprise Docker Image Security Advisor"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 authors = [
-    {name = "GhostN3xus"},
+    {name = "Ivomsantiago"},
 ]
 keywords = ["docker", "security", "vulnerability", "scanner", "devops", "devsecops"]
 classifiers = [
@@ -55,15 +55,22 @@ dev = [
     "bandit>=1.7",
     "pip-audit>=2.7",
     "types-PyYAML>=6.0",
+    # Testing only. `jsonschema` validates the SARIF exporter's output
+    # against the vendored OASIS SARIF 2.1.0 schema (draft-04), and
+    # `hypothesis` fuzzes the reference and Dockerfile parsers -- the two
+    # places where a hostile string has repeatedly turned into a wrong
+    # security verdict. Neither is imported by `dockerls/`.
+    "jsonschema>=4.0",
+    "hypothesis>=6.100",
 ]
 
 [project.scripts]
 dockerls = "dockerls.cli.app:main"
 
 [project.urls]
-Homepage = "https://github.com/GhostN3xus/DockerLs"
-Repository = "https://github.com/GhostN3xus/DockerLs"
-Issues = "https://github.com/GhostN3xus/DockerLs/issues"
+Homepage = "https://github.com/Ivomsantiago/DockerLs"
+Repository = "https://github.com/Ivomsantiago/DockerLs"
+Issues = "https://github.com/Ivomsantiago/DockerLs/issues"
 
 [tool.setuptools.packages.find]
 include = ["dockerls*"]

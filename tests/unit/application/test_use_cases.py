@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 
 import pytest
 
+from dockerls.application.services.scan_history_store import ScanHistoryStore
+from dockerls.application.services.tag_history_store import TagHistoryStore
 from dockerls.application.use_cases.analyze_image import AnalyzeImageUseCase
 from dockerls.application.use_cases.compare_images import CompareImagesUseCase
 from dockerls.application.use_cases.recommend_images import RecommendImagesUseCase
@@ -223,6 +225,30 @@ class TestAnalyzeImage:
         assert uc._parse_reference("python") == ("python", "latest")
 
     @pytest.mark.asyncio
+    async def test_a_registry_port_is_not_read_as_a_tag(self):
+        """`rsplit(":", 1)` lia `registry.internal:5000/app` como o produto
+        "registry.internal" na versão "5000", e a consulta de EOL/LTS
+        recebia isso. O alvo do scan sobrevivia por acidente."""
+        uc = AnalyzeImageUseCase(MockRepo(), MockScanner(), MockEOL())
+        assert uc._parse_reference("registry.internal:5000/app") == (
+            "registry.internal:5000/app",
+            "latest",
+        )
+        assert uc._parse_reference("localhost:5000/api:2.1") == ("localhost:5000/api", "2.1")
+
+    @pytest.mark.asyncio
+    async def test_a_digest_reference_is_scanned_as_asked(self):
+        """Reconstruir `name:tag` a partir de `node@sha256:...` mandaria o
+        scanner medir `node:latest` -- outra imagem, sob o nome desta."""
+        digest = "sha256:" + "a" * 64
+        scanner = MockScanner()
+        uc = AnalyzeImageUseCase(MockRepo(), scanner, MockEOL())
+
+        await uc.execute(f"node@{digest}")
+
+        assert scanner.calls == [f"node@{digest}"]
+
+    @pytest.mark.asyncio
     async def test_a_failed_scan_never_raises_the_raw_securityscore_error(self, tags):
         """`SecurityScore` raises on anything but an OK/PARTIAL scan; that
         used to bubble straight out of `execute` and land on the CLI as
@@ -238,6 +264,169 @@ class TestAnalyzeImage:
         assert result.scan.is_verified is False
         assert result.security_score == 0.0
         assert result.production_ready is False
+
+
+class TestTagDriftDetection:
+    """F13: the cache already keys by digest, so a moved tag never serves
+    stale evidence -- what was missing was *saying* the tag moved. `base`
+    already reports this for Dockerfile-pinned bases; this is the same
+    fact for a tag looked up directly with `analyze`."""
+
+    @pytest.mark.asyncio
+    async def test_a_tag_that_changed_digest_is_reported(self):
+        history = TagHistoryStore(MockCache())
+        old_digest = "sha256:" + "a" * 64
+        new_digest = "sha256:" + "b" * 64
+
+        first = AnalyzeImageUseCase(
+            repository=MockRepo([DockerImage(name="node", tag="22-alpine", digest=old_digest)]),
+            scanner=MockScanner(),
+            eol_checker=MockEOL(),
+            tag_history=history,
+        )
+        await first.execute("node:22-alpine")
+
+        second = AnalyzeImageUseCase(
+            repository=MockRepo([DockerImage(name="node", tag="22-alpine", digest=new_digest)]),
+            scanner=MockScanner(),
+            eol_checker=MockEOL(),
+            tag_history=history,
+        )
+        result = await second.execute("node:22-alpine")
+
+        assert result.tag_drift_note != ""
+        assert "1" in result.tag_drift_note
+
+    @pytest.mark.asyncio
+    async def test_the_first_time_a_tag_is_seen_nothing_is_reported(self):
+        history = TagHistoryStore(MockCache())
+        image = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "a" * 64)
+        uc = AnalyzeImageUseCase(MockRepo([image]), MockScanner(), MockEOL(), tag_history=history)
+
+        result = await uc.execute("node:22-alpine")
+
+        assert result.tag_drift_note == ""
+
+    @pytest.mark.asyncio
+    async def test_the_same_digest_seen_twice_is_not_a_move(self):
+        history = TagHistoryStore(MockCache())
+        image = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "a" * 64)
+
+        for _ in range(2):
+            uc = AnalyzeImageUseCase(
+                MockRepo([image]), MockScanner(), MockEOL(), tag_history=history
+            )
+            result = await uc.execute("node:22-alpine")
+
+        assert result.tag_drift_note == ""
+
+    @pytest.mark.asyncio
+    async def test_a_digest_reference_has_no_tag_to_track(self):
+        """`node@sha256:...` asked for a fixed set of bytes, not a tag --
+        there is no "move" to observe."""
+        history = TagHistoryStore(MockCache())
+        uc = AnalyzeImageUseCase(MockRepo(), MockScanner(), MockEOL(), tag_history=history)
+
+        result = await uc.execute(f"node@{'sha256:' + 'a' * 64}")
+
+        assert result.tag_drift_note == ""
+
+    @pytest.mark.asyncio
+    async def test_without_a_tag_history_store_nothing_is_reported(self, tags):
+        uc = AnalyzeImageUseCase(MockRepo(tags), MockScanner(), MockEOL())
+        result = await uc.execute("node:22-alpine")
+        assert result.tag_drift_note == ""
+
+
+class TestVulnTrendDetection:
+    """Same idea as tag drift, one level down: not just 'did the bytes
+    change' but 'did the count of findings in them change'. Unlike tag
+    drift this applies to a digest reference too -- the scanner's own
+    database can learn about a new CVE for the exact same, unmoving bytes
+    between two runs."""
+
+    @staticmethod
+    def _image(digest: str) -> DockerImage:
+        return DockerImage(name="node", tag="22-alpine", digest=digest)
+
+    @pytest.mark.asyncio
+    async def test_a_changed_vuln_count_is_reported(self):
+        history = ScanHistoryStore(MockCache())
+        digest = "sha256:" + "a" * 64
+        crit_vuln = Vulnerability(cve_id="CVE-1", severity=Severity.CRITICAL, package_name="pkg")
+
+        first = AnalyzeImageUseCase(
+            repository=MockRepo([self._image(digest)]),
+            scanner=MockScanner(vulns=[]),
+            eol_checker=MockEOL(),
+            scan_history=history,
+        )
+        await first.execute("node:22-alpine")
+
+        second = AnalyzeImageUseCase(
+            repository=MockRepo([self._image(digest)]),
+            scanner=MockScanner(vulns=[crit_vuln]),
+            eol_checker=MockEOL(),
+            scan_history=history,
+        )
+        result = await second.execute("node:22-alpine")
+
+        assert "critical +1" in result.vuln_trend_note
+
+    @pytest.mark.asyncio
+    async def test_the_first_scan_has_nothing_to_compare_against(self):
+        history = ScanHistoryStore(MockCache())
+        uc = AnalyzeImageUseCase(
+            repository=MockRepo([self._image("sha256:" + "a" * 64)]),
+            scanner=MockScanner(),
+            eol_checker=MockEOL(),
+            scan_history=history,
+        )
+        result = await uc.execute("node:22-alpine")
+        assert result.vuln_trend_note == ""
+
+    @pytest.mark.asyncio
+    async def test_unchanged_counts_report_nothing(self):
+        history = ScanHistoryStore(MockCache())
+        digest = "sha256:" + "a" * 64
+
+        for _ in range(2):
+            uc = AnalyzeImageUseCase(
+                repository=MockRepo([self._image(digest)]),
+                scanner=MockScanner(vulns=[]),
+                eol_checker=MockEOL(),
+                scan_history=history,
+            )
+            result = await uc.execute("node:22-alpine")
+
+        assert result.vuln_trend_note == ""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_scan_is_never_recorded(self):
+        """A scan that did not complete has no counts worth trusting --
+        recording it would let a technical failure masquerade as 'zero
+        vulnerabilities found'."""
+        history = ScanHistoryStore(MockCache())
+        uc = AnalyzeImageUseCase(
+            repository=MockRepo([self._image("sha256:" + "a" * 64)]),
+            scanner=MockScanner(status=ScanStatus.ERROR),
+            eol_checker=MockEOL(),
+            scan_history=history,
+        )
+        result = await uc.execute("node:22-alpine")
+
+        assert result.vuln_trend_note == ""
+        assert (await history.get("node:22-alpine")).is_empty
+
+    @pytest.mark.asyncio
+    async def test_without_a_scan_history_store_nothing_is_reported(self):
+        uc = AnalyzeImageUseCase(
+            repository=MockRepo([self._image("sha256:" + "a" * 64)]),
+            scanner=MockScanner(),
+            eol_checker=MockEOL(),
+        )
+        result = await uc.execute("node:22-alpine")
+        assert result.vuln_trend_note == ""
 
 
 class TestCompareImages:

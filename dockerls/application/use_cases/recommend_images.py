@@ -31,6 +31,7 @@ from dockerls.domain.entities.recommendation import (
     RemediationStep,
 )
 from dockerls.domain.value_objects.remediation_score import RemediationScore
+from dockerls.domain.value_objects.scan_plan import DEFAULT_SCAN_BUDGET, plan_scans
 from dockerls.domain.value_objects.security_score import SecurityScore
 from dockerls.domain.value_objects.security_tier import SecurityTier
 from dockerls.domain.value_objects.tristate import Tristate
@@ -39,6 +40,7 @@ from dockerls.utils.ignore_file import active_ignored_cve_ids, load_ignore_rules
 from dockerls.utils.validation import validate_threshold, validate_workers
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from dockerls.application.services.cross_validation import CrossValidator
@@ -50,6 +52,7 @@ if TYPE_CHECKING:
     from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
     from dockerls.domain.interfaces.scanner import ScannerInterface
     from dockerls.infrastructure.evidence import EvidenceStore
+    from dockerls.integrations.exploitdb.client import ExploitDBClient, ExploitEntry
     from dockerls.integrations.threat_intel.client import ThreatIntelClient
 
 # How many ranked candidates are surfaced to the user.
@@ -83,6 +86,8 @@ class RecommendImagesUseCase:
         cache_ttl_seconds: int = 86400,
         hardening: HardeningAnalyzer | None = None,
         resolve_digests: bool = True,
+        exploitdb: ExploitDBClient | None = None,
+        scan_budget: int = DEFAULT_SCAN_BUDGET,
     ):
         # Guarded at construction rather than only at the CLI boundary: the
         # use case is the last place that can refuse a value which would
@@ -93,6 +98,9 @@ class RecommendImagesUseCase:
         self._repository = repository
         self._scanner = scanner
         self._eol_checker = eol_checker
+        # Quantas tags este run pode medir. 0 mede todas, que é o
+        # comportamento anterior e segue disponível por configuração.
+        self._scan_budget = max(0, scan_budget)
         self._cache = cache
         self._max_critical = validate_threshold(max_critical, "max_critical")
         self._max_high = validate_threshold(max_high, "max_high")
@@ -100,6 +108,7 @@ class RecommendImagesUseCase:
         self._workers = validate_workers(workers)
         self._ignored_cves = active_ignored_cve_ids(load_ignore_rules(ignore_path))
         self._threat_intel = threat_intel
+        self._exploitdb = exploitdb
         self._observer: ScanObserver = observer or NullObserver()
         self._cross_validator = cross_validator
         self._evidence = evidence
@@ -131,6 +140,9 @@ class RecommendImagesUseCase:
             [
                 ",".join(sorted(self._ignored_cves)),
                 "threat-intel" if self._threat_intel is not None else "no-threat-intel",
+                # Uma análise enriquecida com Exploit-DB carrega campos que a
+                # anterior não tinha; servir a antiga esconderia a coluna.
+                "exploitdb" if self._exploitdb is not None else "no-exploitdb",
                 # Which tool, at which version, produced the cached numbers.
                 # Without this the cache served a Trivy result to a run using
                 # Grype, and kept serving results from before a scanner
@@ -138,6 +150,16 @@ class RecommendImagesUseCase:
                 # which is the same substitution this project refuses
                 # everywhere else, just slower.
                 self._scanner_identity,
+                # And which version of *this* tool produced them. A cached
+                # `ImageAnalysis` carries the score, the tier and the
+                # readiness verdict, all of which are computed by policy
+                # that lives here -- so a release that changes a penalty
+                # weight, a tier threshold or a blocking rule would keep
+                # serving verdicts decided under the previous rules until
+                # the TTL ran out. `CACHE_SCHEMA_VERSION` does not cover
+                # this: the payload's *shape* is unchanged, so validation
+                # accepts it and only the meaning has moved.
+                __version__,
             ]
         )
         return hashlib.sha256(material.encode()).hexdigest()[:12]
@@ -260,6 +282,23 @@ class RecommendImagesUseCase:
             ],
         )
 
+        # Quem medir. Medir as 100 tags para mostrar cinco custa dois a
+        # quatro minutos, e 95 desses scans existem só para serem
+        # descartados no ranqueamento. O plano corta isso -- e declara o
+        # que cortou: uma tag adiada não é uma tag pior, é uma tag *não
+        # medida*, e ela aparece no resultado com o motivo.
+        plan = plan_scans(tags, self._scan_budget)
+        if plan.deferred:
+            self._observer.phase_result(
+                "Selected for measurement",
+                [
+                    ("measuring", str(len(plan.selected))),
+                    ("deferred", str(plan.deferred_count)),
+                    ("budget", str(plan.budget)),
+                ],
+            )
+        tags = plan.selected
+
         await self._pin_digests(tags)
 
         analyses, unverified, errors = await self._scan_all(tags)
@@ -312,6 +351,8 @@ class RecommendImagesUseCase:
             baseline=self._baseline(),
             sources_searched=_sources_of(tags),
             metrics=self._metrics,
+            deferred=plan.deferred,
+            tags_discovered=plan.discovered,
         )
         result.evidence_manifest = await self._write_manifest(image_name, selected)
         return result
@@ -373,6 +414,16 @@ class RecommendImagesUseCase:
         self._metrics.unique_digests = len({_dedup_key(tag) for tag in tags})
         self._metrics.workers = self._workers
 
+        # Caminho em lote: quando a engine Go está disponível, todos os
+        # scans que faltam saem numa travessia de processo só, e
+        # `scan_cache` chega aqui já preenchido. `get_scan` abaixo então
+        # não dispara scan nenhum -- ele encontra tudo pela chave.
+        #
+        # `prefetched` são as análises que já estavam no cache do disco: o
+        # lote tem de perguntar por elas *antes* de medir, ou um run
+        # inteiramente cacheado voltaria a escanear cem imagens.
+        prefetched, batched = await self._prescan(tags, scan_cache, _dedup_key)
+
         async def get_scan(image: DockerImage) -> Any:
             key = _dedup_key(image)
             lock = scan_locks.setdefault(key, asyncio.Lock())
@@ -403,7 +454,13 @@ class RecommendImagesUseCase:
             self._observer.scanning(image.full_reference)
             analysis: ImageAnalysis | None = None
             try:
-                cached = await self._get_cached(image)
+                # Já perguntado pelo lote; perguntar de novo seria uma
+                # segunda leitura do cache por imagem.
+                cached = (
+                    prefetched.get(image.full_reference)
+                    if batched
+                    else await self._get_cached(image)
+                )
                 if cached:
                     self._metrics.cache_hits += 1
                     analysis = cached
@@ -419,7 +476,9 @@ class RecommendImagesUseCase:
                 if self._ignored_cves:
                     scan = _apply_ignore_rules(scan, self._ignored_cves)
                 if self._threat_intel is not None:
-                    scan = await _enrich_with_threat_intel(scan, self._threat_intel)
+                    scan = await _enrich_with_threat_intel(
+                        scan, self._threat_intel, self._exploitdb
+                    )
 
                 product, version = _extract_product_version(image)
                 eol_status = await _eol_status(self._eol_checker, product, version)
@@ -456,6 +515,71 @@ class RecommendImagesUseCase:
         self._observer.start(len(tags))
         results = await asyncio.gather(*[analyze_tag(tag) for tag in tags])
         return [r for r in results if r is not None], unverified, errors
+
+    async def _prescan(
+        self,
+        tags: list[DockerImage],
+        scan_cache: dict[str, Any],
+        dedup_key: Callable[[DockerImage], str],
+    ) -> tuple[dict[str, ImageAnalysis], bool]:
+        """Mede o lote inteiro de uma vez, quando a engine Go existe.
+
+        O que muda em relação ao caminho de sempre não é o scan: o Trivy
+        continua sendo o Trivy e continua custando o que custa. O que muda
+        é o entorno -- criar e colher N processos, revezar o diretório de
+        cache, coordenar o dedup por digest -- que sai de N travessias
+        Python<->processo para uma.
+
+        Devolve `(análises já em cache, se o lote aconteceu)`. Quando o
+        lote não acontece -- engine ausente, versão incompatível, qualquer
+        falha -- devolve `({}, False)` e o pipeline segue exatamente como
+        antes. A engine é uma otimização, e uma otimização que pode
+        derrubar o comando não vale o ganho.
+        """
+        batch = getattr(self._scanner, "batch", None)
+        if batch is None:
+            return {}, False
+
+        # O cache do disco vem primeiro: um run inteiramente cacheado tem
+        # de continuar fazendo zero scans, e medir para depois descobrir
+        # que a resposta já estava guardada seria o pior dos dois mundos.
+        cached_analyses = await asyncio.gather(*[self._get_cached(tag) for tag in tags])
+        prefetched = {
+            tag.full_reference: analysis
+            for tag, analysis in zip(tags, cached_analyses, strict=True)
+            if analysis is not None
+        }
+
+        pending: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for tag in tags:
+            if tag.full_reference in prefetched:
+                continue
+            key = dedup_key(tag)
+            if key in seen:
+                continue
+            seen.add(key)
+            pending.append((tag.full_reference, key))
+
+        if not pending:
+            return prefetched, True
+
+        outcome = await batch.scan_batch(pending)
+        if outcome is None:
+            # A engine recusou o lote. As análises já lidas do cache não se
+            # perdem, mas o caminho individual precisa reler -- devolver
+            # `batched=True` aqui faria toda imagem não cacheada ser
+            # tratada como sem cache *e* sem scan.
+            return {}, False
+
+        for (_, key), result in zip(pending, outcome.results, strict=True):
+            scan_cache[key] = result
+        self._metrics.scans_performed += outcome.scans_performed
+        logger.info(
+            f"Go engine measured {len(pending)} targets in {outcome.wall_seconds:.1f}s "
+            f"({outcome.scans_performed} scans, {outcome.duplicates_collapsed} collapsed)"
+        )
+        return prefetched, True
 
     async def _finalize(
         self, pool: list[ImageAnalysis], unverified: list[UnverifiedImage]
@@ -689,8 +813,50 @@ def _assert_verified(analyses: list[ImageAnalysis]) -> None:
         )
 
 
-async def _enrich_with_threat_intel(scan: Any, threat_intel: ThreatIntelClient) -> Any:
-    """Tag CRITICAL/HIGH vulnerabilities with CISA KEV / EPSS signal.
+async def _exploitdb_lookup(
+    exploitdb: ExploitDBClient | None, cve_ids: list[str]
+) -> dict[str, list[ExploitEntry]]:
+    """Consulta o Exploit-DB sem deixar a falha dela derrubar o resto.
+
+    O cliente já degrada sozinho, mas este comando enriquece dezenas de tags
+    em paralelo e uma exceção inesperada aqui abortaria a análise inteira de
+    uma imagem por causa de uma fonte que é, por definição, opcional.
+    """
+    if exploitdb is None:
+        return {}
+    try:
+        return await exploitdb.exploits_for(cve_ids)
+    except Exception as e:  # pragma: no cover - o cliente já trata o previsível
+        logger.warning(f"Exploit-DB lookup failed, exploit status stays UNKNOWN: {e}")
+        return {}
+
+
+def _exploitdb_fields(entries: list[ExploitEntry] | None, *, available: bool) -> dict[str, Any]:
+    """Os três campos de explorabilidade, ou nada quando nada foi consultado.
+
+    Com a fonte indisponível os campos não são tocados: o default do modelo
+    é UNKNOWN, e escrever FALSE aqui transformaria uma consulta que não
+    aconteceu numa afirmação de que não existe exploit publicado.
+    """
+    if not available:
+        return {}
+    if not entries:
+        return {"exploitdb_status": Tristate.FALSE}
+    return {
+        "exploitdb_status": Tristate.TRUE,
+        "exploitdb_ids": [e.edb_id for e in entries],
+        # Um único exploit verificado já basta: a pergunta é se existe prova
+        # reproduzida, não se todas as entradas foram reproduzidas.
+        "exploitdb_verified": any(e.verified for e in entries),
+    }
+
+
+async def _enrich_with_threat_intel(
+    scan: Any,
+    threat_intel: ThreatIntelClient,
+    exploitdb: ExploitDBClient | None = None,
+) -> Any:
+    """Tag CRITICAL/HIGH vulnerabilities with CISA KEV / EPSS / Exploit-DB signal.
 
     The enrichment records *whether the feeds answered*, not just what they
     said. With the KEV catalogue unreachable every lookup returns the empty
@@ -699,6 +865,13 @@ async def _enrich_with_threat_intel(scan: Any, threat_intel: ThreatIntelClient) 
     state that the image had no known-exploited vulnerabilities. So a
     CVE now carries `kev_status`: TRUE (listed), FALSE (catalogue answered
     and does not list it), UNKNOWN (nothing was consulted).
+
+    Exploit-DB rides the same entry point rather than a second pass: it is
+    the same question about the same CVEs, and a separate flow would mean
+    two places to keep the "absent lookup is never a negative" rule in.
+    KEV and Exploit-DB are not redundant -- KEV means observed exploitation
+    in the wild, Exploit-DB means published exploit code -- so a CVE can
+    carry one and not the other.
 
     Enrichment is attempted only for CRITICAL/HIGH findings, so anything
     below stays UNKNOWN by construction -- which is correct: it was not
@@ -712,11 +885,19 @@ async def _enrich_with_threat_intel(scan: Any, threat_intel: ThreatIntelClient) 
     if not notable_ids:
         return scan
 
-    kev_ids = await threat_intel.known_exploited(notable_ids)
-    epss = await threat_intel.epss_scores(notable_ids)
+    # As três fontes respondem sobre o mesmo lote de CVEs e não dependem
+    # uma da outra -- pedi-las em sequência somava a latência das três num
+    # scan que já espera pelo scanner. Uma falha isolada não derruba as
+    # outras: cada chamada já degrada sozinha para o tri-state UNKNOWN.
+    kev_ids, epss, exploits = await asyncio.gather(
+        threat_intel.known_exploited(notable_ids),
+        threat_intel.epss_scores(notable_ids),
+        _exploitdb_lookup(exploitdb, notable_ids),
+    )
+    exploitdb_available = exploitdb is not None and bool(exploitdb.available)
     kev_available = _answered(threat_intel.kev_available, bool(kev_ids))
     epss_available = _answered(threat_intel.epss_available, bool(epss))
-    if not kev_available and not epss_available:
+    if not kev_available and not epss_available and not exploitdb_available:
         # Nothing was learned. Returning the scan untouched leaves every
         # `kev_status` at UNKNOWN, which is exactly what happened.
         logger.warning(
@@ -744,6 +925,7 @@ async def _enrich_with_threat_intel(scan: Any, threat_intel: ThreatIntelClient) 
                     "epss_known": epss_available and score is not None,
                     "epss_percentile": threat_intel.percentile_of(key),
                     "threat_intel_timestamp": timestamp,
+                    **_exploitdb_fields(exploits.get(key), available=exploitdb_available),
                 }
             )
         )

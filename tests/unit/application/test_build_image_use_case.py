@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -351,7 +351,7 @@ class TestBuildImageUseCase:
 
         assert response.success is False
         assert response.exit_code == EXIT_POLICY
-        assert "Vulnerabilities exceed threshold" in response.error
+        assert "Gate failed (severity)" in response.error
 
     def test_fail_on_without_a_scan_is_an_execution_error(self, use_case, context):
         """Um portão que não pôde ser avaliado não é um portão aprovado.
@@ -746,7 +746,7 @@ class TestFailOnThreshold:
     def test_unknown_threshold_raises_instead_of_passing(self, bare_use_case):
         """Falhar alto é a única opção segura: devolver False para um limiar
         que não se entende é um portão aberto que parece fechado."""
-        with pytest.raises(ValueError, match="Unknown --fail-on threshold"):
+        with pytest.raises(ValueError, match="unknown --fail-on gate"):
             bare_use_case._should_fail(ScanResult(critical=5), "kritikal")
 
 
@@ -946,7 +946,7 @@ class TestPushRefusesABrokenChain:
 
         assert response.success is False
         assert response.exit_code == EXIT_POLICY
-        assert "não corresponde à entrada" in (response.error or "")
+        assert "does not correspond to the input" in (response.error or "")
         use_case._push_image.assert_not_called()
 
     def test_a_stable_input_publishes_normally(self, tmp_path):
@@ -1051,7 +1051,7 @@ class TestPolicyGate:
             )
 
         assert response.exit_code == EXIT_POLICY
-        assert "Vulnerabilities exceed threshold" in response.error
+        assert "Gate failed (severity)" in response.error
 
     def test_a_politica_aperta_o_que_a_linha_de_comando_nao_pediu(self, use_case, context):
         from dockerls.domain.value_objects.build_policy import BuildPolicy
@@ -1177,7 +1177,7 @@ class TestPolicyGate:
         response = self._run(use_case, context, BuildPolicy(require_nonroot=True))
 
         assert response.exit_code == EXIT_POLICY
-        assert "roda como root" in response.policy_violations[0].message
+        assert "the image runs as root" in response.policy_violations[0].message
 
     def test_sem_a_checagem_a_regra_reprova_por_ausencia_de_medida(self, context):
         """Não determinar não é o mesmo que estar em ordem."""
@@ -1188,7 +1188,7 @@ class TestPolicyGate:
         response = self._run(use_case, context, BuildPolicy(require_nonroot=True))
 
         assert response.exit_code == EXIT_POLICY
-        assert "não foi possível determinar" in response.policy_violations[0].message
+        assert "could not be determined" in response.policy_violations[0].message
 
 
 class TestAttribution:
@@ -1264,7 +1264,7 @@ class TestAttribution:
         report = response.inheritance
         assert report is not None
         assert not report.available
-        assert "não pôde ser escaneada" in report.unavailable_reason
+        assert "could not be scanned" in report.unavailable_reason
         assert not report.introduced
 
     def test_sem_a_flag_nada_e_atribuido(self, use_case, context):
@@ -1437,8 +1437,8 @@ class TestGateOriginHint:
         response = self._run(use_case, context, built, base)
 
         assert response.exit_code == EXIT_POLICY
-        assert "1 da base node:22-alpine (1 com correção publicada)" in response.error
-        assert "1 das suas camadas" in response.error
+        assert "1 from the base node:22-alpine (1 with a published fix)" in response.error
+        assert "1 from your layers" in response.error
 
     def test_sem_atribuicao_o_portao_nao_insinua_origem(self, use_case, context):
         """Um portão que insinua uma origem que não mediu é pior do que um
@@ -1487,3 +1487,127 @@ class TestGateOriginHint:
 
         base_scans = [c for c in mock_scan.call_args_list if c.args[0] == "node:22-alpine"]
         assert len(base_scans) == 1
+
+
+class TestTheGateSeesExploitability:
+    """O `build` escaneia direto com Trivy/Grype, fora do pipeline que
+    enriquece com KEV e EPSS -- então os portões novos não tinham dado
+    nenhum para olhar, e não reprovariam nunca. Um portão de segurança que
+    não avalia é a pior falha possível: a que não aparece."""
+
+    @staticmethod
+    def _scan(*vulns, **counts):
+        from dockerls.application.use_cases.build_image import ScanResult as BuildScanResult
+
+        return BuildScanResult(
+            vulnerabilities=list(vulns),
+            total_vulnerabilities=len(vulns),
+            **counts,
+        )
+
+    @staticmethod
+    def _intel(
+        kev: set[str] | None = None, epss: dict[str, float] | None = None, *, available=True
+    ):
+        client = MagicMock()
+        client.known_exploited = AsyncMock(return_value=kev or set())
+        client.epss_scores = AsyncMock(return_value=epss or {})
+        client.kev_available = available
+        return client
+
+    def _use_case(self, intel=None):
+        return BuildImageUseCase(MagicMock(), MagicMock(), threat_intel=intel)
+
+    def test_the_enrichment_marks_what_the_catalogue_listed(self):
+        scan = self._scan(
+            {"cve_id": "CVE-1", "severity": "CRITICAL"},
+            {"cve_id": "CVE-2", "severity": "HIGH"},
+            critical=1,
+            high=1,
+        )
+        use_case = self._use_case(self._intel(kev={"CVE-1"}, epss={"CVE-2": 0.87}))
+
+        enriched = use_case._enrich(scan)
+
+        assert enriched is not None
+        by_id = {v["cve_id"]: v for v in enriched.vulnerabilities}
+        assert by_id["CVE-1"]["kev"] == "true"
+        assert by_id["CVE-2"]["kev"] == "false"
+        assert by_id["CVE-2"]["epss"] == 0.87
+
+    def test_a_catalogue_that_did_not_answer_marks_nothing(self):
+        """O erro que este projeto existe para não cometer: transformar um
+        feed fora do ar em "nenhuma vulnerabilidade explorada"."""
+        scan = self._scan({"cve_id": "CVE-1", "severity": "CRITICAL"}, critical=1)
+        use_case = self._use_case(self._intel(available=False))
+
+        enriched = use_case._enrich(scan)
+
+        assert enriched is not None
+        assert "kev" not in enriched.vulnerabilities[0]
+
+    def test_only_critical_and_high_are_looked_up(self):
+        """Como no `recommend`. O que fica de fora permanece não consultado,
+        e isso é correto: não foi consultado."""
+        intel = self._intel()
+        scan = self._scan(
+            {"cve_id": "CVE-1", "severity": "CRITICAL"},
+            {"cve_id": "CVE-2", "severity": "LOW"},
+            critical=1,
+            low=1,
+        )
+
+        self._use_case(intel)._enrich(scan)
+
+        assert intel.known_exploited.await_args.args[0] == ["CVE-1"]
+
+    def test_without_a_client_nothing_is_consulted(self):
+        """`--fail-on high` não deve sair para a rede buscar o catálogo KEV."""
+        scan = self._scan({"cve_id": "CVE-1", "severity": "CRITICAL"}, critical=1)
+        assert self._use_case()._enrich(scan) is scan
+
+    def test_a_lookup_that_blows_up_leaves_everything_unmeasured(self):
+        """Derrubar o build aqui trocaria uma medição ausente por um erro
+        técnico. O portão é quem decide o que fazer com a ausência."""
+        intel = self._intel()
+        intel.known_exploited = AsyncMock(side_effect=OSError("network down"))
+        scan = self._scan({"cve_id": "CVE-1", "severity": "CRITICAL"}, critical=1)
+
+        enriched = self._use_case(intel)._enrich(scan)
+
+        assert enriched is not None
+        assert "kev" not in enriched.vulnerabilities[0]
+
+    def test_an_exploited_medium_now_fails_where_it_used_to_pass(self):
+        """O caso que motivou tudo isto."""
+        scan = self._scan(
+            {"cve_id": "CVE-1", "severity": "MEDIUM", "kev": "TRUE", "package": "openssl"},
+            medium=1,
+        )
+        use_case = self._use_case()
+
+        assert use_case._should_fail(scan, "high") is False
+        assert use_case._should_fail(scan, "kev") is True
+        assert "CVE-1" in use_case._gate_failure_summary(scan, "kev")
+
+    def test_a_requested_gate_that_could_not_run_stops_the_build(self):
+        scan = self._scan({"cve_id": "CVE-1", "severity": "CRITICAL"}, critical=1)
+        use_case = self._use_case()
+
+        assert use_case._should_fail(scan, "kev") is True
+        summary = use_case._gate_failure_summary(scan, "kev")
+        assert "Gate not evaluated" in summary
+        assert "absent measurement" in summary
+
+    def test_the_summary_names_every_gate_that_failed(self):
+        scan = self._scan(
+            {"cve_id": "CVE-1", "severity": "CRITICAL", "kev": "TRUE", "epss": 0.9},
+            critical=1,
+        )
+
+        summary = self._use_case()._gate_failure_summary(scan, "critical,kev,epss>=0.5")
+
+        assert "Gate failed (severity)" in summary
+        assert "Gate failed (kev)" in summary
+        assert "Gate failed (epss)" in summary
+        assert "[--fail-on critical,kev,epss>=0.5]" in summary

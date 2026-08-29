@@ -100,8 +100,7 @@ RUNTIME_BASES: dict[tuple[Runtime, OsFamily], RuntimeBase] = {
     (Runtime.JAVA, OsFamily.ALPINE): RuntimeBase(
         "eclipse-temurin",
         "21-jre-alpine",
-        note="JRE, não JDK: compilador e ferramentas de build não são "
-        "necessários para rodar um jar",
+        note="JRE, not JDK: a compiler and build tooling are not needed to run a jar",
     ),
     (Runtime.JAVA, OsFamily.DEBIAN): RuntimeBase("eclipse-temurin", "21-jre"),
     (Runtime.JAVA, OsFamily.UBUNTU): RuntimeBase("eclipse-temurin", "21-jre-noble"),
@@ -112,7 +111,7 @@ RUNTIME_BASES: dict[tuple[Runtime, OsFamily], RuntimeBase] = {
         "node",
         "22-alpine",
         builtin_user="node",
-        note="a imagem oficial já traz o usuário `node`",
+        note="the official image already ships the `node` user",
         bundled_manager=(
             "/usr/local/lib/node_modules/npm",
             "/usr/local/bin/npm",
@@ -143,7 +142,7 @@ RUNTIME_BASES: dict[tuple[Runtime, OsFamily], RuntimeBase] = {
     (Runtime.PYTHON, OsFamily.ALPINE): RuntimeBase(
         "python",
         "3.12-alpine",
-        note="musl: wheels precisam ser musllinux ou o pacote compila no build",
+        note="musl: wheels must be musllinux or the package compiles at build time",
     ),
     (Runtime.PYTHON, OsFamily.DEBIAN): RuntimeBase("python", "3.12-slim-bookworm"),
     (Runtime.PYTHON, OsFamily.DISTROLESS): RuntimeBase(
@@ -187,46 +186,46 @@ class PackageChoice:
 PACKAGE_CATALOG: tuple[PackageChoice, ...] = (
     PackageChoice(
         key="ca-certificates",
-        purpose="validar TLS ao falar com qualquer serviço HTTPS",
-        cost="praticamente nenhum; sem ele toda conexão TLS falha na verificação",
+        purpose="validating TLS when talking to any HTTPS service",
+        cost="practically none; without it every TLS connection fails verification",
         apk="ca-certificates",
         apt="ca-certificates",
         usually_present=True,
     ),
     PackageChoice(
         key="tzdata",
-        purpose="fusos horários; sem ele o container fica em UTC e datas locais erram",
-        cost="alguns MB de dados, sem executável novo",
+        purpose="time zones; without it the container stays on UTC and local dates are wrong",
+        cost="a few MB of data, no new executable",
         apk="tzdata",
         apt="tzdata",
     ),
     PackageChoice(
         key="curl",
-        purpose="HEALTHCHECK por HTTP e diagnóstico de rede",
-        cost="um cliente HTTP completo dentro do container -- é o que um atacante "
-        "usa para baixar o segundo estágio",
+        purpose="HTTP HEALTHCHECK and network diagnostics",
+        cost="a full HTTP client inside the container -- what an attacker uses to "
+        "fetch the second stage",
         apk="curl",
         apt="curl",
     ),
     PackageChoice(
         key="wget",
-        purpose="alternativa ao curl para baixar arquivos",
-        cost="mesmo custo do curl; ter os dois dobra a superfície sem dobrar a utilidade",
+        purpose="an alternative to curl for downloading files",
+        cost="the same cost as curl; having both doubles the surface, not the use",
         apk="wget",
         apt="wget",
     ),
     PackageChoice(
         key="bash",
-        purpose="scripts que dependem de recursos que o `sh` do Alpine não tem",
-        cost="um shell mais capaz é um shell mais útil para quem invade",
+        purpose="scripts relying on features the Alpine `sh` does not have",
+        cost="a more capable shell is a more useful shell for whoever breaks in",
         apk="bash",
         apt="bash",
     ),
     PackageChoice(
         key="git",
-        purpose="clonar ou inspecionar repositórios em tempo de execução",
-        cost="raramente necessário em produção, e traz uma árvore de dependências "
-        "grande; quase sempre pertence ao estágio de build",
+        purpose="cloning or inspecting repositories at runtime",
+        cost="rarely needed in production, and pulls a large dependency tree; it "
+        "almost always belongs in the build stage",
         apk="git",
         apt="git",
     ),
@@ -240,21 +239,21 @@ PACKAGE_CATALOG: tuple[PackageChoice, ...] = (
     PackageChoice(
         key="openssl",
         purpose="gerar certificados ou depurar TLS de dentro do container",
-        cost="a biblioteca já está lá; isto adiciona a *ferramenta* de linha de comando",
+        cost="the library is already there; this adds the command-line *tool*",
         apk="openssl",
         apt="openssl",
     ),
     PackageChoice(
         key="tini",
-        purpose="init mínimo que repassa sinais e enterra processos órfãos",
-        cost="quase nada, e resolve o pid 1 que ignora SIGTERM",
+        purpose="a minimal init that forwards signals and reaps orphaned processes",
+        cost="almost nothing, and it fixes the pid 1 that ignores SIGTERM",
         apk="tini",
         apt="tini",
     ),
     PackageChoice(
         key="libc6-compat",
-        purpose="camada de compatibilidade glibc no Alpine, para binários pré-compilados",
-        cost="só faz sentido no Alpine; num Debian já existe glibc de verdade",
+        purpose="a glibc compatibility layer on Alpine, for pre-compiled binaries",
+        cost="only makes sense on Alpine; a Debian already has real glibc",
         apk="libc6-compat",
         apt="",
     ),
@@ -264,16 +263,16 @@ PACKAGE_CATALOG: tuple[PackageChoice, ...] = (
 #: omissões: alguém que procurar por eles merece a explicação.
 REFUSED_PACKAGES: dict[str, str] = {
     "sudo": (
-        "numa imagem que já roda sem privilégio, `sudo` existe para cruzar a "
-        "fronteira que ela acabou de estabelecer -- e é setuid para isso"
+        "in an image that already runs unprivileged, `sudo` exists to cross the "
+        "boundary it just established -- and it is setuid in order to"
     ),
     "su-exec": (
-        "trocar de usuário em runtime desfaz o `USER` da imagem; se o processo "
-        "precisa de outro usuário, declare-o no `USER`"
+        "switching user at runtime undoes the image `USER`; if the process needs a "
+        "different user, declare it in `USER`"
     ),
     "docker": (
         "o cliente Docker dentro do container implica acesso ao socket do "
-        "daemon, que é equivalente a root no host"
+        "daemon, which is equivalent to root on the host"
     ),
 }
 
@@ -312,24 +311,24 @@ class BaseRecipe:
             return RUNTIME_BASES[(self.runtime, self.family)]
         except KeyError as e:
             raise UnsupportedCombinationError(
-                f"não há imagem base publicada para {self.runtime} sobre {self.family}"
+                f"no base image is published for {self.runtime} on {self.family}"
             ) from e
 
     def validate(self) -> None:
         base = self.base  # levanta se a combinação não existe
         if self.packages and not self.family.installs_packages:
             raise UnsupportedCombinationError(
-                "distroless não tem gerenciador de pacotes nem shell: não é possível "
-                "instalar nada nela. Use alpine ou debian se você precisa de pacotes, "
-                "ou nenhum pacote se o que você quer é a menor superfície possível"
+                "distroless has no package manager and no shell: nothing can be "
+                "installed into it. Use alpine or debian if you need packages, or no "
+                "packages at all if what you want is the smallest possible surface"
             )
         for package in self.packages:
             if package in REFUSED_PACKAGES:
                 raise UnsupportedCombinationError(
-                    f"{package} não é oferecido: {REFUSED_PACKAGES[package]}"
+                    f"{package} is not offered: {REFUSED_PACKAGES[package]}"
                 )
             if package not in {choice.key for choice in PACKAGE_CATALOG}:
-                raise UnsupportedCombinationError(f"pacote desconhecido: {package}")
+                raise UnsupportedCombinationError(f"unknown package: {package}")
         if base.builtin_user and self.user_name != base.builtin_user:
             # Não é erro -- só não vale a pena criar um usuário quando a
             # imagem oficial já traz um. O gerador reaproveita o existente.
@@ -352,8 +351,8 @@ def render(recipe: BaseRecipe) -> str:
         ]
     else:
         lines += [
-            "# ATENÇÃO: base não fixada por digest. O que você testar e o que for",
-            "# construído amanhã podem ser bytes diferentes sem nenhuma mudança sua.",
+            "# WARNING: base not pinned by digest. What you test and what is built",
+            "# tomorrow can be different bytes, with no change of yours.",
             f"FROM {reference}",
         ]
     lines.append("")
@@ -377,20 +376,20 @@ def render(recipe: BaseRecipe) -> str:
         "WORKDIR /app",
         f"USER {user}",
         "",
-        "# Sem ENTRYPOINT, EXPOSE ou HEALTHCHECK: uma imagem base não sabe em que",
-        "# porta a aplicação escuta nem o que significa 'saudável' para ela.",
-        "# Declarar aqui seria herdado errado por todo consumidor.",
+        "# No ENTRYPOINT, EXPOSE or HEALTHCHECK: a base image does not know which",
+        "# port the application listens on, nor what 'healthy' means for it.",
+        "# Declaring them here would be inherited wrongly by every consumer.",
     ]
     return "\n".join(lines) + "\n"
 
 
 def _header(recipe: BaseRecipe, base: RuntimeBase) -> list[str]:
     lines = [
-        f"# Imagem BASE gerada pelo DockerLs: {recipe.family}"
+        f"# BASE image generated by DockerLs: {recipe.family}"
         + (f" + {recipe.runtime}" if recipe.runtime is not Runtime.NONE else ""),
         "#",
-        "# Não contém aplicação. Quem consome faz `FROM esta-imagem` e traz o",
-        "# próprio artefato.",
+        "# Contains no application. Consumers do `FROM this-image` and bring",
+        "# their own artifact.",
     ]
     if base.note:
         lines += ["#", f"# {base.note}."]
@@ -428,8 +427,8 @@ def _packages(recipe: BaseRecipe) -> list[str]:
     )
 
     comment = [
-        "# O digest congela a base no dia em que foi publicada; sem esta linha, um",
-        "# pacote corrigido depois dessa data continuaria velho aqui.",
+        "# The digest freezes the base on the day it was published; without this line,",
+        "# a package fixed after that date would stay old here.",
     ]
     if recipe.family.uses_apk:
         if not names:
@@ -437,7 +436,7 @@ def _packages(recipe: BaseRecipe) -> list[str]:
         pacotes = " \\\n    ".join(names)
         return [
             *comment,
-            "# `--no-cache` não deixa índice para trás: não há o que limpar numa",
+            "# `--no-cache` leaves no index behind: there is nothing to clean up in",
             "# camada seguinte, e o cache removido depois ficaria na camada anterior.",
             "RUN apk upgrade --no-cache && \\",
             "    apk add --no-cache \\",
@@ -453,7 +452,7 @@ def _packages(recipe: BaseRecipe) -> list[str]:
     pacotes = " \\\n    ".join(names)
     return [
         *comment,
-        "# A lista de índices sai na mesma camada que a criou: removê-la depois",
+        "# The index lists go out in the layer that created them: removing them later",
         "# deixaria os bytes na camada anterior.",
         "RUN apt-get update && apt-get upgrade -y --no-install-recommends && \\",
         "    apt-get install -y --no-install-recommends \\",
@@ -464,8 +463,8 @@ def _packages(recipe: BaseRecipe) -> list[str]:
 
 def _create_user(recipe: BaseRecipe) -> list[str]:
     comment = [
-        "# uid alto e fixo: quem consome herda o usuário sem precisar recriá-lo,",
-        "# e um uid alto não colide com usuários do host num bind mount.",
+        "# a high, fixed uid: consumers inherit the user without recreating it,",
+        "# and a high uid does not collide with host users on a bind mount.",
     ]
     if recipe.family.uses_apk:
         return [
@@ -496,9 +495,9 @@ def _strip_manager(base: RuntimeBase) -> list[str]:
     """
     caminhos = " \\\n        ".join(base.bundled_manager)
     return [
-        f"# Remove {base.bundled_manager_note}: numa base de execução, as dependências",
-        "# que o gerenciador carrega dentro de si são superfície pura -- e ficam fora",
-        "# do alcance do upgrade do sistema, porque não são pacotes da distribuição.",
+        f"# Removes {base.bundled_manager_note}: in a runtime base, the dependencies",
+        "# a package manager carries inside itself are pure surface -- and they sit",
+        "# outside the reach of a system upgrade, not being distribution packages.",
         "USER root",
         "RUN rm -rf \\",
         f"        {caminhos}",
