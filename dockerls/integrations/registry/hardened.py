@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from dockerls.domain.entities.image import DockerImage
 from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
 from dockerls.integrations.registry.oci import OCIRegistryClient, is_runnable_tag
+
+if TYPE_CHECKING:
+    from dockerls.infrastructure.network.host_guard import HostGuard
 
 CHAINGUARD = "Chainguard"
 DISTROLESS = "Distroless"
@@ -42,8 +45,12 @@ class HardenedRepository(ImageRepositoryInterface):
     # application compiles at runtime.
     repositories: dict[str, tuple[str, ...]] = {}
 
-    def __init__(self, timeout: int = 30):
-        self._client = OCIRegistryClient(self.host, timeout=timeout)
+    def __init__(self, timeout: int = 30, guard: HostGuard | None = None):
+        # `self.host` is a constant of this class, but the hops that follow
+        # it -- redirects and the token realm -- are chosen by the far end,
+        # so the guard travels with the client here for the same reason it
+        # does for a user-supplied registry.
+        self._client = OCIRegistryClient(self.host, timeout=timeout, guard=guard)
 
     def repositories_for(self, image_name: str) -> list[str]:
         """Every repository of this source that could answer the query.

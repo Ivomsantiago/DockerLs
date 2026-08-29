@@ -37,12 +37,9 @@ of sockets.
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import ipaddress
 
 
 class NetworkDecision(StrEnum):
@@ -55,6 +52,8 @@ class NetworkDecision(StrEnum):
     BLOCKED_PRIVATE = "BLOCKED_PRIVATE"
     BLOCKED_UNSPECIFIED = "BLOCKED_UNSPECIFIED"
     BLOCKED_UNRESOLVABLE = "BLOCKED_UNRESOLVABLE"
+    BLOCKED_SPECIAL = "BLOCKED_SPECIAL"
+    BLOCKED_SCHEME = "BLOCKED_SCHEME"
 
 
 #: Decisions that permit the request.
@@ -113,7 +112,22 @@ class NetworkPolicy:
         return _EXPLANATIONS.get(decision, "").format(host=host)
 
     def _classify(self, address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> NetworkDecision:
-        if address.is_unspecified:
+        # An IPv6 address may *carry* an IPv4 one. `::ffff:127.0.0.1`,
+        # `2002:7f00:1::` (6to4) and `64:ff9b::7f00:1` (NAT64) all reach
+        # 127.0.0.1 on a host with the matching translation configured, and
+        # only the first of the three is recognised by `is_loopback`. Judge
+        # the address that would actually be contacted, then fall through to
+        # judging the wrapper too -- a tunnel does not launder a destination.
+        embedded = _embedded_ipv4(address)
+        if embedded is not None:
+            decision = self._classify(embedded)
+            if decision not in _ALLOWING:
+                return decision
+
+        if address.is_unspecified or _in_any(address, _WILDCARD_SOURCE):
+            # 0.0.0.0/8 in full, not just the exact 0.0.0.0: Linux routes
+            # `0.x.y.z` to the local host, so the whole block is a spelling
+            # of "loopback" that `is_loopback` does not catch.
             return NetworkDecision.BLOCKED_UNSPECIFIED
         if address.is_loopback:
             return (
@@ -125,6 +139,15 @@ class NetworkPolicy:
                 if self.allow_link_local
                 else NetworkDecision.BLOCKED_LINK_LOCAL
             )
+        if _in_any(address, _SPECIAL) or address.is_multicast or address.is_reserved:
+            # Shared/benchmark/reserved space and the carrier-grade NAT block
+            # where Alibaba Cloud serves instance credentials
+            # (100.100.100.200). None of it hosts a registry, all of it is
+            # reachable from a CI runner, so it is refused outright rather
+            # than folded into `allow_private_networks` -- an operator who
+            # turns private networks on to reach 10.0.0.0/8 has not thereby
+            # asked for a route to a metadata service.
+            return NetworkDecision.BLOCKED_SPECIAL
         if address.is_private:
             return (
                 NetworkDecision.ALLOWED
@@ -132,6 +155,65 @@ class NetworkPolicy:
                 else NetworkDecision.BLOCKED_PRIVATE
             )
         return NetworkDecision.ALLOWED
+
+
+#: 0.0.0.0/8. `is_unspecified` is only true for the single address 0.0.0.0,
+#: but the whole block behaves as "this host" on Linux.
+_WILDCARD_SOURCE = (ipaddress.ip_network("0.0.0.0/8"),)
+
+#: Ranges that are neither public nor plausible registry homes. Enumerated
+#: rather than derived from `is_global`, whose membership has changed between
+#: Python releases -- a security boundary should not move with the runtime.
+_SPECIAL = (
+    ipaddress.ip_network("100.64.0.0/10"),  # RFC 6598 CGNAT; Alibaba metadata
+    ipaddress.ip_network("192.0.0.0/24"),  # IETF protocol assignments
+    ipaddress.ip_network("192.0.2.0/24"),  # TEST-NET-1
+    ipaddress.ip_network("192.88.99.0/24"),  # deprecated 6to4 relay anycast
+    ipaddress.ip_network("198.18.0.0/15"),  # benchmarking
+    ipaddress.ip_network("198.51.100.0/24"),  # TEST-NET-2
+    ipaddress.ip_network("203.0.113.0/24"),  # TEST-NET-3
+    ipaddress.ip_network("240.0.0.0/4"),  # reserved, incl. 255.255.255.255
+    ipaddress.ip_network("64:ff9b::/96"),  # NAT64
+    ipaddress.ip_network("64:ff9b:1::/48"),  # local-use NAT64
+    ipaddress.ip_network("100::/64"),  # discard-only
+    ipaddress.ip_network("2001:db8::/32"),  # documentation
+)
+
+#: 6to4 (RFC 3056) and Teredo (RFC 4380) prefixes, whose payload is an IPv4
+#: address that the host may actually route to.
+_SIXTOFOUR = ipaddress.ip_network("2002::/16")
+_TEREDO = ipaddress.ip_network("2001::/32")
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _in_any(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    return any(address.version == net.version and address in net for net in networks)
+
+
+def _embedded_ipv4(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | None:
+    """The IPv4 address an IPv6 address encodes, if it encodes one.
+
+    Covers the four encodings a host can be configured to translate:
+    IPv4-mapped and IPv4-compatible (`::ffff:a.b.c.d`, `::a.b.c.d`), 6to4,
+    Teredo and NAT64. Returns None for an ordinary IPv6 address.
+    """
+    if not isinstance(address, ipaddress.IPv6Address):
+        return None
+    if address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    if address.sixtofour is not None and address in _SIXTOFOUR:
+        return address.sixtofour
+    if address.teredo is not None and address in _TEREDO:
+        # (server, client); the client is the address packets reach.
+        return address.teredo[1]
+    if address in _NAT64:
+        return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+    return None
 
 
 _EXPLANATIONS = {
@@ -150,8 +232,20 @@ _EXPLANATIONS = {
         "{host} resolves to a private address and network_allow_private_networks is "
         "off. Turn it on, or add the host to network_allowed_hosts."
     ),
-    NetworkDecision.BLOCKED_UNSPECIFIED: "{host} resolves to an unspecified address (0.0.0.0/::).",
+    NetworkDecision.BLOCKED_UNSPECIFIED: (
+        "{host} resolves to an unspecified address (0.0.0.0/8 or ::), which names this "
+        "host rather than a registry."
+    ),
     NetworkDecision.BLOCKED_UNRESOLVABLE: "{host} could not be resolved to any address.",
+    NetworkDecision.BLOCKED_SPECIAL: (
+        "{host} resolves into reserved, shared or carrier-grade-NAT space (for example "
+        "100.64.0.0/10, where some clouds serve instance credentials). No registry is "
+        "published there; add the host to network_allowed_hosts if this is deliberate."
+    ),
+    NetworkDecision.BLOCKED_SCHEME: (
+        "{host} was requested over a scheme other than http/https, which this tool "
+        "never follows."
+    ),
 }
 
 

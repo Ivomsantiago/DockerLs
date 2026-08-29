@@ -106,7 +106,7 @@ class RegistryInspector:
         async with self._clients_lock:
             client = self._clients.get(host)
             if client is None:
-                client = OCIRegistryClient(host, timeout=self._timeout)
+                client = OCIRegistryClient(host, timeout=self._timeout, guard=self._guard)
                 self._clients[host] = client
             return client
 
