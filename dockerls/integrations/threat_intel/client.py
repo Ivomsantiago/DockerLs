@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import math
 from typing import TYPE_CHECKING
 
 import httpx
@@ -9,6 +9,23 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from dockerls.domain.interfaces.cache_store import CacheStoreInterface
+
+#: Smallest catalogue that could plausibly be the real KEV feed. It has
+#: carried more than a thousand entries since 2023 and only grows, so a
+#: floor an order of magnitude below that discriminates against proxy error
+#: pages and truncated transfers, not against the feed.
+MIN_PLAUSIBLE_KEV_ENTRIES = 100
+
+
+def _probability(value: object) -> float | None:
+    """A finite 0.0-1.0 float, or None when the value is not one."""
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or not (0.0 <= number <= 1.0):
+        return None
+    return number
 
 
 class ThreatIntelClient:
@@ -29,9 +46,17 @@ class ThreatIntelClient:
     _KEV_CACHE_KEY = "threat-intel:kev:v1"
     _EPSS_CACHE_PREFIX = "threat-intel:epss:v1:"
 
-    def __init__(self, timeout: int = 15, cache: CacheStoreInterface | None = None):
+    def __init__(
+        self,
+        timeout: int = 15,
+        cache: CacheStoreInterface | None = None,
+        min_kev_entries: int = MIN_PLAUSIBLE_KEV_ENTRIES,
+    ):
         self._timeout = timeout
         self._cache = cache
+        # Injectable so a test can exercise the parsing path with a small
+        # fixture without lowering the floor that protects real runs.
+        self._min_kev_entries = min_kev_entries
         self._kev_ids: set[str] | None = None
         # Whether each feed actually answered during this run. Without this,
         # "no KEV hits" and "the KEV catalogue was unreachable" are the same
@@ -106,11 +131,29 @@ class ThreatIntelClient:
                 resp = await client.get(self.KEV_URL)
                 resp.raise_for_status()
                 data = resp.json()
-                ids = {str(v.get("cveID", "")).upper() for v in data.get("vulnerabilities", [])}
-                # An empty catalogue is not a successful lookup: the real
-                # feed always carries thousands of entries, so an empty
-                # parse means the response was not what we asked for.
-                self._kev_available = bool(ids)
+                entries = data.get("vulnerabilities", [])
+                if not isinstance(entries, list):
+                    raise ValueError(f"KEV payload 'vulnerabilities' was {type(entries).__name__}")
+                ids = {
+                    str(v.get("cveID", "")).upper()
+                    for v in entries
+                    if isinstance(v, dict) and v.get("cveID")
+                }
+                # A short catalogue is not a successful lookup either. The
+                # real feed carries thousands of entries, so a handful means
+                # a proxy error page, a truncated transfer or a captive
+                # portal parsed as JSON. Accepting it would mark every CVE
+                # not in that handful as `kev_status = FALSE` -- an
+                # affirmative "not known to be exploited" derived from a
+                # response that was never the catalogue.
+                self._kev_available = len(ids) >= self._min_kev_entries
+                if ids and not self._kev_available:
+                    logger.warning(
+                        f"CISA KEV answered with only {len(ids)} entries, far below the "
+                        f"{self._min_kev_entries} a real catalogue carries; treating "
+                        f"exploitation status as UNKNOWN rather than trusting it"
+                    )
+                    return set()
                 return ids
         except (httpx.HTTPError, ValueError) as e:
             logger.warning(
@@ -187,10 +230,14 @@ class ThreatIntelClient:
             return None
         if not isinstance(data, dict) or "score" not in data:
             return None
-        try:
-            return float(data["score"]), float(data.get("percentile", 0.0))
-        except (TypeError, ValueError):
+        score = _probability(data["score"])
+        if score is None:
+            # A row written before this check existed may still carry a
+            # NaN/out-of-range value on disk; treat it the same as a miss
+            # rather than serving it back as a probability.
             return None
+        percentile = _probability(data.get("percentile", 0.0)) or 0.0
+        return score, percentile
 
     async def _store_epss_cache(self, batch_scores: dict[str, float]) -> None:
         if self._cache is None or not batch_scores:
@@ -222,11 +269,21 @@ class ThreatIntelClient:
                 if "cve" not in entry or "epss" not in entry:
                     continue
                 cve = entry["cve"].upper()
-                scores[cve] = float(entry["epss"])
-                percentile = entry.get("percentile")
+                probability = _probability(entry["epss"])
+                if probability is None:
+                    # `float()` accepts "nan", "inf" and "-1"; none of them
+                    # is a probability, and all of them reached the scoring
+                    # engine. Dropping the CVE from the result leaves it
+                    # `epss_known = False` downstream, which is the honest
+                    # reading: the feed answered, but not with a number.
+                    logger.warning(
+                        f"Discarding implausible EPSS value for {cve}: {entry['epss']!r}"
+                    )
+                    continue
+                scores[cve] = probability
+                percentile = _probability(entry.get("percentile"))
                 if percentile is not None:
-                    with contextlib.suppress(TypeError, ValueError):
-                        self._percentiles[cve] = float(percentile)
+                    self._percentiles[cve] = percentile
             return scores
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
             logger.debug(f"EPSS lookup unavailable for {len(batch)} CVEs, continuing without: {e}")

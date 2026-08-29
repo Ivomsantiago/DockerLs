@@ -12,7 +12,10 @@ from dockerls.integrations.threat_intel.client import ThreatIntelClient
 class TestThreatIntelClient:
     @pytest.mark.asyncio
     async def test_known_exploited_matches_kev_catalog(self):
-        client = ThreatIntelClient()
+        # `min_kev_entries=1` because this test is about parsing and
+        # matching, not about the plausibility floor -- which has its own
+        # tests in TestKevPlausibility and is left at its real value there.
+        client = ThreatIntelClient(min_kev_entries=1)
         kev_payload = {"vulnerabilities": [{"cveID": "CVE-2024-0001"}]}
         request = httpx.Request("GET", "https://x")
         resp = httpx.Response(200, json=kev_payload, request=request)
@@ -137,7 +140,9 @@ class TestKevIsFetchedOnce:
     async def test_concurrent_lookups_share_one_download(self):
         import asyncio
 
-        client = ThreatIntelClient()
+        # See above: this test is about the single-flight lock, so the
+        # plausibility floor is lowered to let the one-entry fixture count.
+        client = ThreatIntelClient(min_kev_entries=1)
         calls = 0
 
         async def slow_get(self, url, **kwargs):
@@ -187,14 +192,17 @@ class TestKevCache:
         request = httpx.Request("GET", "https://x")
         resp = httpx.Response(200, json=kev_payload, request=request)
         with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
-            first = ThreatIntelClient(cache=cache)
+            # min_kev_entries=1: this fixture tests cache reuse, not the
+            # catalogue-plausibility floor (covered separately in
+            # tests/adversarial/test_threat_intel_values.py).
+            first = ThreatIntelClient(cache=cache, min_kev_entries=1)
             await first.known_exploited(["CVE-2024-0001"])
 
         with patch(
             "httpx.AsyncClient.get",
             AsyncMock(side_effect=AssertionError("should not hit the network")),
         ):
-            second = ThreatIntelClient(cache=cache)
+            second = ThreatIntelClient(cache=cache, min_kev_entries=1)
             result = await second.known_exploited(["CVE-2024-0001"])
 
         assert result == {"CVE-2024-0001"}
@@ -210,7 +218,7 @@ class TestKevCache:
         request = httpx.Request("GET", "https://x")
         resp = httpx.Response(200, json=kev_payload, request=request)
         with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
-            client = ThreatIntelClient(cache=_Broken())
+            client = ThreatIntelClient(cache=_Broken(), min_kev_entries=1)
             result = await client.known_exploited(["CVE-2024-0001"])
 
         assert result == {"CVE-2024-0001"}
