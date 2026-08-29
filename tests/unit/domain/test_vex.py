@@ -23,7 +23,9 @@ import pytest
 from dockerls.domain.value_objects.vex import (
     OPENVEX_CONTEXT,
     ExemptionInput,
+    InvalidVexStatementError,
     VexJustification,
+    VexStatement,
     VexStatus,
     build_document,
     parse_justification,
@@ -144,3 +146,61 @@ class TestTheDocument:
     def test_an_empty_exemption_list_is_an_empty_document_not_a_crash(self):
         document = build_document([], products=["pkg:oci/app"], author="Someone")
         assert document.to_dict()["statements"] == []
+
+
+class TestAnUnbackedNotAffectedCannotBeConstructed:
+    """`not_affected` sem justificativa é a afirmação vazia que o padrão
+    proíbe: diz que o CVE não se aplica sem dizer o que foi verificado, e o
+    consumidor -- que existe para acreditar num VEX -- suprime o achado com
+    base em nada.
+
+    `statement_for` nunca constrói isso. O invariante é testado na classe
+    porque ela é pública, e o próximo chamador não vai ter lido o docstring.
+    """
+
+    def test_not_affected_without_a_justification_is_refused(self):
+        with pytest.raises(InvalidVexStatementError) as excinfo:
+            VexStatement(cve="CVE-2024-1", status=VexStatus.NOT_AFFECTED)
+
+        assert "without saying what was checked" in str(excinfo.value)
+
+    def test_not_affected_with_a_justification_is_fine(self):
+        statement = VexStatement(
+            cve="CVE-2024-1",
+            status=VexStatus.NOT_AFFECTED,
+            justification=VexJustification.COMPONENT_NOT_PRESENT,
+        )
+
+        assert statement.status is VexStatus.NOT_AFFECTED
+
+    def test_a_justification_on_an_affected_statement_is_refused(self):
+        """O vocabulário descreve por que o código vulnerável não é
+        alcançável, o que não diz nada sobre um produto que é afetado."""
+        with pytest.raises(InvalidVexStatementError):
+            VexStatement(
+                cve="CVE-2024-1",
+                status=VexStatus.AFFECTED,
+                justification=VexJustification.COMPONENT_NOT_PRESENT,
+            )
+
+    @pytest.mark.parametrize("cve", ["", "   "])
+    def test_a_statement_about_no_cve_is_refused(self, cve: str):
+        with pytest.raises(InvalidVexStatementError):
+            VexStatement(cve=cve, status=VexStatus.AFFECTED, action_statement="accepted")
+
+    def test_the_document_builder_still_works_end_to_end(self):
+        """A guarda não pode ter quebrado o caminho normal."""
+        document = build_document(
+            [
+                ExemptionInput(cve="CVE-2024-1", justification="accepted until Q3"),
+                ExemptionInput(
+                    cve="CVE-2024-2", vex_justification="vulnerable_code_not_present"
+                ),
+            ],
+            products=["pkg:oci/app"],
+            author="ana@example.com",
+        ).to_dict()
+
+        statuses = [s["status"] for s in document["statements"]]
+        assert statuses == ["affected", "not_affected"]
+        assert document["statements"][1]["justification"] == "vulnerable_code_not_present"
