@@ -72,6 +72,57 @@ decididos por política que mora aqui. `CACHE_SCHEMA_VERSION` não pega isso: a
 *forma* do payload não muda, então a validação aceita e só o significado se
 moveu.
 
+### Corrigido -- uma assinatura que falha na verificação era relatada como "sem assinatura"
+
+`cosign verify --certificate-identity-regexp ...` anuncia uma assinatura feita
+pela parte errada como `Error: no matching signatures`, e `CosignClient.verify`
+testava `_looks_unsigned` primeiro -- esse texto casa com o helper errado, e uma
+imagem assinada por um atacante voltava como `UNSIGNED`. A única falha que
+restringir a identidade existe para pegar era relatada como o veredito mais
+brando: ninguém assinou. Novo `SignatureStatus.VERIFICATION_FAILED` (conclusivo,
+nunca confiável), a ordem dos testes é invertida, `dockerls verify` imprime em
+vermelho negrito com a razão e sai com `EXIT_POLICY` -- veredito, não falha de
+medição.
+
+### Corrigido -- um catálogo inalcançável respondia igual a um catálogo vazio
+
+`DhiCatalog._resolve_index` devolvia (e memoizava) `{}` tanto para "imagem
+ausente" quanto para "catálogo ilegível", então um único 403 desligava o DHI
+para o processo inteiro. Novo `IndexState` (NOT_LOADED/COMPLETE/TRUNCATED/
+UNAVAILABLE) com `is_conclusive`.
+
+### Corrigido -- uma linha em branco em .dockerls-ignore.yaml silenciava todo achado sem nome
+
+`IgnoreRule.cve` aceitava `""`, e como o filtro é
+`vuln.cve_id.upper() not in ignored_cves`, uma única entrada em branco
+descartava do score e do veredito de produção todo achado sem advisory ID
+publicado -- e o Trivy emite alguns assim. `VexStatement` também passa a
+recusar `not_affected` sem justificativa.
+
+### Corrigido -- o validador de Dockerfile
+
+- **DF001 (base pinada).** `":" not in image` decidia "sem tag", então
+  `FROM registry.local:5000/app` (porta de registry, sem tag -- resolve para
+  `:latest`) passava. Passa a reusar `split_repository_and_tag`.
+- **Falsos positivos por substring.** `sudo` casava dentro de `pseudo`, `apt`
+  dentro de `adapt`, `pip` dentro de `pipeline`.
+- **DF004 (segredo em ARG).** O catálogo já afirmava que a regra olhava `ARG`;
+  o código nunca olhou. Passa a inspecionar de verdade.
+- **Três regras novas**, cada uma com detecção, severidade, rationale,
+  remediação e teste: DF013 (`ADD` para o que deveria ser `COPY`), DF014
+  (`curl | sh` / `wget | sh` sem verificação), DF015 (bit setuid/setgid
+  deixado na imagem).
+
+### Corrigido -- ReDoS na regex de detecção de shell do validador de Dockerfile
+
+O CodeQL sinalizou (alta severidade) `_SHELL_AT_HEAD`: o ramo `env` usava dois
+`\S+` sem limite compartilhando um espaço de busca sem limite ao redor de um
+único `=` (`\S+=\S+`) -- a forma clássica de backtracking catastrófico, já que
+`\S` inclui o próprio `=` e os dois lados podem renegociar onde cai a divisão.
+Multiplicado pela repetição externa `(?:...)*`, uma linha `RUN` malformada
+podia travar a análise. Corrigido excluindo `=` da metade da chave
+(`[^\s=]+=\S+`): agora só existe um lugar onde a atribuição pode se dividir.
+
 ## [2.10.1] -- 2026-08-22
 
 ### Corrigido -- os alertas abertos no code scanning do próprio repositório

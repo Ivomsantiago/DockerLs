@@ -2143,7 +2143,14 @@ delas:
 |---|---|---|
 | `0` | `VERIFIED` | o cosign conferiu e a assinatura vale |
 | `2` | `UNSIGNED` | o cosign rodou e respondeu: não há assinatura. **Veredito** |
+| `2` | `VERIFICATION_FAILED` | há assinatura, mas é de outra identidade/emissor, ou não confere de outra forma. **Veredito, pior que `UNSIGNED`** — não trate como "sem assinatura" |
 | `1` | `SIGNER_MISSING` / `FAILED` | o cosign não rodou, ou falhou. **Falha do medidor** |
+
+`VERIFICATION_FAILED` existe separado de `UNSIGNED` porque as duas são
+veredictos muito diferentes: uma imagem sem assinatura é uma lacuna de
+processo, uma imagem assinada pela parte errada é um artefato adulterado. As
+duas saem por `EXIT_POLICY` — reprovação — e nenhuma pelo `EXIT_ERROR`
+reservado a "não deu para conferir".
 
 **Verificar sem `--identity` e `--issuer` responde "alguém assinou"**, não
 "quem você espera assinou" — e a saída diz isso em vez de deixar passar como

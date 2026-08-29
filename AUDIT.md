@@ -372,3 +372,50 @@ Cachear essas contagens exigiria invalidação em `model_copy`, que é usado pel
 regras de ignore e pelo enriquecimento de threat intel. Trocar um custo
 irrelevante por um risco de contagem obsoleta seria um mau negócio, e "otimizar
 o que não é gargalo" é como se introduz o próximo P1.
+
+---
+
+# Auditoria de evidência — 2026-08-29 (segunda rodada)
+
+Segunda passagem, motivada por um pedido explícito de dureza para release. O
+mesmo critério de F1-F14 continua valendo: uma imagem que não pôde ser medida
+nunca deve ser apresentada como segura, e "não foi possível verificar" nunca
+pode virar "está tudo bem".
+
+| # | Sev. | Achado | Status |
+|---|------|--------|--------|
+| F15 | ALTA | SSRF: `WWW-Authenticate: Bearer realm="..."` do OCI era buscado sem validação, e redirects não eram revalidados por salto | **corrigido** — `guarded_client` (event hook por salto) + checagem de `realm` antes da busca |
+| F16 | MÉDIA | Três grafias de endereço proibido passavam pelo classificador (`0.0.0.0/8` fora do `0.0.0.0` exato, encapsulamentos IPv6 de loopback, CGNAT/reservado) | **corrigido** — `_embedded_ipv4`, `BLOCKED_UNSPECIFIED`/`BLOCKED_SPECIAL` |
+| F17 | ALTA | NaN/negativo vindo do feed EPSS produzia score 100.0 (todo `max(0, min(100, nan))` devolve o próprio limite) | **corrigido** — limitado nos três pontos de entrada: parser do feed, validador da entidade, calculadora do score |
+| F18 | MÉDIA | Catálogo KEV de 3 entradas (página de erro, transferência truncada) era aceito como o feed real | **corrigido** — piso de plausibilidade (`MIN_PLAUSIBLE_KEV_ENTRIES`) |
+| F19 | MÉDIA | Cache de análise não incluía a versão do próprio pacote na impressão digital: uma release que muda a política de score continuava servindo o veredito antigo até o TTL expirar | **corrigido** — `__version__` entra no fingerprint |
+| F20 | ALTA | Assinatura cosign que falha verificação de identidade (assinada pela parte errada) era relatada como `UNSIGNED`, o veredito mais brando possível | **corrigido** — `SignatureStatus.VERIFICATION_FAILED`, testes de "unsigned" reordenados para depois dos de "assinatura ruim" |
+| F21 | MÉDIA | `DhiCatalog._resolve_index` devolvia e memoizava `{}` tanto para "imagem ausente" quanto para "catálogo inalcançável" -- um 403 desligava o DHI silenciosamente pro processo inteiro | **corrigido** — `IndexState` (NOT_LOADED/COMPLETE/TRUNCATED/UNAVAILABLE) |
+| F22 | ALTA | Uma entrada em branco em `.dockerls-ignore.yaml` (`cve: ""`) descartava do score e do veredito todo achado sem advisory ID publicado, não só a entrada em branco | **corrigido** — `IgnoreRule.cve` recusa string vazia; `VexStatement` recusa `not_affected` sem justificativa |
+| F23 | MÉDIA | Validador de Dockerfile: base pinada por porta de registry sem tag lida como "tem tag" (falso negativo DF001); `sudo`/`apt`/`pip` casavam por substring dentro de `pseudo`/`adapt`/`pipeline` (falso positivo); DF004 nunca de fato inspecionava `ARG` apesar do catálogo afirmar que inspecionava | **corrigido** — reusa `split_repository_and_tag`; bordas de palavra; ARG inspecionado de verdade; três regras novas (DF013 ADD-vs-COPY, DF014 curl\|sh, DF015 setuid/setgid) |
+| F24 | ALTA | ReDoS na regex `_SHELL_AT_HEAD` do validador de Dockerfile: dois `\S+` sem limite compartilhando espaço de busca ao redor de um `=` (achado pelo CodeQL, alta severidade, na própria PR desta rodada) | **corrigido** — chave da atribuição não pode conter `=` (`[^\s=]+=\S+`), elimina a ambiguidade de onde a divisão cai |
+
+Todos os catorze achados têm teste de regressão no commit que os corrige;
+nenhum foi resolvido por supressão, threshold ou remoção de teste. F15, F17 e
+F20/F24 são os de maior severidade real: os três são acessíveis a partir de
+uma entrada hostil plausível -- um registry, um feed de threat intel, uma
+imagem assinada pela parte errada -- não a um cenário de laboratório.
+
+## O que esta rodada não cobriu
+
+Áreas explicitamente fora do escopo desta auditoria, citadas para não passar a
+impressão de cobertura total:
+
+- **DNS rebinding / TOCTOU no `HostGuard`.** O guard resolve e valida o nome;
+  o `httpx` resolve de novo, de forma independente, ao conectar. Fechar isso
+  por completo pede um transport customizado que fixe o IP validado na
+  conexão -- mudança de desenho real, não uma correção pontual, e decisão que
+  cabe a quem mantém o projeto antes de ser implementada às pressas.
+- **Versão da base de dados do Trivy/Grype fora da chave de cache.**
+  Decisão documentada e deliberada (limitada pelo TTL de 24h), não um
+  descuido -- mas é uma janela real onde um resultado em cache pode refletir
+  uma base de dados de ontem.
+- **Validação de schema SARIF contra o JSON Schema oficial 2.1.0** e
+  **testes de propriedade (Hypothesis)** para o parser de referência de
+  imagem e o parser de Dockerfile -- ver commits subsequentes desta mesma
+  rodada de hardening para o que foi de fato coberto.
