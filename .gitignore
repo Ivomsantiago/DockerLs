@@ -60,3 +60,6 @@ logs/
 
 # Binário compilado da engine Go (opcional; `make engine` o reconstrói)
 engine/bin/
+
+# Local Claude Code tooling (session worktrees, etc.) — not repo content
+.claude/
