@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from dockerls.application.services.hardening_analysis import HardeningAnalyzer
+    from dockerls.application.services.scan_history_store import ScanHistoryStore
     from dockerls.application.services.tag_history_store import TagHistoryStore
     from dockerls.domain.interfaces.eol_checker import EOLCheckerInterface
     from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
@@ -40,6 +41,7 @@ class AnalyzeImageUseCase:
         hardening: HardeningAnalyzer | None = None,
         exploitdb: ExploitDBClient | None = None,
         tag_history: TagHistoryStore | None = None,
+        scan_history: ScanHistoryStore | None = None,
     ):
         self._repository = repository
         self._scanner = scanner
@@ -49,6 +51,7 @@ class AnalyzeImageUseCase:
         self._hardening = hardening
         self._exploitdb = exploitdb
         self._tag_history = tag_history
+        self._scan_history = scan_history
 
     async def execute(self, image_reference: str) -> ImageAnalysis:
         name, tag = self._parse_reference(image_reference)
@@ -124,6 +127,23 @@ class AnalyzeImageUseCase:
             history = await self._tag_history.observe(f"{name}:{tag}", image.digest)
             if history.moves:
                 analysis.tag_drift_note = history.explain()
+
+        # Unlike tag history, this is worth keeping for a digest reference
+        # too: a scanner's database learning about a new CVE can change the
+        # count for the exact same, unmoving digest between two runs.
+        if self._scan_history is not None and scan.is_verified and image.digest_known:
+            before = await self._scan_history.get(image.full_reference)
+            after = await self._scan_history.observe(
+                image.full_reference,
+                digest=image.digest,
+                critical=scan.critical_count,
+                high=scan.high_count,
+                medium=scan.medium_count,
+                low=scan.low_count,
+                total=scan.total_count,
+            )
+            if len(after.observations) > 1 and after.latest != before.latest:
+                analysis.vuln_trend_note = after.explain()
 
         finalize_verdict(analysis, cross_validated=False)
         return analysis

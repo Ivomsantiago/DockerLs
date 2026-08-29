@@ -439,10 +439,12 @@ async def build_analyze_use_case() -> AnalyzeImageUseCase:
         max_attempts=s.retry_max_attempts,
         backoff_base=s.retry_backoff_base,
     )
-    # Import tardio, como o resto do módulo: `TagHistoryStore` só custa algo
-    # quando algum comando de fato o usa.
+    # Import tardio, como o resto do módulo: essas duas stores só custam algo
+    # quando algum comando de fato as usa.
+    from dockerls.application.services.scan_history_store import ScanHistoryStore
     from dockerls.application.services.tag_history_store import TagHistoryStore
 
+    cache = build_cache()
     return AnalyzeImageUseCase(
         repository=repo,
         scanner=scanner,
@@ -450,7 +452,8 @@ async def build_analyze_use_case() -> AnalyzeImageUseCase:
         threat_intel=_threat_intel(),
         exploitdb=_exploitdb(),
         hardening=build_hardening_analyzer(),
-        tag_history=TagHistoryStore(build_cache()),
+        tag_history=TagHistoryStore(cache),
+        scan_history=ScanHistoryStore(cache),
     )
 
 

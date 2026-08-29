@@ -625,6 +625,23 @@ todas as vulnerabilidades de `node:22-alpine` estão em
 npm que a imagem embute. Quando esse é o caso, a saída sugere as duas
 remediações concretas.
 
+**Histórico entre execuções.** Cada `analyze` grava, no cache local, o digest
+e as contagens de vulnerabilidade da referência pedida. Na próxima vez que
+você rodar `analyze` contra a mesma referência, duas linhas extras podem
+aparecer:
+
+- `tag history:` -- a tag mudou de digest desde a última vez (nunca aparece
+  para uma referência já fixada por digest, que não tem "tag" para mover);
+- `vuln trend:` -- as contagens de CRITICAL/HIGH/MEDIUM/LOW mudaram desde o
+  último scan desta referência, mesmo que o digest seja o mesmo -- a base do
+  scanner aprende sobre CVEs novas para bytes que não mudaram.
+
+Nenhuma das duas aparece na primeira vez que uma referência é analisada: não
+há histórico ainda, e dizer "sem mudança" nesse caso afirmaria uma
+estabilidade que não foi observada. O histórico é por processo/máquina (vive
+no cache local, com TTL de um ano) -- não é compartilhado entre execuções em
+máquinas diferentes.
+
 **A coluna `Threat` diz se há exploração conhecida.** Dois sinais dividem a
 célula porque respondem à mesma pergunta por ângulos diferentes -- e uma CVE
 pode estar num e não no outro:
