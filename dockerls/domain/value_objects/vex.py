@@ -82,6 +82,15 @@ def parse_justification(value: str) -> VexJustification | None:
         return None
 
 
+class InvalidVexStatementError(ValueError):
+    """Uma afirmação que o padrão não permite emitir.
+
+    `ValueError` porque a CLI já trata `ValueError` como erro de uso. Ela é
+    levantada na construção, e não na serialização, para que o documento
+    inválido nunca chegue a existir.
+    """
+
+
 @dataclass(frozen=True)
 class VexStatement:
     """Uma afirmação sobre um CVE num produto."""
@@ -90,6 +99,41 @@ class VexStatement:
     status: VexStatus
     justification: VexJustification | None = None
     action_statement: str = ""
+
+    def __post_init__(self) -> None:
+        """`not_affected` sem justificativa é a afirmação vazia que o padrão
+        proíbe -- e a que este módulo inteiro existe para não emitir.
+
+        O OpenVEX exige uma das cinco justificativas para `not_affected`
+        justamente porque o estado é uma alegação técnica: sem a
+        justificativa ele diz "o CVE não se aplica" sem dizer o que foi
+        verificado, e um consumidor que o leia suprime o achado com base em
+        nada. `statement_for` nunca constrói isso; o invariante mora aqui
+        porque a classe é pública e outro chamador o construiria sem saber.
+
+        Também recusa um CVE vazio: uma afirmação sobre nenhuma
+        vulnerabilidade não é uma afirmação, e num documento ela vira uma
+        entrada que casa com o que o consumidor decidir.
+        """
+        if not self.cve.strip():
+            raise InvalidVexStatementError(
+                "a VEX statement needs a vulnerability identifier: a statement about "
+                "no CVE asserts nothing, and consumers match it against whatever they like"
+            )
+        if self.status is VexStatus.NOT_AFFECTED and self.justification is None:
+            raise InvalidVexStatementError(
+                f"'not_affected' for {self.cve} needs one of the five OpenVEX "
+                "justifications: without one it claims the vulnerability does not "
+                "apply without saying what was checked, and a consumer would suppress "
+                "the finding on the strength of nothing. Use 'affected' with an "
+                "action_statement to record an accepted risk"
+            )
+        if self.justification is not None and self.status is not VexStatus.NOT_AFFECTED:
+            raise InvalidVexStatementError(
+                f"a justification only belongs on 'not_affected'; {self.cve} is "
+                f"'{self.status}'. The vocabulary describes why the vulnerable code "
+                "cannot be reached, which says nothing about a product that is affected"
+            )
 
     def to_dict(self, products: Sequence[str], timestamp: str) -> dict[str, Any]:
         statement: dict[str, Any] = {

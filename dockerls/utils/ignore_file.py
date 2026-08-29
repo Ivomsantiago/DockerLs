@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 
@@ -10,6 +11,12 @@ from pydantic import BaseModel, field_validator
 from dockerls.domain.value_objects.vex import VexJustification, parse_justification
 
 DEFAULT_IGNORE_FILENAME = ".dockerls-ignore.yaml"
+
+#: A forma mínima de um identificador de aviso. Larga o bastante para
+#: `CVE-2024-1234`, `GHSA-xxxx-yyyy-zzzz`, `DSA-5555-1`, `RUSTSEC-2024-0001`
+#: e `ALAS2-2024-2500`; estreita o bastante para recusar o vazio, que casa
+#: com todo achado que o scanner reportou sem identificador.
+_ADVISORY_ID = re.compile(r"^[A-Z][A-Z0-9]*(?:[-_.][A-Z0-9]+)+$")
 
 
 class IgnoreRule(BaseModel):
@@ -46,7 +53,32 @@ class IgnoreRule(BaseModel):
     @field_validator("cve")
     @classmethod
     def _upper_cve(cls, v: str) -> str:
-        return v.strip().upper()
+        """Normaliza o identificador, e recusa um que não identifica nada.
+
+        Um `cve: ""` passava por aqui e entrava no conjunto de isenções como
+        a string vazia. As isenções são aplicadas com
+        `vuln.cve_id.upper() not in ignored`, e um scanner **deixa
+        `cve_id` vazio** quando o aviso não tem identificador publicado --
+        o Trivy faz exatamente isso, como o exportador SARIF documenta. Uma
+        única linha em branco no arquivo de isenções apagava portanto
+        *todos* os achados sem identificador do relatório, e com eles do
+        score, do tier e do veredito de produção: vulnerabilidades reais
+        somem e a imagem sobe de nota.
+
+        A forma exigida é frouxa de propósito -- `GHSA-...`, `DSA-...`,
+        `RUSTSEC-...` e `ALAS-...` são identificadores legítimos e não
+        parecem com `CVE-`. O que ela recusa é o que não identifica: vazio,
+        espaço em branco, e qualquer coisa curta demais para ser um
+        identificador de aviso.
+        """
+        text = v.strip().upper()
+        if not _ADVISORY_ID.match(text):
+            raise ValueError(
+                f"{v!r} does not name an advisory. An exemption has to say which "
+                "vulnerability it exempts: a blank id matches every finding the "
+                "scanner reported without one, and silently drops them from the scan"
+            )
+        return text
 
     @property
     def is_expired(self) -> bool:
@@ -86,4 +118,13 @@ def load_ignore_rules(path: Path | None = None) -> list[IgnoreRule]:
 
 
 def active_ignored_cve_ids(rules: list[IgnoreRule]) -> set[str]:
-    return {r.cve for r in rules if not r.is_expired}
+    """Identificadores isentos e ainda válidos.
+
+    A string vazia é filtrada de novo aqui, e não só no validador: este
+    conjunto é comparado contra `vuln.cve_id`, que é vazio nos achados sem
+    identificador publicado, e um `""` que escapasse -- por uma `IgnoreRule`
+    construída em código, sem passar pelo arquivo -- apagaria todos eles do
+    relatório sem deixar rastro. Duas guardas para um erro que some em
+    silêncio é o preço certo.
+    """
+    return {r.cve for r in rules if not r.is_expired and r.cve.strip()}

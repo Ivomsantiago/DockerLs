@@ -43,3 +43,47 @@ class TestLoadIgnoreRules:
         f.write_text("ignores:\n  - cve: cve-2024-0004\n")
         rules = load_ignore_rules(f)
         assert active_ignored_cve_ids(rules) == {"CVE-2024-0004"}
+
+
+class TestABlankExemptionCannotSilenceEveryUnnamedFinding:
+    """As isencoes sao aplicadas com `vuln.cve_id.upper() not in ignored`, e
+    um scanner deixa `cve_id` **vazio** quando o aviso nao tem identificador
+    publicado -- o Trivy faz isso, como o exportador SARIF documenta.
+
+    Uma linha `- cve: ""` no arquivo punha a string vazia no conjunto e
+    apagava do relatorio todo achado sem identificador, e com ele do score,
+    do tier e do veredito de producao. Vulnerabilidades reais somem e a
+    imagem sobe de nota, sem nada na saida dizendo que foram removidas.
+    """
+
+    def test_a_blank_cve_is_rejected_rather_than_loaded(self, tmp_path):
+        f = tmp_path / ".dockerls-ignore.yaml"
+        f.write_text('ignores:\n  - cve: ""\n    justification: oops\n')
+
+        assert load_ignore_rules(f) == []
+
+    def test_a_whitespace_cve_is_rejected_too(self, tmp_path):
+        f = tmp_path / ".dockerls-ignore.yaml"
+        f.write_text('ignores:\n  - cve: "   "\n    justification: oops\n')
+
+        assert load_ignore_rules(f) == []
+
+    def test_a_blank_rule_never_reaches_the_applied_set(self, tmp_path):
+        f = tmp_path / ".dockerls-ignore.yaml"
+        f.write_text('ignores:\n  - cve: ""\n  - cve: CVE-2024-0009\n')
+
+        assert active_ignored_cve_ids(load_ignore_rules(f)) == {"CVE-2024-0009"}
+
+    def test_non_cve_advisory_identifiers_are_still_accepted(self, tmp_path):
+        """A guarda recusa o que nao identifica nada, e nao tudo que nao
+        comeca com `CVE-`: GHSA, DSA, RUSTSEC e ALAS sao legitimos."""
+        f = tmp_path / ".dockerls-ignore.yaml"
+        f.write_text(
+            "ignores:\n"
+            "  - cve: GHSA-xxxx-yyyy-zzzz\n"
+            "  - cve: DSA-5555-1\n"
+            "  - cve: RUSTSEC-2024-0001\n"
+            "  - cve: ALAS2-2024-2500\n"
+        )
+
+        assert len(load_ignore_rules(f)) == 4

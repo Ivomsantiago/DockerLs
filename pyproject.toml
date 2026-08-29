@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=83.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dockerls"
-version = "2.10.1"
+version = "3.0.0"
 description = "Enterprise Docker Image Security Advisor"
 readme = "README.md"
 license = {text = "MIT"}

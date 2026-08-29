@@ -7,7 +7,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from dockerls.cli.dependencies import build_host_guard
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK
+from dockerls.infrastructure.network.guarded_client import guarded_async_client
 from dockerls.integrations.exploitdb.client import EXPLOITDB_CSV_URL
 
 console = Console()
@@ -52,7 +54,12 @@ async def _health() -> int:
     table.add_column("Status")
 
     degraded = False
-    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+    # The URLs above are constants, but the redirects they may answer with
+    # are not, and this client follows them. Same policy, same reason as
+    # every other client in the tool.
+    async with guarded_async_client(
+        build_host_guard(), timeout=10, follow_redirects=True
+    ) as client:
         for name, url in ENDPOINTS.items():
             try:
                 resp = await client.head(url) if url in _HEAD_ONLY else await client.get(url)

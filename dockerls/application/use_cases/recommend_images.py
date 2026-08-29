@@ -150,6 +150,16 @@ class RecommendImagesUseCase:
                 # which is the same substitution this project refuses
                 # everywhere else, just slower.
                 self._scanner_identity,
+                # And which version of *this* tool produced them. A cached
+                # `ImageAnalysis` carries the score, the tier and the
+                # readiness verdict, all of which are computed by policy
+                # that lives here -- so a release that changes a penalty
+                # weight, a tier threshold or a blocking rule would keep
+                # serving verdicts decided under the previous rules until
+                # the TTL ran out. `CACHE_SCHEMA_VERSION` does not cover
+                # this: the payload's *shape* is unchanged, so validation
+                # accepts it and only the meaning has moved.
+                __version__,
             ]
         )
         return hashlib.sha256(material.encode()).hexdigest()[:12]

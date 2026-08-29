@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
+
+from loguru import logger
 
 from dockerls.domain.entities.scan_result import ScanResult, ScanStatus
 
@@ -142,4 +145,16 @@ class SecurityScore:
         # penalty, so rewarding it again double-counted the same fact and
         # was part of what pushed clean images into the clamp.
         score = BASE_SCORE - self.penalty + self.bonus
+        if not math.isfinite(score):
+            # The clamp below cannot catch this: every comparison against
+            # NaN is False, so `max(0.0, min(100.0, nan))` answers 100.0 --
+            # the arithmetic failing produced the highest possible score.
+            # Whatever went wrong, it is not evidence that the image is
+            # clean, so the score collapses to the bottom and the reason is
+            # loud.
+            logger.error(
+                f"Security score for {self._image.name}:{self._image.tag} was not a finite "
+                f"number (penalty={self.penalty}, bonus={self.bonus}); reporting 0.0"
+            )
+            return 0.0
         return max(0.0, min(100.0, round(score, 1)))

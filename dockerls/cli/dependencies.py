@@ -122,6 +122,7 @@ async def build_repository(cache: SQLiteCache | None = None) -> DockerHubClient:
         max_attempts=s.retry_max_attempts,
         backoff_base=s.retry_backoff_base,
         tag_ttl_seconds=s.tag_cache_ttl_seconds,
+        guard=build_host_guard(),
     )
     if username and token:
         await client.authenticate()
@@ -210,7 +211,9 @@ def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
         SourceSpec(
             name="chainguard",
             label=CHAINGUARD,
-            build=_source_builder(lambda: ChainguardRepository(timeout=s.http_timeout)),
+            build=_source_builder(
+                lambda: ChainguardRepository(timeout=s.http_timeout, guard=build_host_guard())
+            ),
             default_enabled=s.include_hardened_sources,
             description="Chainguard free tier (cgr.dev)",
         )
@@ -219,7 +222,9 @@ def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
         SourceSpec(
             name="distroless",
             label=DISTROLESS,
-            build=_source_builder(lambda: DistrolessRepository(timeout=s.http_timeout)),
+            build=_source_builder(
+                lambda: DistrolessRepository(timeout=s.http_timeout, guard=build_host_guard())
+            ),
             default_enabled=s.include_hardened_sources,
             description="Google Distroless (gcr.io/distroless)",
         )

@@ -10,6 +10,8 @@ Quatro regras erravam assim, e as quatro têm caso aqui.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from dockerls.domain.entities.dockerfile_analysis import ValidationStatus
@@ -362,3 +364,323 @@ class TestPinnedMessageIsUnambiguous:
 
         assert "pinned by digest" in check.message.lower()
         assert check.details["pinned_by_digest"] is True
+
+
+@pytest.fixture
+def check_for(tmp_path):
+    """Um único `ValidationCheck` pelo nome, para inspecionar mensagem e
+    severidade e não só o status."""
+
+    def _check(content: str, name: str):
+        (tmp_path / "Dockerfile").write_text(content, encoding="utf-8")
+        result = DockerfileValidator().validate(tmp_path)
+        return next(c for c in result.checks if c.check == name)
+
+    return _check
+
+
+class TestAPortInTheRegistryHostHidAnUnpinnedBase:
+    """O pior modo de falha desta ferramenta, e estava na DF001.
+
+    A checagem era `":latest" in image or (":" not in image and "@" not in
+    image)`. `FROM registry.local:5000/app` não tem tag -- o Docker resolve
+    para `:latest` -- mas *tem* dois pontos, no host. A regra lia "está com
+    tag" e dava PASS, com severidade HIGH, para a base mais móvel que
+    existe. Toda organização com registry interno por porta escapava.
+    """
+
+    def test_a_host_with_a_port_and_no_tag_is_still_a_moving_base(self, validate):
+        checks = validate("FROM registry.local:5000/app\nUSER 10001\n")
+
+        assert checks["base_image_pinned"] == ValidationStatus.FAIL
+
+    def test_a_host_with_a_port_and_a_real_tag_passes(self, validate):
+        checks = validate("FROM registry.local:5000/app:1.4.2\nUSER 10001\n")
+
+        assert checks["base_image_pinned"] == ValidationStatus.PASS
+
+    def test_a_host_with_a_port_and_latest_still_fails(self, validate):
+        checks = validate("FROM registry.local:5000/app:latest\nUSER 10001\n")
+
+        assert checks["base_image_pinned"] == ValidationStatus.FAIL
+
+    def test_a_host_with_a_port_and_a_digest_passes(self, validate):
+        checks = validate(f"FROM registry.local:5000/app@sha256:{'a' * 64}\nUSER 10001\n")
+
+        assert checks["base_image_pinned"] == ValidationStatus.PASS
+
+    @pytest.mark.parametrize(
+        "reference",
+        [
+            "ghcr.io/org/app:latest-stable",
+            "node:22-latest-lts",
+            "myorg/latestwatch:1.0",
+            "registry.io/team/latest-builds:2024.11",
+        ],
+    )
+    def test_the_word_latest_inside_a_real_tag_is_not_the_latest_tag(self, validate, reference):
+        """`":latest" in image` acusava `:latest-stable`, que é uma tag
+        comum e fixa o suficiente. Um falso FAIL custa a confiança na
+        regra, e uma regra em que ninguém confia é uma regra desligada."""
+        checks = validate(f"FROM {reference}\nUSER 10001\n")
+
+        assert checks["base_image_pinned"] == ValidationStatus.PASS
+
+    def test_a_from_built_from_an_arg_is_not_judged_either_way(self, validate):
+        """`FROM $BASE` é resolvido por um ARG que este parser não avalia.
+        Chamá-lo de fixado ou de móvel seria inventar."""
+        checks = validate("ARG BASE=node:22-alpine\nFROM $BASE\nUSER 10001\n")
+
+        assert checks["base_image_pinned"] == ValidationStatus.PASS
+
+
+class TestAddIsNotACopyWithAnotherName:
+    """DF013. `ADD` busca URLs sem conferir nada e descompacta arquivos
+    sozinho, e nenhuma das duas coisas está escrita na linha."""
+
+    def test_a_remote_add_is_a_failure(self, check_for):
+        check = check_for(
+            "FROM node:22-alpine\nADD https://example.com/tool.sh /usr/local/bin/\nUSER 10001\n",
+            "add_not_used_for_copy",
+        )
+
+        assert check.status is ValidationStatus.FAIL
+        assert check.severity.value == "HIGH"
+        assert check.rule_id == "DF013"
+        assert "without verifying" in check.message
+        # As cinco propriedades: detecção, severidade, racional, remediação
+        # e citação.
+        assert check.fix_suggestion
+        assert check.rationale
+        assert any("4.9" in ref for ref in check.references)
+
+    def test_a_checksummed_remote_add_is_the_correct_form_and_passes(self, check_for):
+        """`ADD --checksum=` é o que o BuildKit oferece para baixar com
+        integridade. A regra é contra o download não verificado, não contra
+        a diretiva."""
+        check = check_for(
+            "FROM node:22-alpine\n"
+            f"ADD --checksum=sha256:{'a' * 64} https://example.com/t.tgz /opt/\n"
+            "USER 10001\n",
+            "add_not_used_for_copy",
+        )
+
+        assert check.status is not ValidationStatus.FAIL
+
+    def test_an_auto_extracted_archive_warns(self, check_for):
+        check = check_for(
+            "FROM node:22-alpine\nADD app.tar.gz /app/\nUSER 10001\n",
+            "add_not_used_for_copy",
+        )
+
+        assert check.status is ValidationStatus.WARN
+        assert "auto-extracts" in check.message
+
+    def test_a_multi_source_add_is_still_seen(self, check_for):
+        """A regex do COPY exige exatamente dois operandos; a do ADD não
+        pode, ou `ADD a b c/` seria uma diretiva invisível."""
+        check = check_for(
+            "FROM node:22-alpine\nADD one.txt two.tar.gz /dest/\nUSER 10001\n",
+            "add_not_used_for_copy",
+        )
+
+        assert check.status is ValidationStatus.WARN
+        assert "two.tar.gz" in check.message
+
+    def test_a_dockerfile_that_only_uses_copy_passes(self, check_for):
+        check = check_for(
+            "FROM node:22-alpine\nCOPY . /app\nUSER 10001\n",
+            "add_not_used_for_copy",
+        )
+
+        assert check.status is ValidationStatus.PASS
+
+
+class TestARemoteScriptPipedIntoAShell:
+    """DF014. Nada assina o script, nada compara um digest, e ele roda como
+    root durante o build."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl -fsSL https://get.example.com | sh",
+            "curl https://x.io/i.sh | bash",
+            "wget -qO- https://x.io/i.sh | sh -s -- --yes",
+            "curl -sL https://x.io/i.sh|bash",
+        ],
+    )
+    def test_the_pipe_is_detected(self, check_for, command):
+        check = check_for(
+            f"FROM node:22-alpine\nRUN {command}\nUSER 10001\n",
+            "no_unverified_remote_script",
+        )
+
+        assert check.status is ValidationStatus.FAIL
+        assert check.severity.value == "HIGH"
+        assert check.fix_suggestion and "sha256sum" in check.fix_suggestion
+        assert check.rationale
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # A forma correta: baixa, confere, depois roda.
+            "curl -fsSL https://x.io/i.sh -o /tmp/i.sh "
+            "&& echo 'abc  /tmp/i.sh' | sha256sum -c && sh /tmp/i.sh",
+            # Um pipe que não termina num interpretador.
+            "curl -s https://x.io/data.json | jq .version",
+            "wget -qO- https://x.io/list.txt | sort -u > /etc/list",
+            # Nem sequer é um download.
+            "cat /etc/os-release | grep VERSION",
+        ],
+    )
+    def test_a_verified_download_or_an_unrelated_pipe_is_not_accused(self, check_for, command):
+        check = check_for(
+            f"FROM node:22-alpine\nRUN {command}\nUSER 10001\n",
+            "no_unverified_remote_script",
+        )
+
+        assert check.status is ValidationStatus.PASS
+
+    def test_a_long_env_prefixed_command_does_not_hang(self, check_for):
+        """The `env KEY=VALUE` prefix branch used two unbounded `\\S+`
+        tokens around a shared `=`, the textbook catastrophic-backtracking
+        shape: many ways to split "a=a=a=...=a" between them, multiplied
+        across the outer repetition, when the overall match ultimately
+        fails. CodeQL flagged this (dockerfile_validator.py:47, high
+        severity) on this exact rule. A Dockerfile a build worker parses
+        must never be able to hang the analysis regardless of what a RUN
+        line contains."""
+        adversarial = "env " + "=".join(["a"] * 200) + " " * 200 + "X"
+        command = f"echo start && {adversarial} && echo end"
+
+        start = time.monotonic()
+        check_for(
+            f"FROM node:22-alpine\nRUN {command}\nUSER 10001\n", "no_unverified_remote_script"
+        )
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 1.0, f"Dockerfile validation took {elapsed:.2f}s -- regex backtracking?"
+
+
+class TestSetuidBinariesLeftInTheImage:
+    """DF015. Um binário setuid roda como o dono, e o dono é root: é o
+    caminho pronto de volta ao uid 0 num container que roda sem privilégio."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "chmod u+s /usr/local/bin/tool",
+            "chmod 4755 /usr/local/bin/tool",
+            "chmod g+s /srv/shared",
+            "chmod 2755 /srv/shared",
+            "chmod u+xs /usr/local/bin/tool",
+        ],
+    )
+    def test_the_bit_is_detected(self, check_for, command):
+        check = check_for(
+            f"FROM node:22-alpine\nRUN {command}\nUSER 10001\n",
+            "no_setuid_binaries_added",
+        )
+
+        assert check.status is ValidationStatus.FAIL
+        assert check.severity.value == "HIGH"
+        assert check.rule_id == "DF015"
+        assert any("4.8" in ref for ref in check.references)
+        assert check.fix_suggestion and check.rationale
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "chmod 0755 /usr/local/bin/tool",
+            "chmod 755 /usr/local/bin/tool",
+            "chmod +x /usr/local/bin/tool",
+            "chmod -R a-s /usr/bin",
+            "chown root:root /usr/local/bin/tool",
+        ],
+    )
+    def test_an_ordinary_chmod_is_not_accused(self, check_for, command):
+        check = check_for(
+            f"FROM node:22-alpine\nRUN {command}\nUSER 10001\n",
+            "no_setuid_binaries_added",
+        )
+
+        assert check.status is ValidationStatus.PASS
+
+
+class TestSecretsInBuildArgs:
+    """A DF004 se chama "Keep secrets out of ENV **and ARG**" no catálogo de
+    controles, e não olhava ARG nenhum. Um PASS é lido como uma verificação
+    que aconteceu."""
+
+    def test_an_arg_with_a_secret_default_fails(self, check_for):
+        check = check_for(
+            "FROM node:22-alpine\nARG GITHUB_TOKEN=ghp_realvalue\nUSER 10001\n",
+            "secrets_not_in_env",
+        )
+
+        assert check.status is ValidationStatus.FAIL
+        assert "ARG with a default value" in check.message
+        assert check.details["secret_build_args"] == ["GITHUB_TOKEN"]
+
+    def test_an_arg_without_a_value_is_the_correct_form_and_passes(self, check_for):
+        """`ARG TOKEN` sem valor é como se parametriza um build; acusá-lo
+        transformaria a forma correta numa infração."""
+        check = check_for(
+            "FROM node:22-alpine\nARG GITHUB_TOKEN\nUSER 10001\n",
+            "secrets_not_in_env",
+        )
+
+        assert check.status is ValidationStatus.PASS
+
+    def test_an_ordinary_arg_with_a_value_is_not_a_secret(self, check_for):
+        check = check_for(
+            "FROM node:22-alpine\nARG NODE_VERSION=22.3.0\nUSER 10001\n",
+            "secrets_not_in_env",
+        )
+
+        assert check.status is ValidationStatus.PASS
+
+    def test_env_and_arg_are_reported_together(self, check_for):
+        check = check_for(
+            "FROM node:22-alpine\nARG API_KEY=abc\nENV DB_PASSWORD=hunter2\nUSER 10001\n",
+            "secrets_not_in_env",
+        )
+
+        assert check.details["secret_vars"] == ["DB_PASSWORD"]
+        assert check.details["secret_build_args"] == ["API_KEY"]
+
+
+class TestSubstringMatchesWereFalsePositives:
+    """`"sudo" in cmd` casava com `pseudo`; `"apt" in cmd` com `adapt`; e um
+    gerenciador de pacotes detectado onde não há nenhum acusa a DF005 de
+    cache não limpo num Dockerfile que não instalou nada."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "apk add --no-cache pseudo-terminal",
+            "echo 'no sudo in this image' > /etc/motd",
+            "./configure --with-pseudoterminal",
+        ],
+    )
+    def test_sudo_as_a_substring_is_not_sudo(self, validate, command):
+        checks = validate(f"FROM alpine:3.20\nRUN {command}\nUSER 10001\n")
+
+        assert checks["no_sudo"] == ValidationStatus.PASS
+
+    def test_sudo_as_a_command_still_fails(self, validate):
+        checks = validate("FROM alpine:3.20\nRUN sudo apk add curl\nUSER 10001\n")
+
+        assert checks["no_sudo"] == ValidationStatus.FAIL
+
+    def test_a_word_that_merely_contains_a_package_manager_is_not_one(self):
+        info = DockerfileParser().parse(
+            "FROM alpine:3.20\nRUN ./build.sh --adapt --pipeline captured\n"
+        )
+
+        assert info.package_managers_used == []
+
+    def test_a_real_package_manager_is_still_found(self):
+        info = DockerfileParser().parse("FROM alpine:3.20\nRUN apk add curl && pip install x\n")
+
+        assert set(info.package_managers_used) == {"apk", "pip"}

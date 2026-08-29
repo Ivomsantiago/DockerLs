@@ -35,6 +35,8 @@ _COLORS = {
     SignatureStatus.VERIFIED: "green",
     SignatureStatus.SIGNED: "green",
     SignatureStatus.UNSIGNED: "red",
+    # Vermelho e em negrito: é o desfecho mais grave que este comando tem.
+    SignatureStatus.VERIFICATION_FAILED: "bold red",
     SignatureStatus.SIGNER_MISSING: "yellow",
     SignatureStatus.FAILED: "yellow",
 }
@@ -50,7 +52,7 @@ def verify(
     issuer: str = typer.Option(
         "",
         "--issuer",
-        help="Emissor OIDC esperado (ex: https://token.actions.githubusercontent.com)",
+        help="Expected OIDC issuer (e.g. https://token.actions.githubusercontent.com)",
     ),
     output_format: str = typer.Option(
         OutputFormat.TABLE.value, "--format", "-f", help="Output format: table or json"
@@ -77,9 +79,19 @@ def verify(
         console.print(f"\n[bold]{safe(result.reference)}[/bold]")
         console.print(f"  [{color}]{result.status}[/{color}]  [dim]{safe(result.explain())}[/dim]")
         for who in result.identities:
-            console.print(f"    [dim]assinada por {safe(who)}[/dim]")
+            console.print(f"    [dim]signed by {safe(who)}[/dim]")
         if result.detail and result.status is SignatureStatus.VERIFIED:
             console.print(f"  [yellow]![/yellow] [dim]{safe(result.detail)}[/dim]")
+        if result.status is SignatureStatus.VERIFICATION_FAILED:
+            # O motivo que o cosign deu é a parte acionável, e antes só
+            # aparecia para o caso VERIFIED. Uma verificação que falha sem
+            # dizer por quê é indistinguível de uma que não rodou.
+            if result.detail:
+                console.print(f"  [red]![/red] [dim]{safe(result.detail)}[/dim]")
+            console.print(
+                "  [dim]Do not treat this as an unsigned image: signing material is "
+                "published for this reference and it did not check out.[/dim]"
+            )
         if "@sha256:" not in reference:
             console.print(
                 "\n[dim]This reference is not a digest: the signature checked is the "
@@ -93,7 +105,10 @@ def verify(
     if result.trustworthy:
         raise typer.Exit(EXIT_OK)
     if result.status.is_conclusive:
-        # O cosign rodou e respondeu: a imagem não está assinada. Veredito.
+        # O cosign rodou e respondeu, e a resposta reprova: ou não há
+        # assinatura, ou há e ela não confere. As duas são veredito sobre a
+        # imagem -- e por isso as duas saem por EXIT_POLICY, e não pelo
+        # EXIT_ERROR reservado a "não deu para conferir".
         raise typer.Exit(EXIT_POLICY)
     # O cosign não rodou, ou rodou e falhou. Isso é falha do medidor, e sai
     # como erro técnico -- nunca como "não assinado".

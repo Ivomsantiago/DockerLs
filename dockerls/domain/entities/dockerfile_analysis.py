@@ -188,7 +188,21 @@ class DockerfileInfo:
     uses_sudo: bool = False
     uses_latest_tag: bool = False
     copy_commands: list[dict[str, Any]] = field(default_factory=list)
+    #: Cada `ADD`, com o que nele é diferente de um `COPY`: origens
+    #: remotas, arquivos que serão descompactados sozinhos, e se veio com
+    #: `--checksum`.
+    add_commands: list[dict[str, Any]] = field(default_factory=list)
     run_commands: list[dict[str, Any]] = field(default_factory=list)
+    #: `ARG SEGREDO=valor`. Um ARG **com valor** fica no Dockerfile e no
+    #: histórico; um ARG sem valor é parâmetro de build e não é infração.
+    has_secrets_in_build_args: bool = False
+    secret_build_args: list[str] = field(default_factory=list)
+    #: `curl ... | sh`: script da rede executado sem nada tê-lo conferido.
+    pipes_remote_script_to_shell: bool = False
+    remote_script_lines: list[int] = field(default_factory=list)
+    #: `chmod u+s` / `chmod 4755`: binário setuid deixado dentro da imagem.
+    sets_setuid_bit: bool = False
+    setuid_lines: list[int] = field(default_factory=list)
     raw_lines: list[str] = field(default_factory=list)
 
     def model_dump(self) -> dict[str, Any]:
@@ -214,7 +228,12 @@ class DockerfileInfo:
             "uses_sudo": self.uses_sudo,
             "uses_latest_tag": self.uses_latest_tag,
             "copy_commands": self.copy_commands,
+            "add_commands": self.add_commands,
             "run_commands": self.run_commands,
+            "has_secrets_in_build_args": self.has_secrets_in_build_args,
+            "secret_build_args": self.secret_build_args,
+            "pipes_remote_script_to_shell": self.pipes_remote_script_to_shell,
+            "sets_setuid_bit": self.sets_setuid_bit,
         }
 
 

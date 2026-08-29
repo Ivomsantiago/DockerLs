@@ -161,6 +161,141 @@ class TestVerification:
         assert result.identities == ("a@b.com",)
 
 
+@pytest.mark.asyncio
+class TestVerificationFailureIsNotAbsence:
+    """A distinção que este projeto inteiro existe para não perder, aplicada
+    ao lado que faltava: *não assinado* e *assinado e não confere* são dois
+    vereditos diferentes, e o segundo é o grave.
+
+    O cosign anuncia uma identidade que não bate como `no matching
+    signatures: none of the expected identities matched what was in the
+    certificate`. O marcador `no matching signatures` também aparece numa
+    imagem sem assinatura nenhuma, então quem testasse "não assinado"
+    primeiro reportaria uma imagem assinada por um terceiro como se ninguém
+    a tivesse assinado.
+    """
+
+    async def test_wrong_identity_is_a_verification_failure_not_unsigned(self) -> None:
+        message = (
+            b"Error: no matching signatures:\n"
+            b"none of the expected identities matched what was in the certificate, "
+            b"got subjects [attacker@evil.example] with issuer https://accounts.google.com"
+        )
+        with _resolves(), _run(1, err=message):
+            result = await CosignClient().verify(
+                _DIGEST,
+                certificate_identity_regexp="https://github.com/org/.*",
+                certificate_oidc_issuer="https://token.actions.githubusercontent.com",
+            )
+
+        assert result.status is SignatureStatus.VERIFICATION_FAILED
+        assert result.status is not SignatureStatus.UNSIGNED
+        assert not result.trustworthy
+        # Veredito, não falha do medidor: um pipeline tem de poder reprovar
+        # nisto, e não tratá-lo como "não se aplica".
+        assert result.status.is_conclusive
+        assert "VERIFICATION FAILED" in result.explain()
+        assert "worse than an unsigned image" in result.explain()
+
+    async def test_wrong_issuer_is_a_verification_failure(self) -> None:
+        message = b"Error: no matching signatures:\nnone of the expected issuers matched"
+        with _resolves(), _run(1, err=message):
+            result = await CosignClient().verify(
+                _DIGEST, certificate_oidc_issuer="https://token.actions.githubusercontent.com"
+            )
+
+        assert result.status is SignatureStatus.VERIFICATION_FAILED
+
+    async def test_a_tampered_payload_is_a_verification_failure(self) -> None:
+        """A assinatura existe e cobre outros bytes: alguém trocou a imagem."""
+        with _resolves(), _run(1, err=b"Error: signature verification failed"):
+            result = await CosignClient().verify(_DIGEST)
+
+        assert result.status is SignatureStatus.VERIFICATION_FAILED
+        assert not result.trustworthy
+
+    async def test_a_genuinely_unsigned_image_is_still_unsigned(self) -> None:
+        """O contrário do teste acima: a correção não pode ter transformado
+        toda ausência de assinatura numa acusação de adulteração."""
+        message = b"Error: no signatures found for image\nmanifest unknown"
+        with _resolves(), _run(1, err=message):
+            result = await CosignClient().verify(_DIGEST)
+
+        assert result.status is SignatureStatus.UNSIGNED
+
+    async def test_a_network_failure_is_neither_verdict(self) -> None:
+        with _resolves(), _run(1, err=b"Error: GET https://reg.io/v2/: dial tcp: i/o timeout"):
+            result = await CosignClient().verify(_DIGEST)
+
+        assert result.status is SignatureStatus.FAILED
+        assert not result.status.is_conclusive
+        assert result.status is not SignatureStatus.VERIFICATION_FAILED
+
+    async def test_a_timeout_reports_in_english(self) -> None:
+        """`detail` sai no JSON do comando; a mensagem tem de ser legível lá."""
+        with (
+            _resolves(),
+            patch(
+                "dockerls.integrations.signing.cosign.run_capture",
+                AsyncMock(side_effect=TimeoutError),
+            ),
+        ):
+            result = await CosignClient().verify(_DIGEST)
+
+        assert result.status is SignatureStatus.FAILED
+        assert result.detail.isascii()
+        assert "time limit" in result.detail
+
+
+@pytest.mark.asyncio
+class TestVerifyPayload:
+    async def test_the_json_says_whether_identity_was_constrained(self) -> None:
+        """Um consumidor que só olhasse `trustworthy` não teria como saber
+        que a pergunta feita foi "alguém assinou?" e não "quem?"."""
+        with _resolves(), _run(0, out=b"[]"):
+            loose = (await CosignClient().verify(_DIGEST)).to_dict()
+        with _resolves(), _run(0, out=b"[]"):
+            strict = (
+                await CosignClient().verify(_DIGEST, certificate_identity_regexp="https://x/.*")
+            ).to_dict()
+
+        assert loose["identity_constrained"] is False
+        assert strict["identity_constrained"] is True
+        assert loose["trustworthy"] == strict["trustworthy"] is True
+
+    async def test_the_json_separates_conclusive_from_trustworthy(self) -> None:
+        with _resolves(), _run(1, err=b"none of the expected identities matched"):
+            failed = (await CosignClient().verify(_DIGEST)).to_dict()
+        with _absent():
+            unknown = (await CosignClient().verify(_DIGEST)).to_dict()
+
+        assert failed["status"] == "VERIFICATION_FAILED"
+        assert failed["conclusive"] is True and failed["trustworthy"] is False
+        assert unknown["status"] == "SIGNER_MISSING"
+        assert unknown["conclusive"] is False and unknown["trustworthy"] is False
+
+    async def test_malformed_output_under_a_constraint_is_declared(self) -> None:
+        """O cosign saiu 0, então a verificação aconteceu -- mas o assinante
+        não pôde ser lido de volta, e zero identidades não pode se ler como
+        "não havia nenhuma"."""
+        with _resolves(), _run(0, out=b"<html>gateway error</html>"):
+            result = await CosignClient().verify(
+                _DIGEST, certificate_identity_regexp="https://github.com/org/.*"
+            )
+
+        assert result.status is SignatureStatus.VERIFIED
+        assert result.identities == ()
+        assert "could not be parsed" in result.detail
+
+    async def test_a_well_formed_empty_list_is_not_called_malformed(self) -> None:
+        with _resolves(), _run(0, out=b"[]"):
+            result = await CosignClient().verify(
+                _DIGEST, certificate_identity_regexp="https://github.com/org/.*"
+            )
+
+        assert result.detail == ""
+
+
 class TestStatusSemantics:
     def test_so_verified_autoriza_confiar(self) -> None:
         from dockerls.integrations.signing.cosign import SignatureResult
@@ -174,6 +309,7 @@ class TestStatusSemantics:
         assert not SignatureStatus.FAILED.is_conclusive
         assert SignatureStatus.UNSIGNED.is_conclusive
         assert SignatureStatus.VERIFIED.is_conclusive
+        assert SignatureStatus.VERIFICATION_FAILED.is_conclusive
 
 
 class TestVerifyBlob:

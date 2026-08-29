@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from loguru import logger
+
+from dockerls.infrastructure.network.guarded_client import guarded_async_client
+
+if TYPE_CHECKING:
+    from dockerls.infrastructure.network.host_guard import HostGuard
 
 # Cosign and friends publish their signatures, attestations and SBOMs as
 # ordinary tags in the same repository. They are not runnable images, so
@@ -54,6 +59,21 @@ def parse_www_authenticate(header: str) -> tuple[str, dict[str, str]]:
     return params.pop("realm", ""), params
 
 
+def is_fetchable_realm(realm: str) -> bool:
+    """Whether a `WWW-Authenticate` realm is a URL we will actually fetch.
+
+    Requires an absolute http/https URL with a host. That rules out
+    `file://`, `gopher://` and the schemeless forms; *where* the host may be
+    is the network policy's business, enforced per hop by the guarded
+    client, and is deliberately not re-decided here.
+    """
+    try:
+        url = httpx.URL(realm)
+    except (httpx.InvalidURL, ValueError, TypeError, UnicodeError):
+        return False
+    return url.scheme in ("http", "https") and bool(url.host)
+
+
 class OCIRegistryClient:
     """Minimal OCI Distribution v2 client for listing tags.
 
@@ -82,9 +102,13 @@ class OCIRegistryClient:
     serve a listing from a previous invocation.
     """
 
-    def __init__(self, host: str, timeout: int = 30):
+    def __init__(self, host: str, timeout: int = 30, guard: HostGuard | None = None):
         self._host = host
         self._timeout = timeout
+        # Redirects are followed, and the token realm is a URL this registry
+        # chooses. Both are hops the caller's up-front check on `host` says
+        # nothing about, so the guard travels with the client.
+        self._guard = guard
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
         self._listings: dict[str, dict[str, Any] | None] = {}
@@ -98,7 +122,9 @@ class OCIRegistryClient:
         if self._client is None:
             async with self._client_lock:
                 if self._client is None:
-                    self._client = httpx.AsyncClient(timeout=self._timeout, follow_redirects=True)
+                    self._client = guarded_async_client(
+                        self._guard, timeout=self._timeout, follow_redirects=True
+                    )
         return self._client
 
     async def close(self) -> None:
@@ -110,6 +136,14 @@ class OCIRegistryClient:
     async def _token(self, client: httpx.AsyncClient, challenge: str) -> str:
         realm, params = parse_www_authenticate(challenge)
         if not realm:
+            return ""
+        if not is_fetchable_realm(realm):
+            # The realm is a URL chosen by the far end. Fetching whatever it
+            # names turns any registry -- or anything on the path to one --
+            # into a redirector pointing this process at the host's internal
+            # network. An `https://` realm on a real registry is the norm;
+            # anything else is refused before a socket is opened.
+            logger.warning(f"Refusing token realm advertised by {self._host}: {realm!r}")
             return ""
         resp = await client.get(realm, params=params)
         resp.raise_for_status()
