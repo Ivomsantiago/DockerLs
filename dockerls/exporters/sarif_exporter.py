@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import TYPE_CHECKING, Any
 
 from dockerls import __version__
@@ -47,6 +48,25 @@ _SEVERITY_FLOOR = {
 # valid and keeps unrelated unnamed findings from collapsing into one rule.
 _UNIDENTIFIED_PREFIX = "DOCKERLS-UNIDENTIFIED"
 
+# The URL published in `$schema`. The document points a consumer at the
+# schema it claims to satisfy, so the URL has to resolve: the previous one
+# (`.../sarif-spec/master/Schemata/...`) 404s -- the repository's default
+# branch was renamed and the schema moved under `sarif-2.1/schema/`.
+_SCHEMA_URL = (
+    "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/"
+    "sarif-2.1/schema/sarif-schema-2.1.0.json"
+)
+
+# `artifactLocation.uri` is required to be a URI reference, and a SARIF
+# consumer keys findings by it. An analysis carrying no usable reference
+# would otherwise render as `":"` -- `f"{name}:{tag}"` over two empty
+# strings -- which is neither a URI reference nor an identifier.
+_UNKNOWN_ARTIFACT = "unknown-image"
+
+# The upper bound of the CVSS v3 base-score range. Anything outside
+# `0 < score <= 10` did not come from a CVSS calculator.
+_CVSS_MAX = 10.0
+
 
 class SARIFExporter(ExporterInterface):
     """Exports scan findings as SARIF 2.1.0 for consumption by GitHub code
@@ -79,7 +99,7 @@ class SARIFExporter(ExporterInterface):
                         "locations": [
                             {
                                 "physicalLocation": {
-                                    "artifactLocation": {"uri": analysis.image.full_reference}
+                                    "artifactLocation": {"uri": _artifact_uri(analysis)}
                                 }
                             }
                         ],
@@ -94,7 +114,7 @@ class SARIFExporter(ExporterInterface):
 
         sarif = {
             "version": "2.1.0",
-            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "$schema": _SCHEMA_URL,
             "runs": [
                 {
                     "tool": {
@@ -109,7 +129,41 @@ class SARIFExporter(ExporterInterface):
                 }
             ],
         }
-        return json.dumps(sarif, indent=2, default=str)
+        # `allow_nan=False` is the assertion, `_json_safe` is what keeps it
+        # from firing. Python's default is to emit the bare tokens `NaN` and
+        # `Infinity`, which RFC 8259 does not allow: a single non-finite
+        # score anywhere in the document makes the *whole file* unparseable
+        # to a strict reader, and GitHub code scanning's ingester is one.
+        # Every finding in the upload is then discarded together -- the
+        # failure mode this project exists to refuse, a security report that
+        # silently reports nothing.
+        return json.dumps(_json_safe(sarif), indent=2, allow_nan=False, default=str)
+
+
+def _json_safe(value: Any) -> Any:
+    """Replace non-finite floats with `None`, recursively.
+
+    A `NaN` score is not a measurement, so it is not published as one: the
+    property is emitted as JSON `null`, which a consumer reads as "no value"
+    rather than as a number that happens to compare falsely against every
+    threshold.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _artifact_uri(analysis: ImageAnalysis) -> str:
+    """A non-empty URI reference naming the scanned image."""
+    for candidate in (analysis.image.full_reference, analysis.scan.image_reference):
+        text = (candidate or "").strip().strip(":")
+        if text:
+            return text
+    return _UNKNOWN_ARTIFACT
 
 
 def _image_properties(analysis: ImageAnalysis) -> dict[str, Any]:
@@ -158,8 +212,17 @@ def _security_severity(vuln: Any) -> tuple[str, str]:
     bucket matching the severity the scanner assigned is used instead --
     otherwise an unscored CRITICAL is published to code scanning as 0.0.
     """
-    score = float(vuln.cvss_score or 0.0)
-    if score > 0.0:
+    try:
+        score = float(vuln.cvss_score)
+    except (TypeError, ValueError):
+        score = 0.0
+    # GitHub parses `security-severity` as a number. A score that is not a
+    # finite value inside the CVSS range never came from a calculator, and
+    # publishing it verbatim put the strings "inf" and "nan" in that channel
+    # -- the same "unusable value spent as evidence" that `_probability`
+    # refuses on the way in. The severity the scanner assigned is the better
+    # answer, and `severity-source` says that is what this is.
+    if math.isfinite(score) and 0.0 < score <= _CVSS_MAX:
         return str(score), "cvss"
     return str(_SEVERITY_FLOOR.get(vuln.severity, 0.0)), "severity-band"
 

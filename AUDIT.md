@@ -394,12 +394,25 @@ pode virar "está tudo bem".
 | F22 | ALTA | Uma entrada em branco em `.dockerls-ignore.yaml` (`cve: ""`) descartava do score e do veredito todo achado sem advisory ID publicado, não só a entrada em branco | **corrigido** — `IgnoreRule.cve` recusa string vazia; `VexStatement` recusa `not_affected` sem justificativa |
 | F23 | MÉDIA | Validador de Dockerfile: base pinada por porta de registry sem tag lida como "tem tag" (falso negativo DF001); `sudo`/`apt`/`pip` casavam por substring dentro de `pseudo`/`adapt`/`pipeline` (falso positivo); DF004 nunca de fato inspecionava `ARG` apesar do catálogo afirmar que inspecionava | **corrigido** — reusa `split_repository_and_tag`; bordas de palavra; ARG inspecionado de verdade; três regras novas (DF013 ADD-vs-COPY, DF014 curl\|sh, DF015 setuid/setgid) |
 | F24 | ALTA | ReDoS na regex `_SHELL_AT_HEAD` do validador de Dockerfile: dois `\S+` sem limite compartilhando espaço de busca ao redor de um `=` (achado pelo CodeQL, alta severidade, na própria PR desta rodada) | **corrigido** — chave da atribuição não pode conter `=` (`[^\s=]+=\S+`), elimina a ambiguidade de onde a divisão cai |
+| F25 | ALTA | Um `security_score` não-finito (`NaN`/`Infinity`) tornava o documento SARIF inteiro JSON inválido pela RFC 8259; o GitHub code scanning rejeita o upload inteiro nesse caso -- todo achado descartado em silêncio, sem aviso na tela | **corrigido** — `_json_safe` recursivo + `allow_nan=False`; `security-severity` também caía fora de `0 < s <= 10` sem fallback (`"inf"` chegava a sair como string) |
+| F26 | MÉDIA | `EXPOSE`/`USER` com um número de 4301+ dígitos aborta `validate()` inteiro com `ValueError` não capturado (Python 3.11+ recusa `int()` sobre strings tão longas) -- um Dockerfile fica de fora de **todas** as regras por uma única linha. Achado por fuzzing (Hypothesis) | **corrigido** — `_bounded_int` com limite explícito antes de converter |
+| F27 | BAIXA | `split_repository_and_tag` viola o próprio contrato em `a.io/b.io:5000/app`: lê `5000/app` como tag (tag não pode conter `/` nem `:`), marcando como "pinada" uma base que não carrega tag nenhuma -- mesma classe do F23/DF013, um nível mais fundo. Não foi possível construir uma referência Docker *legal* que alcance isso na prática (dois-pontos não pode aparecer no meio de um path), então é lacuna de contrato, não evasão demonstrada | **corrigido** — mesmo assim, um `FROM` que não builda não deveria ler como pinado |
 
-Todos os catorze achados têm teste de regressão no commit que os corrige;
-nenhum foi resolvido por supressão, threshold ou remoção de teste. F15, F17 e
-F20/F24 são os de maior severidade real: os três são acessíveis a partir de
-uma entrada hostil plausível -- um registry, um feed de threat intel, uma
-imagem assinada pela parte errada -- não a um cenário de laboratório.
+Todos os vinte e sete achados têm teste de regressão no commit que os
+corrige; nenhum foi resolvido por supressão, threshold ou remoção de teste.
+F15, F17, F20/F24 e F25 são os de maior severidade real: acessíveis a partir
+de uma entrada hostil plausível -- um registry, um feed de threat intel, uma
+imagem assinada pela parte errada, um score que saiu não-finito -- não um
+cenário de laboratório. F25 em particular significa que qualquer integração
+DockerLs → GitHub code scanning podia estar descartando uploads inteiros sem
+nenhum sinal visível disso.
+
+A varredura de fuzzing (~210 mil casos por propriedade, Hypothesis) também
+confirmou **negativo** em duas frentes que valem registrar: nenhum dos 30+
+padrões regex do validador de Dockerfile reabre o ReDoS do F24, e o
+invariante tag/digest (F13, da primeira rodada) não diverge sob fuzzing.
+Evidência de que as correções anteriores generalizam, não que só cobrem os
+exemplos escolhidos à mão.
 
 ## O que esta rodada não cobriu
 
@@ -415,7 +428,3 @@ impressão de cobertura total:
   Decisão documentada e deliberada (limitada pelo TTL de 24h), não um
   descuido -- mas é uma janela real onde um resultado em cache pode refletir
   uma base de dados de ontem.
-- **Validação de schema SARIF contra o JSON Schema oficial 2.1.0** e
-  **testes de propriedade (Hypothesis)** para o parser de referência de
-  imagem e o parser de Dockerfile -- ver commits subsequentes desta mesma
-  rodada de hardening para o que foi de fato coberto.
