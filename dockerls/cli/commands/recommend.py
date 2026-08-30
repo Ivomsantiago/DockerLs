@@ -124,7 +124,7 @@ def recommend(
         "-s",
         help=(
             "Image source to search; repeatable. "
-            "One of: dockerhub, chainguard, distroless, dhi, all"
+            "One of: dockerhub, chainguard, distroless, dhi, private (if configured), all"
         ),
     ),
     all_sources: bool = typer.Option(

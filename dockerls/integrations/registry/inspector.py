@@ -78,13 +78,24 @@ class RegistryInspector:
     (repository, reference) pair is resolved at most once per run.
     """
 
-    def __init__(self, timeout: int = 30, guard: HostGuard | None = None):
+    def __init__(
+        self,
+        timeout: int = 30,
+        guard: HostGuard | None = None,
+        credentials: dict[str, tuple[str, str]] | None = None,
+    ):
         self._timeout = timeout
         # Where this inspector is permitted to send a request. A reference is
         # user input carrying a hostname, so without a policy `dockerls
         # analyze 169.254.169.254/x` is an outbound request to the cloud
         # metadata endpoint chosen by whoever supplied the reference.
         self._guard = guard or HostGuard()
+        # host -> (username, password), for a reference naming a registry
+        # this run has credentials for -- the configured private registry,
+        # today. `analyze`/`compare`/`alternatives` take a reference
+        # directly rather than going through `SourceRegistry`, so this is
+        # how they reach the same credentials `--source private` uses.
+        self._credentials = credentials or {}
         self._clients: dict[str, OCIRegistryClient] = {}
         self._clients_lock = asyncio.Lock()
         self._resolved: dict[str, tuple[str, dict[str, Any] | None]] = {}
@@ -106,7 +117,14 @@ class RegistryInspector:
         async with self._clients_lock:
             client = self._clients.get(host)
             if client is None:
-                client = OCIRegistryClient(host, timeout=self._timeout, guard=self._guard)
+                username, password = self._credentials.get(host, ("", ""))
+                client = OCIRegistryClient(
+                    host,
+                    timeout=self._timeout,
+                    guard=self._guard,
+                    username=username,
+                    password=password,
+                )
                 self._clients[host] = client
             return client
 

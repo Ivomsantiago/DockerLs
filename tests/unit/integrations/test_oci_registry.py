@@ -76,6 +76,52 @@ class TestListTags:
         )
 
     @pytest.mark.asyncio
+    async def test_credentials_are_sent_as_basic_auth_to_the_token_realm(self):
+        """A private registry's token endpoint is the standard Docker
+        Registry HTTP API V2 realm, credentialed with Basic auth -- the
+        same flow ECR, Harbor and GHCR's container registry all expect."""
+        seen: list[httpx.Request] = []
+
+        def handler(request):
+            seen.append(request)
+            if request.url.path == "/token":
+                return httpx.Response(200, json={"token": "tok-private"})
+            if "Authorization" not in request.headers:
+                return httpx.Response(
+                    401,
+                    headers={"WWW-Authenticate": 'Bearer realm="https://registry.example.com/token"'},
+                )
+            return httpx.Response(200, json={"tags": ["1.0.0"]})
+
+        with _use_handler(handler):
+            client = OCIRegistryClient("registry.example.com", username="AWS", password="ecr-tok")
+            payload = await client.list_tags("team/app")
+
+        assert payload == {"tags": ["1.0.0"]}
+        token_request = next(r for r in seen if r.url.path == "/token")
+        assert token_request.headers["Authorization"].startswith("Basic ")
+
+    @pytest.mark.asyncio
+    async def test_no_credentials_means_the_token_request_is_anonymous(self):
+        seen: list[httpx.Request] = []
+
+        def handler(request):
+            seen.append(request)
+            if request.url.path == "/token":
+                return httpx.Response(200, json={"token": "tok"})
+            if "Authorization" not in request.headers:
+                return httpx.Response(
+                    401, headers={"WWW-Authenticate": 'Bearer realm="https://cgr.dev/token"'}
+                )
+            return httpx.Response(200, json={"tags": []})
+
+        with _use_handler(handler):
+            await OCIRegistryClient("cgr.dev").list_tags("chainguard/node")
+
+        token_request = next(r for r in seen if r.url.path == "/token")
+        assert "Authorization" not in token_request.headers
+
+    @pytest.mark.asyncio
     async def test_accepts_access_token_field(self):
         """GCR e ECR devolvem `access_token` em vez de `token`."""
 

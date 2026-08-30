@@ -75,7 +75,8 @@ def alternatives(
         [],
         "--source",
         "-s",
-        help="Image source to search; repeatable. dockerhub, chainguard, distroless, dhi, all",
+        help="Image source to search; repeatable. dockerhub, chainguard, distroless, dhi, "
+        "private (if configured), all",
     ),
     all_sources: bool = typer.Option(
         False, "--all-sources", help="Search every configured source, including opt-in ones"

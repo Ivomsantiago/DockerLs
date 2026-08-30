@@ -22,7 +22,7 @@ import typer
 from loguru import logger
 from rich.console import Console
 
-from dockerls.cli.dependencies import build_host_guard
+from dockerls.cli.dependencies import build_host_guard, build_registry_credentials
 from dockerls.cli.options import OutputFormat, parse_output_format
 from dockerls.cli.text import safe
 from dockerls.domain.value_objects.base_upgrade import BaseStatus
@@ -84,7 +84,9 @@ async def _base(
     from dockerls.cli.dependencies import build_cache
     from dockerls.integrations.registry.inspector import RegistryInspector
 
-    inspector = RegistryInspector(guard=build_host_guard())
+    inspector = RegistryInspector(
+        guard=build_host_guard(), credentials=build_registry_credentials()
+    )
     # O histórico é um extra sobre o diagnóstico: se o cache não abrir, o
     # comando continua sem ele em vez de falhar por causa de um enfeite.
     try:

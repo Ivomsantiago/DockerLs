@@ -102,13 +102,30 @@ class OCIRegistryClient:
     serve a listing from a previous invocation.
     """
 
-    def __init__(self, host: str, timeout: int = 30, guard: HostGuard | None = None):
+    def __init__(
+        self,
+        host: str,
+        timeout: int = 30,
+        guard: HostGuard | None = None,
+        *,
+        username: str = "",
+        password: str = "",
+    ):
         self._host = host
         self._timeout = timeout
         # Redirects are followed, and the token realm is a URL this registry
         # chooses. Both are hops the caller's up-front check on `host` says
         # nothing about, so the guard travels with the client.
         self._guard = guard
+        # Basic credentials for the token endpoint -- the standard Docker
+        # Registry HTTP API V2 flow every private registry this client
+        # targets (ECR, Harbor, GHCR, a generic OCI registry) implements the
+        # same way: the 401 challenge names a realm, and that realm accepts
+        # HTTP Basic auth in exchange for a scoped bearer token. Empty
+        # strings mean anonymous, unchanged from before this parameter
+        # existed.
+        self._username = username
+        self._password = password
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
         self._listings: dict[str, dict[str, Any] | None] = {}
@@ -145,7 +162,8 @@ class OCIRegistryClient:
             # anything else is refused before a socket is opened.
             logger.warning(f"Refusing token realm advertised by {self._host}: {realm!r}")
             return ""
-        resp = await client.get(realm, params=params)
+        auth = (self._username, self._password) if self._username and self._password else None
+        resp = await client.get(realm, params=params, auth=auth)
         resp.raise_for_status()
         data = resp.json()
         # Registries disagree on the field name; GCR/ECR use access_token.
