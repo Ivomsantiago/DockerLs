@@ -231,14 +231,14 @@ PACKAGE_CATALOG: tuple[PackageChoice, ...] = (
     ),
     PackageChoice(
         key="jq",
-        purpose="processar JSON em scripts de entrypoint",
-        cost="pequeno e autocontido",
+        purpose="parsing JSON in entrypoint scripts",
+        cost="small and self-contained",
         apk="jq",
         apt="jq",
     ),
     PackageChoice(
         key="openssl",
-        purpose="gerar certificados ou depurar TLS de dentro do container",
+        purpose="generating certificates or debugging TLS from inside the container",
         cost="the library is already there; this adds the command-line *tool*",
         apk="openssl",
         apt="openssl",
@@ -271,8 +271,8 @@ REFUSED_PACKAGES: dict[str, str] = {
         "different user, declare it in `USER`"
     ),
     "docker": (
-        "o cliente Docker dentro do container implica acesso ao socket do "
-        "daemon, which is equivalent to root on the host"
+        "the Docker client inside the container implies access to the daemon "
+        "socket, which is equivalent to root on the host"
     ),
 }
 
