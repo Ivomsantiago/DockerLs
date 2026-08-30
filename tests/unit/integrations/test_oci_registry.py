@@ -89,7 +89,9 @@ class TestListTags:
             if "Authorization" not in request.headers:
                 return httpx.Response(
                     401,
-                    headers={"WWW-Authenticate": 'Bearer realm="https://registry.example.com/token"'},
+                    headers={
+                        "WWW-Authenticate": 'Bearer realm="https://registry.example.com/token"'
+                    },
                 )
             return httpx.Response(200, json={"tags": ["1.0.0"]})
 
