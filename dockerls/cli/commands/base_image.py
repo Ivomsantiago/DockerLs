@@ -283,7 +283,8 @@ def _build_now(
         title=recipe.title,
         description=recipe.description,
     )
-    use_case = BuildImageUseCase(DockerfileValidator(), HardeningTemplates())
+    templates = HardeningTemplates()
+    use_case = BuildImageUseCase(DockerfileValidator(templates), templates)
     response = use_case.execute(
         BuildImageRequest(
             context_path=str(destination.parent),

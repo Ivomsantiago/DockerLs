@@ -15,7 +15,11 @@ import time
 import pytest
 
 from dockerls.domain.entities.dockerfile_analysis import ValidationStatus
-from dockerls.infrastructure.dockerfile_validator import DockerfileParser, DockerfileValidator
+from dockerls.infrastructure.dockerfile_validator import (
+    DockerfileParser,
+    DockerfileValidator,
+    HardeningTemplates,
+)
 
 
 @pytest.fixture
@@ -684,3 +688,181 @@ class TestSubstringMatchesWereFalsePositives:
         info = DockerfileParser().parse("FROM alpine:3.20\nRUN apk add curl && pip install x\n")
 
         assert set(info.package_managers_used) == {"apk", "pip"}
+
+
+class TestBuildKitSecretMount:
+    """`--mount=type=secret` is the correct answer to DF004, and using it
+    must say so -- without letting it excuse a secret still sitting in
+    ENV/ARG on the same Dockerfile."""
+
+    def test_a_secret_mount_passes_and_names_the_id(self, validate):
+        checks = validate(
+            "FROM alpine:3.20\n"
+            "RUN --mount=type=secret,id=npm_token cat /run/secrets/npm_token > /tmp/t\n"
+            "USER 10001\n"
+        )
+
+        assert checks["buildkit_secret_mount_used"] == ValidationStatus.PASS
+
+    def test_absent_when_no_run_uses_a_secret_mount(self, validate):
+        checks = validate("FROM alpine:3.20\nRUN apk add curl=8.9.1-r2\nUSER 10001\n")
+
+        assert "buildkit_secret_mount_used" not in checks
+
+    def test_a_secret_mount_does_not_excuse_a_secret_in_env(self, validate):
+        checks = validate(
+            "FROM alpine:3.20\n"
+            "ENV DB_PASSWORD=hunter2\n"
+            "RUN --mount=type=secret,id=npm_token npm ci\n"
+            "USER 10001\n"
+        )
+
+        assert checks["secrets_not_in_env"] == ValidationStatus.FAIL
+        assert checks["buildkit_secret_mount_used"] == ValidationStatus.PASS
+
+
+class TestPinnedPackageVersions:
+    """DF016: reproducibility, not confidentiality -- an unpinned install
+    can resolve different bytes, and a different CVE, on the next build."""
+
+    def test_unpinned_apk_package_warns(self, validate):
+        checks = validate("FROM alpine:3.20\nRUN apk add curl\nUSER 10001\n")
+
+        assert checks["package_versions_pinned"] == ValidationStatus.WARN
+
+    def test_pinned_apk_package_passes(self, validate):
+        checks = validate("FROM alpine:3.20\nRUN apk add curl=8.9.1-r2\nUSER 10001\n")
+
+        assert checks["package_versions_pinned"] == ValidationStatus.PASS
+
+    def test_unpinned_apt_package_warns(self, validate):
+        checks = validate("FROM debian:12-slim\nRUN apt-get install -y curl\nUSER 10001\n")
+
+        assert checks["package_versions_pinned"] == ValidationStatus.WARN
+
+    def test_pinned_apt_package_with_flags_passes(self, validate):
+        checks = validate(
+            "FROM debian:12-slim\n"
+            "RUN apt-get install -y --no-install-recommends curl=8.5.0-2\n"
+            "USER 10001\n"
+        )
+
+        assert checks["package_versions_pinned"] == ValidationStatus.PASS
+
+    def test_pip_install_without_exact_pin_warns(self, validate):
+        checks = validate("FROM python:3.12-slim\nRUN pip install requests\nUSER 10001\n")
+
+        assert checks["package_versions_pinned"] == ValidationStatus.WARN
+
+    def test_pip_install_with_exact_pin_passes(self, validate):
+        checks = validate("FROM python:3.12-slim\nRUN pip install requests==2.32.3\nUSER 10001\n")
+
+        assert checks["package_versions_pinned"] == ValidationStatus.PASS
+
+    def test_pip_requirements_file_flag_is_not_mistaken_for_a_package(self, tmp_path):
+        """`-r requirements.txt` names a file, not a package -- it must
+        never appear in `unpinned_packages`."""
+        (tmp_path / "Dockerfile").write_text(
+            "FROM python:3.12-slim\nRUN pip install -r requirements.txt\nUSER 10001\n"
+        )
+        result = DockerfileValidator().validate(tmp_path)
+        check = next(c for c in result.checks if c.check == "package_versions_pinned")
+
+        assert check.status == ValidationStatus.PASS
+        assert check.details.get("unpinned_packages", []) == []
+
+    def test_npm_install_without_a_version_warns(self, validate):
+        checks = validate("FROM node:22-alpine\nRUN npm install lodash\nUSER 10001\n")
+
+        assert checks["package_versions_pinned"] == ValidationStatus.WARN
+
+    def test_npm_install_with_a_version_still_warns_without_a_lockfile(self, validate):
+        """The version pin on the package and a committed lockfile are two
+        different signals; either missing is its own finding."""
+        checks = validate("FROM node:22-alpine\nRUN npm install lodash@4.17.21\nUSER 10001\n")
+
+        assert checks["package_versions_pinned"] == ValidationStatus.WARN
+
+    def test_npm_ci_with_a_committed_lockfile_and_no_direct_install_passes(
+        self, validate, tmp_path
+    ):
+        (tmp_path / "package-lock.json").write_text("{}")
+        checks = validate("FROM node:22-alpine\nRUN npm ci\nUSER 10001\n")
+
+        assert checks["package_versions_pinned"] == ValidationStatus.PASS
+
+    def test_multiple_managers_are_all_named_in_one_message(self, validate):
+        checks = validate(
+            "FROM node:22-alpine\nRUN apk add curl && pip install requests\nUSER 10001\n"
+        )
+
+        assert checks["package_versions_pinned"] == ValidationStatus.WARN
+
+
+class TestMultiArchAwareness:
+    """DF017 is informational: presence, not a correct/incorrect state."""
+
+    def test_no_platform_reference_emits_nothing(self, validate):
+        checks = validate("FROM alpine:3.20\nUSER 10001\n")
+
+        assert "multi_arch_build_declared" not in checks
+
+    def test_target_platform_arg_is_detected(self, validate):
+        checks = validate("FROM alpine:3.20\nARG TARGETPLATFORM\nUSER 10001\n")
+
+        assert checks["multi_arch_build_declared"] == ValidationStatus.PASS
+
+    def test_from_platform_flag_is_detected(self, validate):
+        checks = validate(
+            "FROM --platform=$BUILDPLATFORM golang:1.23 AS builder\nFROM alpine:3.20\nUSER 10001\n"
+        )
+
+        assert checks["multi_arch_build_declared"] == ValidationStatus.PASS
+
+    def test_multi_arch_with_unpinned_packages_warns_about_the_combination(self, validate):
+        checks = validate("FROM alpine:3.20\nARG TARGETPLATFORM\nRUN apk add curl\nUSER 10001\n")
+
+        assert checks["multi_arch_pinned_packages"] == ValidationStatus.WARN
+
+    def test_multi_arch_with_pinned_packages_does_not_add_the_combination_warning(self, validate):
+        checks = validate(
+            "FROM alpine:3.20\nARG TARGETPLATFORM\nRUN apk add curl=8.9.1-r2\nUSER 10001\n"
+        )
+
+        assert "multi_arch_pinned_packages" not in checks
+
+
+class TestTemplateOrigin:
+    """A Dockerfile derived from one of the 39 hardened templates, edited
+    by hand, should be recognised as that template plus a diff -- not
+    treated as an anonymous Dockerfile."""
+
+    def test_an_edited_template_is_recognised_with_its_diff(self, tmp_path):
+        templates = HardeningTemplates()
+        edited = templates.get_template("alpine").replace(
+            'LABEL maintainer="security@company.com"', 'LABEL maintainer="me@example.com"'
+        )
+        (tmp_path / "Dockerfile").write_text(edited)
+
+        analysis = DockerfileValidator(templates).analyze(tmp_path)
+
+        assert analysis.template_origin is not None
+        assert analysis.template_origin.template_name == "alpine"
+        assert analysis.template_origin.similarity > 0.9
+        assert any("me@example.com" in line for line in analysis.template_origin.diff)
+
+    def test_an_unrelated_dockerfile_matches_no_template(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM ubuntu:24.04\nRUN echo hi\n")
+
+        analysis = DockerfileValidator(HardeningTemplates()).analyze(tmp_path)
+
+        assert analysis.template_origin is None
+
+    def test_without_a_template_provider_the_field_stays_none(self, tmp_path):
+        """A validator built without a `template_provider` -- most call
+        sites, most of the time -- must not error, just say nothing."""
+        (tmp_path / "Dockerfile").write_text("FROM ubuntu:24.04\nRUN echo hi\n")
+
+        analysis = DockerfileValidator().analyze(tmp_path)
+
+        assert analysis.template_origin is None

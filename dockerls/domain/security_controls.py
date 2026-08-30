@@ -311,6 +311,30 @@ RULE_MAPPINGS: tuple[RuleMapping, ...] = (
         ),
         controls=(CIS_4_8, OWASP_4, NIST_4_1_2),
     ),
+    RuleMapping(
+        rule_id="DF016",
+        summary="Pin the version of every installed package",
+        rationale=(
+            "An unpinned `apt-get install`, `apk add`, `pip install` or `npm install` "
+            "resolves against whatever the index serves the day the build runs -- the "
+            "same Dockerfile can install different bytes, and a different CVE, "
+            "tomorrow than it did today. This is a reproducibility rule this project "
+            "checked no published benchmark for by name, not a citation stretched to "
+            "fit."
+        ),
+        controls=(),
+    ),
+    RuleMapping(
+        rule_id="DF017",
+        summary="Multi-architecture build awareness",
+        rationale=(
+            "`TARGETPLATFORM`/`--platform` have no correct state to check for, only "
+            "presence or absence -- this is informational, not a pass/fail control, "
+            "and exists to flag a package version pinned for one architecture that is "
+            "not guaranteed to exist, or to mean the same package, on another."
+        ),
+        controls=(),
+    ),
 )
 
 _BY_RULE: dict[str, RuleMapping] = {mapping.rule_id: mapping for mapping in RULE_MAPPINGS}

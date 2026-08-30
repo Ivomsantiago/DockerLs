@@ -1028,3 +1028,75 @@ class TestThreatIntelligenceIsOnlyBuiltWhenAGateAsksForIt:
         from dockerls.domain.value_objects.build_policy import BuildPolicy
 
         assert _threat_intel_for(None, BuildPolicy(fail_on="kev")) is not None
+
+
+class TestCompareToAnalysis:
+    """`build --compare-to-analysis <report>` cross-references its own
+    fresh validation against an earlier `analyze-dockerfile --output`
+    report on the same Dockerfile."""
+
+    def test_a_still_failing_check_is_reported_as_still_present(self, bad_context, tmp_path):
+        report_path = tmp_path / "report.json"
+        analyze_result = runner.invoke(
+            app, ["analyze-dockerfile", str(bad_context), "-o", str(report_path)]
+        )
+        assert report_path.exists()
+
+        build_result = runner.invoke(
+            app,
+            [
+                "build",
+                "-t",
+                "x:1",
+                "--validate-only",
+                "--compare-to-analysis",
+                str(report_path),
+                str(bad_context),
+            ],
+        )
+
+        assert "Compared to the earlier analyze-dockerfile run" in build_result.stdout
+        assert "still present in this build" in build_result.stdout
+        assert "still open" in build_result.stdout
+        assert analyze_result.exit_code == build_result.exit_code
+
+    def test_a_fixed_check_is_reported_as_resolved(self, bad_context, clean_context, tmp_path):
+        report_path = tmp_path / "report.json"
+        runner.invoke(app, ["analyze-dockerfile", str(bad_context), "-o", str(report_path)])
+
+        build_result = runner.invoke(
+            app,
+            [
+                "build",
+                "-t",
+                "x:1",
+                "--validate-only",
+                "--compare-to-analysis",
+                str(report_path),
+                str(clean_context),
+            ],
+        )
+
+        assert "fixed" in build_result.stdout
+
+    def test_an_unreadable_baseline_is_reported_not_raised(self, bad_context):
+        result = runner.invoke(
+            app,
+            [
+                "build",
+                "-t",
+                "x:1",
+                "--validate-only",
+                "--compare-to-analysis",
+                "/no/such/report.json",
+                str(bad_context),
+            ],
+        )
+
+        assert "--compare-to-analysis:" in result.stdout
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+
+    def test_without_the_flag_nothing_is_printed(self, bad_context):
+        result = runner.invoke(app, ["build", "-t", "x:1", "--validate-only", str(bad_context)])
+
+        assert "Compared to the earlier analyze-dockerfile run" not in result.stdout

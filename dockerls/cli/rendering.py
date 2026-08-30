@@ -63,6 +63,7 @@ def render_validation_report(
     _render_checks(console, validation)
     if analysis is not None:
         _render_score(console, analysis)
+        _render_template_origin(console, analysis)
     if suggestions:
         _render_suggestions(console, suggestions)
 
@@ -161,6 +162,41 @@ def _render_score(console: Console, analysis: DockerfileAnalysis) -> None:
             expand=False,
         )
     )
+    console.print()
+
+
+def _render_template_origin(console: Console, analysis: DockerfileAnalysis) -> None:
+    """This Dockerfile against the hardened template it most resembles.
+
+    Purely informative -- it does not touch the score or the tier, which
+    keep measuring the Dockerfile as it is, not where it came from. Silent
+    when nothing matched closely enough: a generic Dockerfile is not "an
+    edited template with a 0% match", it is just not one.
+    """
+    origin = analysis.template_origin
+    if origin is None:
+        return
+
+    console.print(
+        Panel(
+            f"[bold]Derived from template:[/bold] [cyan]{origin.template_name}[/cyan]\n"
+            f"Similarity: {origin.similarity:.0%}\n"
+            "[dim]Diff against the hardened template shown below.[/dim]",
+            title="Template origin",
+            expand=False,
+        )
+    )
+    for line in origin.diff[:60]:
+        style = ""
+        if line.startswith("+") and not line.startswith("+++"):
+            style = "green"
+        elif line.startswith("-") and not line.startswith("---"):
+            style = "red"
+        elif line.startswith("@@"):
+            style = "cyan"
+        console.print(f"[{style}]{line}[/{style}]" if style else line, soft_wrap=True)
+    if len(origin.diff) > 60:
+        console.print(f"[dim]... {len(origin.diff) - 60} more diff line(s) omitted[/dim]")
     console.print()
 
 

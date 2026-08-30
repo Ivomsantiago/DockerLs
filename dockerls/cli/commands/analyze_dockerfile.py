@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -14,6 +15,7 @@ from dockerls.application.use_cases.analyze_dockerfile import (
 )
 from dockerls.cli.dependencies import enable_console_logging
 from dockerls.cli.rendering import render_validation_report
+from dockerls.cli.text import safe
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_POLICY
 from dockerls.infrastructure.dockerfile_validator import DockerfileValidator, HardeningTemplates
 
@@ -31,14 +33,22 @@ def analyze(
     output_format: str = typer.Option(
         "table", "--format", "-f", help="Output format: table or json"
     ),
+    output: str | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Also write the full JSON report to this file. A later "
+        "`build --compare-to-analysis <file>` reads it to say which of "
+        "these findings are still present in the image `build` scans",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging"),
 ) -> None:
     """Analyze a Dockerfile for security problems."""
     if verbose:
         enable_console_logging()
 
-    validator = DockerfileValidator()
     template_provider = HardeningTemplates()
+    validator = DockerfileValidator(template_provider)
     use_case = AnalyzeDockerfileUseCase(validator, template_provider)
 
     request = AnalyzeDockerfileRequest(
@@ -52,6 +62,15 @@ def analyze(
     if not response.success:
         console.print(f"[red]Error:[/red] {response.error}")
         raise typer.Exit(EXIT_ERROR)
+
+    if output:
+        try:
+            Path(output).write_text(json.dumps(response.model_dump(), indent=2), encoding="utf-8")
+        except OSError as e:
+            console.print(f"[red]Error:[/red] could not write {safe(output)}: {e}")
+            raise typer.Exit(EXIT_ERROR) from e
+        if output_format != "json":
+            console.print(f"[dim]Report written to {safe(output)}.[/dim]\n")
 
     if output_format == "json":
         # Via `typer.echo`, não pelo console do Rich: o consumidor é um
