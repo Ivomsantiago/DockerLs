@@ -37,7 +37,7 @@ class TestPrivateSourceIsOptIn:
         spec = registry.get("private")
         assert spec is not None
         assert spec.label == "Private Registry"
-        assert "registry.example.com" in spec.description
+        assert spec.description == "Private registry (registry.example.com)"
         assert spec.default_enabled is False
 
     def test_requires_auth_reflects_whether_credentials_are_configured(self, monkeypatch):
