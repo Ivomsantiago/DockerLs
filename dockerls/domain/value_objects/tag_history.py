@@ -114,9 +114,9 @@ class TagHistory:
                 f"observed since {self.first_seen}, always on the same digest -- what "
                 "happened before that is unknown, not absent"
             )
-        vezes = "vez" if self.moves == 1 else "vezes"
+        times = "time" if self.moves == 1 else "times"
         return (
-            f"mudou de digest {self.moves} {vezes} desde {self.first_seen}, "
+            f"changed digest {self.moves} {times} since {self.first_seen}, "
             f"the last on {self.last_moved_at}"
         )
 

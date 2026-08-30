@@ -50,7 +50,7 @@ def base_image(
         "Dockerfile", "--output", "-o", help="Where to write the generated Dockerfile"
     ),
     os_family: str | None = typer.Option(
-        None, "--os", help="alpine, debian, ubuntu, distroless ou wolfi"
+        None, "--os", help="alpine, debian, ubuntu, distroless or wolfi"
     ),
     runtime: str | None = typer.Option(None, "--runtime", help="none, java, node, python ou go"),
     with_packages: str | None = typer.Option(
@@ -289,7 +289,7 @@ def _side_label(recipe: BaseRecipe) -> str:
     try:
         return recipe.base.reference
     except UnsupportedCombinationError:
-        return f"{recipe.runtime} sobre {recipe.family}"
+        return f"{recipe.runtime} on {recipe.family}"
 
 
 def _build_now(
@@ -438,7 +438,7 @@ def _resolve_family(value: str | None) -> OsFamily:
             nota = f"libc {family.libc}"
         console.print(f"  {index}. [cyan]{family.value}[/cyan]  [dim]{nota}[/dim]")
     escolha = Prompt.ask(
-        "Escolha", choices=[str(i) for i in range(1, len(OsFamily) + 1)], default="1"
+        "Choice", choices=[str(i) for i in range(1, len(OsFamily) + 1)], default="1"
     )
     return list(OsFamily)[int(escolha) - 1]
 
@@ -461,12 +461,12 @@ def _resolve_runtime(value: str | None, family: OsFamily) -> Runtime:
             )
         return escolhido
 
-    console.print(f"\n[bold]Runtime sobre {family.value}[/bold]")
+    console.print(f"\n[bold]Runtime on {family.value}[/bold]")
     for index, runtime in enumerate(disponiveis, 1):
         base = RUNTIME_BASES[(runtime, family)]
         console.print(f"  {index}. [cyan]{runtime.value}[/cyan]  [dim]{base.reference}[/dim]")
     escolha = Prompt.ask(
-        "Escolha", choices=[str(i) for i in range(1, len(disponiveis) + 1)], default="1"
+        "Choice", choices=[str(i) for i in range(1, len(disponiveis) + 1)], default="1"
     )
     return disponiveis[int(escolha) - 1]
 
@@ -504,7 +504,7 @@ def _resolve_packages(value: str | None, family: OsFamily) -> list[str]:
         marca = " [dim](already present in most bases)[/dim]" if choice.usually_present else ""
         console.print(f"  {index}. [cyan]{choice.key}[/cyan]{marca}")
         console.print(f"       [dim]used for: {choice.purpose}[/dim]")
-        console.print(f"       [yellow]custa:[/yellow] [dim]{choice.cost}[/dim]")
+        console.print(f"       [yellow]cost:[/yellow] [dim]{choice.cost}[/dim]")
 
     resposta = Prompt.ask(
         "\nComma-separated numbers (empty = no packages)", default="", show_default=False
@@ -519,10 +519,8 @@ def _resolve_packages(value: str | None, family: OsFamily) -> list[str]:
             raise UnsupportedCombinationError(f"invalid choice: {parte!r}")
         escolhidos.append(disponiveis[int(parte) - 1].key)
 
-    console.print(f"\n[dim]Marcados: {', '.join(escolhidos)}[/dim]")
-    # `s`/`n`, não `y`/`n`: a interface inteira está em português, e um prompt
-    # que recusa "s" faz a pessoa duvidar do que ela acabou de marcar.
-    if Prompt.ask("Confirma?", choices=["s", "n"], default="s", console=console) == "n":
+    console.print(f"\n[dim]Selected: {', '.join(escolhidos)}[/dim]")
+    if Prompt.ask("Confirm?", choices=["y", "n"], default="y", console=console) == "n":
         console.print("[dim]Nothing was written.[/dim]")
         raise typer.Exit(EXIT_OK)
     return escolhidos
