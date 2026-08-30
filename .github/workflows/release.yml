@@ -39,9 +39,29 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
+      - name: Extract this version's CHANGELOG.md section for the release body
+        # CHANGELOG.md already carries the narrative for every release --
+        # `generate_release_notes` alone only produces a PR list, with none
+        # of it. This pulls the text between this version's `## [x.y.z]`
+        # heading and the next `## [` heading (whichever comes first: the
+        # next version, or a section like `[1.0.0-internal]` further down)
+        # into a file, so the GitHub Release body carries the same story a
+        # human reading CHANGELOG.md would see, and generate_release_notes
+        # still appends the auto-generated PR list after it.
+        run: |
+          awk -v ver="${GITHUB_REF_NAME#v}" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG.md section found for ${GITHUB_REF_NAME#v}; falling back to auto-generated notes only." >&2
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          body_path: release-notes.md
           generate_release_notes: true
           # Signed artifacts (.sigstore bundles) and the provenance
           # attestation are attached alongside the built distributions so
