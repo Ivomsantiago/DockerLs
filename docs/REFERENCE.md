@@ -1031,6 +1031,58 @@ publicado dizem isso explicitamente, em vez de omitir a linha — a diferença
 entre "isto é CIS 4.1" e "isto é opinião nossa" é justamente o que o leitor tem
 direito de saber.
 
+**`DF016`/`DF017` — pin de versão e consciência multi-arquitetura.** Duas
+regras sem controle publicado no catálogo (CIS/OWASP/NIST), citadas como
+"DockerLs guidance" em vez de esticar uma citação para caber:
+
+```dockerfile
+FROM node:22-alpine
+RUN apk add --no-cache curl
+ARG TARGETPLATFORM
+RUN echo "building for $TARGETPLATFORM"
+COPY . /app
+USER node
+CMD ["node", "/app/index.js"]
+```
+
+```
+│ WARN     │ package_versions_pinned   │ Unpinned package            │  MEDIUM  │
+│          │                           │ install(s): apk: curl       │          │
+│ PASS     │ multi_arch_build_declared │ Multi-architecture build    │   INFO   │
+│          │                           │ declared: TARGETPLATFORM    │          │
+│ WARN     │ multi_arch_pinned_packag… │ Multi-architecture build    │   LOW    │
+│          │                           │ with unpinned package       │          │
+│          │                           │ versions: a version pin     │          │
+│          │                           │ resolved for one            │          │
+│          │                           │ architecture is not         │          │
+│          │                           │ guaranteed to exist, or to  │          │
+│          │                           │ mean the same package, on   │          │
+│          │                           │ another                     │          │
+
+Reference controls
+  DF016  package_versions_pinned
+    An unpinned `apt-get install`, `apk add`, `pip install` or `npm install`
+    resolves against whatever the index serves the day the build runs -- the
+    same Dockerfile can install different bytes, and a different CVE,
+    tomorrow than it did today. This is a reproducibility rule this project
+    checked no published benchmark for by name, not a citation stretched to
+    fit.
+    -> DockerLs guidance; no published control in the catalogue covers this rule
+  DF017  multi_arch_pinned_packages
+    `TARGETPLATFORM`/`--platform` have no correct state to check for, only
+    presence or absence -- this is informational, not a pass/fail control,
+    and exists to flag a package version pinned for one architecture that is
+    not guaranteed to exist, or to mean the same package, on another.
+    -> DockerLs guidance; no published control in the catalogue covers this rule
+```
+
+`DF016` só dispara quando o gerenciador de pacotes é reconhecido (`apt-get`,
+`apk`, `pip`, `npm`) e a instalação não fixa versão. `DF017` tem duas partes:
+o `PASS` informativo aparece assim que o Dockerfile declara
+`TARGETPLATFORM`/`--platform`; o `WARN` sobre pacotes exige também um
+`DF016` ativo -- sem `TARGETPLATFORM` declarado, a regra não tem o que dizer
+e não aparece de forma alguma (nem como `SKIP`).
+
 ### controls
 
 Lista o catálogo inteiro de regras e os controles que elas implementam, sem
@@ -1322,6 +1374,37 @@ dockerls build -t minha-app:1.0 \
 # Templates hardened disponíveis para --base
 dockerls build --list-templates
 ```
+
+**`--compare-to-analysis` — o mesmo Dockerfile, antes e depois.** Um
+`analyze-dockerfile --output baseline.json` roda cedo (ex.: um pre-commit ou
+o início do pipeline); um `build --compare-to-analysis baseline.json` mais
+tarde, no mesmo Dockerfile, diz o que mudou desde então. As duas rodadas usam
+exatamente o mesmo conjunto de regras -- `build` sempre roda sua própria
+validação primeiro -- então é uma comparação antes-e-depois do mesmo arquivo,
+não um palpite sobre o que teria mudado:
+
+```bash
+dockerls analyze-dockerfile . --output baseline.json
+# ... alguém edita o Dockerfile: fixa a versão de curl, não a de jq ...
+dockerls build --validate-only --compare-to-analysis baseline.json .
+```
+
+```
+Compared to the earlier analyze-dockerfile run
+5/7 of its warnings/errors are still present in this build.
+  fixed     multi_arch_pinned_packages
+  fixed     package_versions_pinned
+  still open dockerignore_exists
+  still open healthcheck_present
+  still open multi_stage_build
+  still open package_cache_clean
+  still open security_labels
+```
+
+Achados novos que não existiam no baseline aparecem como `new`. Um baseline
+que não pôde ser lido (arquivo ausente, JSON diferente do formato que
+`analyze-dockerfile --output` produz) vira um aviso e a comparação é pulada
+-- nunca falha o build por conta de um argumento auxiliar.
 
 #### Todas as opções do `build`
 
@@ -2601,6 +2684,7 @@ verificável -- ou não ganha.
 | `chainguard` | Chainguard free tier (`cgr.dev`) | ligado | o tier gratuito publica só as tags móveis |
 | `distroless` | Google Distroless (`gcr.io/distroless`) | ligado | único que data as tags via manifesto GCR |
 | `dhi` | Docker Hardened Images (`dhi.io`) | **desligado** | catálogo público, registry **exige credenciais** |
+| `private` | Um registry OCI seu | **desligado, some do menu sem config** | ECR, Harbor, GHCR, Artifactory, `registry:2` -- protocolo único, ver abaixo |
 | `all` | todos acima | — | equivalente a `--all-sources` |
 
 ```bash
@@ -2653,6 +2737,49 @@ cota da API. Medido: 1 requisição a frio sobre 11k blobs (14 ms), **0** a quen
 
 Sem token, a API do GitHub permite 60 requisições/hora para um cliente anônimo.
 `DOCKERLS_GITHUB_TOKEN` (somente leitura, sem escopo) eleva esse teto.
+
+### Registry privado (`--source private`)
+
+Diferente do DHI (catálogo público, registry fechado), a fonte `private` não
+tem catálogo nenhum: ela é o registry OCI da própria organização, falado pelo
+protocolo padrão Docker Registry HTTP API V2 -- o mesmo que ECR, Harbor, o
+container registry do GHCR, o Artifactory e um `registry:2` autogerenciado
+falam. A diferença entre eles nunca aparece no cliente; é só host,
+namespace e como o operador obteve a senha.
+
+**Está desligada por padrão e nem aparece no menu** enquanto
+`DOCKERLS_PRIVATE_REGISTRY_HOST` não for configurado -- um `--source
+private` sem host configurado erraria com "nenhum repositório com esse
+nome" em vez da mensagem de fonte desconhecida do próprio CLI, e o comando
+`doctor`/`--help` listaria uma fonte que não faz nada.
+
+| Variável | Obrigatória | Efeito |
+|---|---|---|
+| `DOCKERLS_PRIVATE_REGISTRY_HOST` | sim | Host do registry (ex.: `123456789012.dkr.ecr.us-east-1.amazonaws.com`). Ausente = fonte não aparece. |
+| `DOCKERLS_PRIVATE_REGISTRY_NAMESPACE` | não | Prefixo de repositório aplicado antes do nome da imagem (ex.: `meu-time`). |
+| `DOCKERLS_PRIVATE_REGISTRY_USERNAME` | não | Usuário Basic. Ausente = tentativa anônima (registries internos sem auth, ou um `registry:2` aberto). |
+| `DOCKERLS_PRIVATE_REGISTRY_PASSWORD` | não | Senha ou token Basic, trocado por um bearer token no endpoint de token que o próprio 401 do registry anuncia. |
+
+Exemplo real com Amazon ECR, o caso mais comum -- a senha é um token de curta
+duração obtido via AWS CLI, nunca uma credencial de longa duração gravada em
+disco:
+
+```bash
+export DOCKERLS_PRIVATE_REGISTRY_HOST="123456789012.dkr.ecr.us-east-1.amazonaws.com"
+export DOCKERLS_PRIVATE_REGISTRY_USERNAME="AWS"
+export DOCKERLS_PRIVATE_REGISTRY_PASSWORD="$(aws ecr get-login-password --region us-east-1)"
+
+dockerls search minha-app --source private
+dockerls recommend minha-app --source private --source dockerhub
+```
+
+Para Harbor ou GHCR, a senha é um robot account ou um personal access token
+com escopo `read:packages`; o formato de troca por bearer token é o mesmo em
+todos, porque é o protocolo, não o vendor, que o cliente fala.
+
+Como qualquer outra fonte, um candidato do `private` entra no mesmo pipeline
+de scan, hardening e pontuação -- ele não vence por ser "o registry interno
+confiável", vence (ou não) pela mesma medição que todo o resto.
 
 ---
 
