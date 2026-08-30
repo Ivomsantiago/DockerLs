@@ -1,5 +1,5 @@
 # Dockerfile.hardened.rust-debian
-# Template hardened para Rust (Debian Bookworm Slim)
+# Hardened template for Rust (Debian Bookworm Slim)
 
 ARG RUST_VERSION=1.82-bookworm
 ARG DEBIAN_VERSION=bookworm-slim

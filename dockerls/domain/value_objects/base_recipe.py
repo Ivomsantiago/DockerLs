@@ -120,7 +120,7 @@ RUNTIME_BASES: dict[tuple[Runtime, OsFamily], RuntimeBase] = {
             "/usr/local/bin/yarn",
             "/usr/local/bin/yarnpkg",
         ),
-        bundled_manager_note="npm e yarn",
+        bundled_manager_note="npm and yarn",
     ),
     (Runtime.NODE, OsFamily.DEBIAN): RuntimeBase(
         "node",
@@ -134,7 +134,7 @@ RUNTIME_BASES: dict[tuple[Runtime, OsFamily], RuntimeBase] = {
             "/usr/local/bin/yarn",
             "/usr/local/bin/yarnpkg",
         ),
-        bundled_manager_note="npm e yarn",
+        bundled_manager_note="npm and yarn",
     ),
     (Runtime.NODE, OsFamily.DISTROLESS): RuntimeBase(
         "gcr.io/distroless/nodejs22-debian12", "nonroot", builtin_user="nonroot"
@@ -437,7 +437,8 @@ def _packages(recipe: BaseRecipe) -> list[str]:
         return [
             *comment,
             "# `--no-cache` leaves no index behind: there is nothing to clean up in",
-            "# camada seguinte, e o cache removido depois ficaria na camada anterior.",
+            "# a later layer, and removing the cache afterwards would still leave it",
+            "# behind in this layer.",
             "RUN apk upgrade --no-cache && \\",
             "    apk add --no-cache \\",
             f"    {pacotes}",
@@ -453,7 +454,7 @@ def _packages(recipe: BaseRecipe) -> list[str]:
     return [
         *comment,
         "# The index lists go out in the layer that created them: removing them later",
-        "# deixaria os bytes na camada anterior.",
+        "# would still leave the bytes behind in the earlier layer.",
         "RUN apt-get update && apt-get upgrade -y --no-install-recommends && \\",
         "    apt-get install -y --no-install-recommends \\",
         f"    {pacotes} && \\",

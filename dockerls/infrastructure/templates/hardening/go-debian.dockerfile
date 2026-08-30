@@ -1,5 +1,5 @@
 # Dockerfile.hardened.go-debian
-# Template hardened para Go (Debian Bookworm Slim)
+# Hardened template for Go (Debian Bookworm Slim)
 
 ARG GO_VERSION=1.23-bookworm
 ARG DEBIAN_VERSION=bookworm-slim

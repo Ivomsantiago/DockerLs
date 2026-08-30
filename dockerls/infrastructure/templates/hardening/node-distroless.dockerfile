@@ -1,5 +1,5 @@
 # Dockerfile.hardened.node-distroless
-# Template hardened para Node.js 22 (Google Distroless - No Shell)
+# Hardened template for Node.js 22 (Google Distroless - No Shell)
 
 ARG NODE_VERSION=22-alpine
 
@@ -37,7 +37,7 @@ ARG BUILD_TIME=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 LABEL org.opencontainers.image.created="${BUILD_TIME}"
 
-# nonroot user no Distroless é 65532:65532
+# nonroot user in Distroless is 65532:65532
 USER 65532:65532
 
 EXPOSE 3000

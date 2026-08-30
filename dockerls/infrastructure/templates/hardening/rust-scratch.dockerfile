@@ -1,5 +1,5 @@
 # Dockerfile.hardened.rust-scratch
-# Template hardened para Rust (Scratch - Zero OS CVEs)
+# Hardened template for Rust (Scratch - Zero OS CVEs)
 
 ARG RUST_VERSION=1.82-alpine
 
@@ -14,7 +14,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# Compilação estática segura
+# Secure static compilation
 RUN RUSTFLAGS="-C target-feature=+crt-static" \
     cargo build --release --target x86_64-unknown-linux-musl \
     && cp /app/target/x86_64-unknown-linux-musl/release/app /app/binary || cp /app/target/x86_64-unknown-linux-musl/release/* /app/binary
@@ -36,7 +36,7 @@ ARG BUILD_TIME=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 LABEL org.opencontainers.image.created="${BUILD_TIME}"
 
-# Usuário nobody (UID 65534:65534)
+# nobody user (UID 65534:65534)
 USER 65534:65534
 
 EXPOSE 8080

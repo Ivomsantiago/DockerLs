@@ -1,5 +1,5 @@
 # Dockerfile.hardened.node-alpine
-# Template hardened para Node.js 22 (Alpine Linux musl)
+# Hardened template for Node.js 22 (Alpine Linux musl)
 
 ARG NODE_VERSION=22-alpine
 

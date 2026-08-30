@@ -1,5 +1,5 @@
 # Dockerfile.hardened.python-distroless
-# Template hardened para Python 3.12 (Google Distroless - No Shell)
+# Hardened template for Python 3.12 (Google Distroless - No Shell)
 
 ARG DEBIAN_VERSION=bookworm-slim
 
@@ -42,7 +42,7 @@ ARG BUILD_TIME=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 LABEL org.opencontainers.image.created="${BUILD_TIME}"
 
-# nonroot user no Distroless é 65532:65532
+# nonroot user in Distroless is 65532:65532
 USER 65532:65532
 
 EXPOSE 8000

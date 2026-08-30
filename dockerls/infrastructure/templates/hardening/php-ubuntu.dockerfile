@@ -1,5 +1,5 @@
 # Dockerfile.hardened.php-ubuntu
-# Template hardened para PHP 8.3 (Ubuntu 24.04 LTS)
+# Hardened template for PHP 8.3 (Ubuntu 24.04 LTS)
 
 ARG UBUNTU_VERSION=24.04
 ARG COMPOSER_VERSION=2

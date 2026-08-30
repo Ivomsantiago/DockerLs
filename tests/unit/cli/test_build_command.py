@@ -333,6 +333,32 @@ class TestFullBuildFlow:
         assert "Build Failed" in result.stdout
         assert "Vulnerabilities exceed threshold (critical)" in result.stdout
 
+    def test_production_without_a_scanner_exits_one_not_a_false_pass(
+        self, clean_context, monkeypatch
+    ):
+        """`--production` requires a scan (`BuildPolicy.production()` sets
+        `fail_on="critical"`); on a runner with neither trivy nor grype
+        installed the command must fail loudly, never report a build as
+        clean because nothing was actually measured."""
+        response = BuildImageResponse(
+            success=False,
+            image_tag="myapp:1.0",
+            error="--fail-on critical requires a vulnerability scan, and no scanner "
+            "(trivy, grype) could be run",
+            exit_code=EXIT_ERROR,
+        )
+        monkeypatch.setattr(BuildImageUseCase, "execute", lambda self, request: response)
+
+        result = runner.invoke(
+            app, ["build", "-t", "myapp:1.0", "--production", str(clean_context)]
+        )
+
+        assert result.exit_code == EXIT_ERROR
+        assert isinstance(result.exception, SystemExit)
+        assert "no scanner" in result.stdout
+        assert "0 vulnerabilit" not in result.stdout.lower()
+        assert "traceback (most recent call last)" not in result.stdout.lower()
+
     def test_ci_mode_emits_the_full_report_as_json(self, clean_context, monkeypatch):
         response = BuildImageResponse(
             success=True,

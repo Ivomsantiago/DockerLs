@@ -1,5 +1,5 @@
 # Dockerfile.hardened.node
-# Template hardened para Node.js - Production Ready
+# Hardened template for Node.js - Production Ready
 
 ARG NODE_VERSION=22-alpine
 
@@ -8,41 +8,41 @@ FROM node:${NODE_VERSION} AS builder
 
 WORKDIR /app
 
-# Instalar dependências de compilação se necessário (ficam apenas no builder)
+# Install build dependencies if needed (stay only in the builder)
 RUN apk add --no-cache \
     python3 \
     make \
     g++ \
     && rm -rf /var/cache/apk/*
 
-# Copy package manifests e instalar dependências limpas
+# Copy package manifests and install clean dependencies
 COPY package*.json ./
 RUN npm ci --only=production \
     && npm cache clean --force
 
-# Copy source e build
+# Copy source and build
 COPY . .
 RUN npm run build || true
 
 # Stage 2: Runtime
 FROM node:${NODE_VERSION}
 
-# Labels de segurança
+# Security labels
 LABEL security.scanner="dockerls"
 LABEL security.hardened="true"
 LABEL maintainer="your-team@company.com"
 LABEL security.cve-contact="security@company.com"
 
-# Variáveis de ambiente de produção
+# Production environment variables
 ENV NODE_ENV=production
 
 WORKDIR /app
 
-# Copiar apenas os artefatos necessários com permissão para o usuário 'node'
+# Copy only the necessary artifacts with ownership for the 'node' user
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node . .
 
-# Metadados de build
+# Build metadata
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
@@ -50,7 +50,7 @@ LABEL org.opencontainers.image.created="${BUILD_TIME}"
 
 USER node
 
-# Health check seguro nativo
+# Secure native health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) process.exit(1)}).on('error', () => process.exit(1))"
 

@@ -236,3 +236,18 @@ GRYPE = ToolSpec(
 #: Os scanners que `doctor --install` sabe instalar, na ordem em que são
 #: oferecidos. Trivy primeiro porque é o scanner primário do projeto.
 INSTALLABLE: tuple[ToolSpec, ...] = (TRIVY, GRYPE)
+
+#: Versão usada quando `releases/latest` não pôde ser consultada -- um proxy
+#: ou allowlist restritivo devolve 403 para `api.github.com` em muitos
+#: ambientes de CI enquanto `github.com/.../releases/download/...` (o único
+#: outro host que este instalador toca) segue liberado, porque é o mesmo
+#: host que serve o próprio binário. Sem isto, `doctor --install` travava o
+#: onboarding inteiro por causa de um endpoint que nem baixa nada.
+#:
+#: Atualizada manualmente de vez em quando; não precisa ser a última versão
+#: publicada, só uma que existe e ainda recebe correção de CVE -- é um
+#: piso, não a versão que `--install` busca quando a API está acessível.
+DEFAULT_VERSIONS: dict[str, str] = {
+    "trivy": "0.58.1",
+    "grype": "0.85.0",
+}

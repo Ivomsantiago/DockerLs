@@ -1,5 +1,5 @@
 # Dockerfile.hardened.ruby-alpine
-# Template hardened para Ruby 3.3 (Alpine Linux)
+# Hardened template for Ruby 3.3 (Alpine Linux)
 
 ARG RUBY_VERSION=3.3-alpine
 

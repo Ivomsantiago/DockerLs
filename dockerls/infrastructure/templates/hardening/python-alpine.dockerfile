@@ -1,5 +1,5 @@
 # Dockerfile.hardened.python-alpine
-# Template hardened para Python 3.12 (Alpine Linux musl)
+# Hardened template for Python 3.12 (Alpine Linux musl)
 
 ARG PYTHON_VERSION=3.12-alpine
 

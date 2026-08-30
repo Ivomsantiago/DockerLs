@@ -21,6 +21,7 @@ from dockerls.domain.value_objects.scanner_db import (
     classify,
 )
 from dockerls.domain.value_objects.tool_release import (
+    DEFAULT_VERSIONS,
     INSTALLABLE,
     OS,
     Arch,
@@ -72,6 +73,20 @@ def doctor(
         "--install-dir",
         help="Where to install the binaries [default: ~/.local/bin, no privilege required]",
     ),
+    trivy_version: str = typer.Option(
+        "",
+        "--trivy-version",
+        help="Install this Trivy version instead of resolving the latest one (no 'v' "
+        "prefix, e.g. 0.58.1). Skips the releases/latest API entirely -- useful when a "
+        "proxy or allowlist blocks api.github.com but github.com/.../releases/download "
+        "is reachable",
+    ),
+    grype_version: str = typer.Option(
+        "",
+        "--grype-version",
+        help="Install this Grype version instead of resolving the latest one (no 'v' "
+        "prefix, e.g. 0.85.0). Same rationale as --trivy-version",
+    ),
     require_fresh_db: bool = typer.Option(
         False,
         "--require-fresh-db",
@@ -115,7 +130,18 @@ def doctor(
     # scan, where the cause is far less obvious. `health` already gates the
     # same way for network dependencies.
     if install:
-        raise typer.Exit(asyncio.run(_install_missing(assume_yes=yes, install_dir=install_dir)))
+        pinned_versions = {
+            name: version
+            for name, version in (("trivy", trivy_version), ("grype", grype_version))
+            if version.strip()
+        }
+        raise typer.Exit(
+            asyncio.run(
+                _install_missing(
+                    assume_yes=yes, install_dir=install_dir, pinned_versions=pinned_versions
+                )
+            )
+        )
     raise typer.Exit(asyncio.run(_doctor(require_fresh_db=require_fresh_db)))
 
 
@@ -376,8 +402,17 @@ def _print_plans(plans: list[InstallPlan]) -> None:
         )
 
 
-async def _install_missing(*, assume_yes: bool, install_dir: str) -> int:
-    """Instala os scanners que faltam, um independente do outro."""
+async def _install_missing(
+    *, assume_yes: bool, install_dir: str, pinned_versions: dict[str, str] | None = None
+) -> int:
+    """Instala os scanners que faltam, um independente do outro.
+
+    `pinned_versions` (de `--trivy-version`/`--grype-version`) evita
+    consultar `releases/latest` por completo: um proxy ou allowlist
+    restritivo devolve 403 para `api.github.com` em vários ambientes de CI
+    mesmo quando `github.com/.../releases/download/...` -- o único outro
+    host que este instalador toca -- segue liberado.
+    """
     system, machine = platform.system(), platform.machine()
     os_, arch = detect_os(system), detect_arch(machine)
     if os_ is None or arch is None:
@@ -404,14 +439,31 @@ async def _install_missing(*, assume_yes: bool, install_dir: str) -> int:
         return EXIT_ERROR
 
     installer = ToolInstaller(guard=_install_guard())
+    pinned_versions = pinned_versions or {}
     plans: list[InstallPlan] = []
     for spec in installable:
+        pinned = pinned_versions.get(spec.name, "").strip()
+        if pinned:
+            # An explicit version skips releases/latest entirely -- there is
+            # nothing to resolve, and nothing to fail on a 403.
+            plans.append(_plan_for(spec, pinned, os_, arch, destination))
+            continue
+
         # Uma ferramenta que não resolve versão não impede a outra.
         try:
             version = await installer.latest_version(spec)
             plans.append(_plan_for(spec, version, os_, arch, destination))
         except InstallError as e:
-            console.print(f"[red]{spec.name}:[/red] {safe(str(e))}")
+            fallback = DEFAULT_VERSIONS.get(spec.name, "")
+            if not fallback:
+                console.print(f"[red]{spec.name}:[/red] {safe(str(e))}")
+                continue
+            console.print(
+                f"[yellow]{spec.name}:[/yellow] {safe(str(e))}\n"
+                f"[dim]Falling back to the built-in default version {fallback} -- pass "
+                f"--{spec.name}-version to pin a different one.[/dim]"
+            )
+            plans.append(_plan_for(spec, fallback, os_, arch, destination))
 
     if not plans:
         return EXIT_ERROR

@@ -1,5 +1,5 @@
 # Dockerfile.hardened.java-distroless
-# Template hardened para Java 21 (Google Distroless - No Shell)
+# Hardened template for Java 21 (Google Distroless - No Shell)
 
 ARG JDK_VERSION=21-jdk-alpine
 
@@ -31,7 +31,7 @@ ARG BUILD_TIME=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 LABEL org.opencontainers.image.created="${BUILD_TIME}"
 
-# nonroot user no Distroless
+# nonroot user in Distroless
 USER 65532:65532
 
 EXPOSE 8080

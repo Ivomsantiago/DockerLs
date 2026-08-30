@@ -1,5 +1,5 @@
 # Dockerfile.hardened.python-ubuntu
-# Template hardened para Python 3.12 (Ubuntu 24.04 LTS)
+# Hardened template for Python 3.12 (Ubuntu 24.04 LTS)
 
 ARG UBUNTU_VERSION=24.04
 

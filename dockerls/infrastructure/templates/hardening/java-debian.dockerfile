@@ -1,5 +1,5 @@
 # Dockerfile.hardened.java-debian
-# Template hardened para Java 21 (Eclipse Temurin JRE Debian Bookworm)
+# Hardened template for Java 21 (Eclipse Temurin JRE Debian Bookworm)
 
 ARG JDK_VERSION=21-jdk
 ARG JRE_VERSION=21-jre

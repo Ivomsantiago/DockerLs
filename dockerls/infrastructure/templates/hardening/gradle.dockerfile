@@ -1,9 +1,10 @@
 # Dockerfile.hardened.gradle
-# Template hardened para aplicação Java construída com Gradle (Debian slim).
+# Hardened template for a Java application built with Gradle (Debian slim).
 #
-# Mesma separação do template de Maven: a imagem oficial do Gradle constrói,
-# e o runtime carrega apenas o JRE. O daemon do Gradle é desligado no build --
-# num container ele nunca é reaproveitado entre execuções e só consome memória.
+# Same separation as the Maven template: the official Gradle image builds,
+# and the runtime carries only the JRE. The Gradle daemon is disabled during
+# the build -- inside a container it is never reused across runs, so keeping
+# it running only wastes memory.
 
 ARG GRADLE_VERSION=8-jdk21
 ARG JRE_VERSION=21-jre

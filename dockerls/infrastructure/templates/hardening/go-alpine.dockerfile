@@ -1,5 +1,5 @@
 # Dockerfile.hardened.go-alpine
-# Template hardened para Go (Alpine Linux)
+# Hardened template for Go (Alpine Linux)
 
 ARG GO_VERSION=1.23-alpine
 ARG ALPINE_VERSION=3.20

@@ -1,11 +1,11 @@
 # Dockerfile.hardened.maven
-# Template hardened para aplicação Java construída com Maven (Debian slim).
+# Hardened template for a Java application built with Maven (Debian slim).
 #
-# O build usa a imagem oficial do Maven, que carrega JDK e a ferramenta; o
-# runtime usa apenas o JRE. Essa separação é o que tira compilador, cache do
-# Maven e a árvore de dependências de build da imagem que vai para produção --
-# nada disso é necessário para *rodar* a aplicação, e cada um deles é
-# superfície de ataque e CVE para triar depois.
+# The build uses the official Maven image, which carries the JDK and the
+# tool; the runtime uses only the JRE. This separation keeps the compiler,
+# the Maven cache, and the build dependency tree out of the image that ships
+# to production -- none of it is needed to *run* the application, and each
+# one is attack surface and CVEs to triage later.
 
 ARG MAVEN_VERSION=3.9-eclipse-temurin-21
 ARG JRE_VERSION=21-jre
@@ -15,8 +15,8 @@ FROM maven:${MAVEN_VERSION} AS builder
 
 WORKDIR /app
 
-# O POM entra sozinho primeiro: assim a camada de dependências só é refeita
-# quando o POM muda, e não a cada alteração de código.
+# The POM goes in alone first: that way the dependency layer is only
+# rebuilt when the POM changes, not on every code change.
 COPY pom.xml ./
 RUN mvn -B dependency:go-offline
 

@@ -1,5 +1,5 @@
 # Dockerfile.hardened.rust-alpine
-# Template hardened para Rust (Alpine Linux)
+# Hardened template for Rust (Alpine Linux)
 
 ARG RUST_VERSION=1.82-alpine
 ARG ALPINE_VERSION=3.20

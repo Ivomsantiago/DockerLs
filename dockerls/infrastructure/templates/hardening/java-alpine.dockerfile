@@ -1,5 +1,5 @@
 # Dockerfile.hardened.java-alpine
-# Template hardened para Java 21 (Eclipse Temurin JRE Alpine)
+# Hardened template for Java 21 (Eclipse Temurin JRE Alpine)
 
 ARG JDK_VERSION=21-jdk-alpine
 ARG JRE_VERSION=21-jre-alpine

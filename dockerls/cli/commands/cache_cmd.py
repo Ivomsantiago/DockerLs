@@ -14,7 +14,10 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
 console = Console()
-cache_app = typer.Typer(help="Manage the scan cache")
+#: `no_args_is_help`: `dockerls cache` with no subcommand used to print a bare
+#: "Missing command." and nothing else, forcing anyone who typed it to know
+#: to add `--help` themselves. This lists the subcommands right there instead.
+cache_app = typer.Typer(help="Manage the scan cache", no_args_is_help=True)
 
 
 def _run(coro: Coroutine[Any, Any, None]) -> None:

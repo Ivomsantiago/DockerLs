@@ -175,7 +175,12 @@ class TestOneFailureDoesNotStopTheOther:
         # E o grype seguiu sendo instalado.
         assert "OK verified sha256" in collapsed
 
-    def test_a_version_lookup_failure_does_not_stop_the_other_tool(self, nothing_installed, linux):
+    def test_a_version_lookup_failure_falls_back_to_the_built_in_default(
+        self, nothing_installed, linux
+    ):
+        """`releases/latest` failing (a 403 from a restrictive proxy, say) no
+        longer drops the tool: it installs the hardcoded default version
+        instead, and says so, rather than leaving CI onboarding stuck."""
         installer = _installer()
         calls: list[str] = []
 
@@ -187,12 +192,17 @@ class TestOneFailureDoesNotStopTheOther:
 
         installer.latest_version = latest
         result = _run(["--install", "--yes"], installer=installer)
+        collapsed = " ".join(result.output.split())
 
         assert calls == ["trivy", "grype"]
-        assert "release feed unreachable" in " ".join(result.output.split())
-        assert "grype_0.87.0_linux_amd64.tar.gz" in " ".join(result.output.split())
+        assert "release feed unreachable" in collapsed
+        assert "Falling back to the built-in default version" in collapsed
+        assert "grype_0.87.0_linux_amd64.tar.gz" in collapsed
+        assert "trivy_0.58.1_Linux-64bit.tar.gz" in collapsed
 
-    def test_every_tool_failing_exits_with_an_error(self, nothing_installed, linux):
+    def test_every_tool_failing_the_latest_lookup_still_installs_via_fallback(
+        self, nothing_installed, linux
+    ):
         installer = _installer()
 
         async def latest(spec):
@@ -201,7 +211,25 @@ class TestOneFailureDoesNotStopTheOther:
         installer.latest_version = latest
         result = _run(["--install", "--yes"], installer=installer)
 
-        assert result.exit_code == EXIT_ERROR
+        assert result.exit_code == EXIT_OK
+        assert "Falling back to the built-in default version" in " ".join(result.output.split())
+
+    def test_an_explicit_version_skips_the_latest_lookup_entirely(self, nothing_installed, linux):
+        installer = _installer()
+
+        async def latest(spec):  # pragma: no cover - must never be called
+            raise AssertionError("releases/latest must not be queried when a version is pinned")
+
+        installer.latest_version = latest
+        result = _run(
+            ["--install", "--yes", "--trivy-version", "0.60.0", "--grype-version", "0.90.0"],
+            installer=installer,
+        )
+        collapsed = " ".join(result.output.split())
+
+        assert result.exit_code == EXIT_OK
+        assert "trivy_0.60.0_Linux-64bit.tar.gz" in collapsed
+        assert "grype_0.90.0_linux_amd64.tar.gz" in collapsed
 
 
 class TestFinalDiagnosisReflectsReality:

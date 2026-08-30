@@ -1,5 +1,5 @@
 # Dockerfile.hardened.ruby-debian
-# Template hardened para Ruby 3.3 (Debian Bookworm Slim)
+# Hardened template for Ruby 3.3 (Debian Bookworm Slim)
 
 ARG RUBY_VERSION=3.3-slim-bookworm
 
