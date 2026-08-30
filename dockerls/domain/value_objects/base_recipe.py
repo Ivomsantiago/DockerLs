@@ -28,7 +28,7 @@ que se paga em superfície de ataque não é conveniência:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 
@@ -39,6 +39,16 @@ class OsFamily(StrEnum):
     DEBIAN = "debian"
     UBUNTU = "ubuntu"
     DISTROLESS = "distroless"
+    #: Wolfi/Chainguard. Modelado como o Distroless: uma imagem pronta,
+    #: mínima, sem gerenciador de pacotes exposto neste menu -- não porque
+    #: o Wolfi careça de `apk` (ele tem, é um fork do apk-tools), mas
+    #: porque o catálogo gratuito da Chainguard não publica tag de versão
+    #: pinada nem imagem "builder + apk add" para customizar, só as tags
+    #: móveis (`latest`, `latest-dev`) que `hardened.py` já consome em
+    #: `recommend`. Tratar como apk-instalável aqui geraria um `apk add`
+    #: contra um índice que este projeto nunca verificou responder do
+    #: jeito que o Alpine responde.
+    WOLFI = "wolfi"
 
     @property
     def uses_apk(self) -> bool:
@@ -46,8 +56,11 @@ class OsFamily(StrEnum):
 
     @property
     def installs_packages(self) -> bool:
-        """Distroless não tem gerenciador de pacotes -- é o ponto dele."""
-        return self is not OsFamily.DISTROLESS
+        """Distroless e Wolfi não oferecem pacote neste menu -- o primeiro
+        porque não tem gerenciador nenhum, o segundo porque só a tag móvel
+        pronta é servida pelo tier gratuito, sem uma imagem "builder" para
+        customizar sobre ela."""
+        return self not in (OsFamily.DISTROLESS, OsFamily.WOLFI)
 
     @property
     def libc(self) -> str:
@@ -62,6 +75,8 @@ class Runtime(StrEnum):
     NODE = "node"
     PYTHON = "python"
     GO = "go"
+    RUBY = "ruby"
+    PHP = "php"
 
 
 @dataclass(frozen=True)
@@ -97,6 +112,13 @@ RUNTIME_BASES: dict[tuple[Runtime, OsFamily], RuntimeBase] = {
     (Runtime.NONE, OsFamily.DISTROLESS): RuntimeBase(
         "gcr.io/distroless/base-debian12", "nonroot", builtin_user="nonroot"
     ),
+    # `builtin_user="nonroot"`: convenção pública e estável das imagens
+    # Chainguard (a mesma que `gcr.io/distroless/*:nonroot` usa), não uma
+    # medição feita a partir deste ambiente -- este projeto não tem como
+    # confirmar contra `cgr.dev` daqui.
+    (Runtime.NONE, OsFamily.WOLFI): RuntimeBase(
+        "cgr.dev/chainguard/wolfi-base", "latest", builtin_user="nonroot"
+    ),
     (Runtime.JAVA, OsFamily.ALPINE): RuntimeBase(
         "eclipse-temurin",
         "21-jre-alpine",
@@ -106,6 +128,9 @@ RUNTIME_BASES: dict[tuple[Runtime, OsFamily], RuntimeBase] = {
     (Runtime.JAVA, OsFamily.UBUNTU): RuntimeBase("eclipse-temurin", "21-jre-noble"),
     (Runtime.JAVA, OsFamily.DISTROLESS): RuntimeBase(
         "gcr.io/distroless/java21-debian12", "nonroot", builtin_user="nonroot"
+    ),
+    (Runtime.JAVA, OsFamily.WOLFI): RuntimeBase(
+        "cgr.dev/chainguard/jre", "latest", builtin_user="nonroot"
     ),
     (Runtime.NODE, OsFamily.ALPINE): RuntimeBase(
         "node",
@@ -139,6 +164,9 @@ RUNTIME_BASES: dict[tuple[Runtime, OsFamily], RuntimeBase] = {
     (Runtime.NODE, OsFamily.DISTROLESS): RuntimeBase(
         "gcr.io/distroless/nodejs22-debian12", "nonroot", builtin_user="nonroot"
     ),
+    (Runtime.NODE, OsFamily.WOLFI): RuntimeBase(
+        "cgr.dev/chainguard/node", "latest", builtin_user="nonroot"
+    ),
     (Runtime.PYTHON, OsFamily.ALPINE): RuntimeBase(
         "python",
         "3.12-alpine",
@@ -148,9 +176,68 @@ RUNTIME_BASES: dict[tuple[Runtime, OsFamily], RuntimeBase] = {
     (Runtime.PYTHON, OsFamily.DISTROLESS): RuntimeBase(
         "gcr.io/distroless/python3-debian12", "nonroot", builtin_user="nonroot"
     ),
+    (Runtime.PYTHON, OsFamily.WOLFI): RuntimeBase(
+        "cgr.dev/chainguard/python", "latest", builtin_user="nonroot"
+    ),
     (Runtime.GO, OsFamily.ALPINE): RuntimeBase("golang", "1.23-alpine"),
     (Runtime.GO, OsFamily.DEBIAN): RuntimeBase("golang", "1.23-bookworm"),
+    # Sem Ubuntu nem distroless para Ruby/PHP, pelo mesmo motivo que Node,
+    # Python e Go também não têm: nenhum dos dois publica uma imagem
+    # `ruby:*-ubuntu`/`php:*-ubuntu` oficial (o template `*-ubuntu` instala
+    # via apt sobre Ubuntu puro, um padrão multi-stage que este gerador de
+    # base única não modela), e o catálogo distroless do Google não publica
+    # runtime para nenhum dos dois.
+    (Runtime.RUBY, OsFamily.ALPINE): RuntimeBase("ruby", "3.3-alpine"),
+    (Runtime.RUBY, OsFamily.DEBIAN): RuntimeBase("ruby", "3.3-slim-bookworm"),
+    (Runtime.PHP, OsFamily.ALPINE): RuntimeBase("php", "8.3-cli-alpine"),
+    (Runtime.PHP, OsFamily.DEBIAN): RuntimeBase("php", "8.3-cli-bookworm"),
 }
+
+#: O molde da tag para cada combinação, com a versão de fora -- é o que
+#: permite `--os-version`/`--runtime-version` trocar só o número e manter o
+#: sufixo de família (`-alpine`, `-slim`, `-jre-noble`...) que `RUNTIME_BASES`
+#: já usa. Não é uma segunda fonte de versão: as versões continuam vindo do
+#: registry (`--runtime-version` explícito, ou a descoberta dinâmica), isto
+#: só sabe *onde* o número entra na tag.
+TAG_TEMPLATES: dict[tuple[Runtime, OsFamily], str] = {
+    (Runtime.NONE, OsFamily.ALPINE): "{version}",
+    (Runtime.NONE, OsFamily.DEBIAN): "{version}-slim",
+    (Runtime.NONE, OsFamily.UBUNTU): "{version}",
+    (Runtime.JAVA, OsFamily.ALPINE): "{version}-jre-alpine",
+    (Runtime.JAVA, OsFamily.DEBIAN): "{version}-jre",
+    (Runtime.JAVA, OsFamily.UBUNTU): "{version}-jre-noble",
+    (Runtime.NODE, OsFamily.ALPINE): "{version}-alpine",
+    (Runtime.NODE, OsFamily.DEBIAN): "{version}-slim",
+    (Runtime.PYTHON, OsFamily.ALPINE): "{version}-alpine",
+    (Runtime.PYTHON, OsFamily.DEBIAN): "{version}-slim-bookworm",
+    (Runtime.GO, OsFamily.ALPINE): "{version}-alpine",
+    (Runtime.GO, OsFamily.DEBIAN): "{version}-bookworm",
+    (Runtime.RUBY, OsFamily.ALPINE): "{version}-alpine",
+    (Runtime.RUBY, OsFamily.DEBIAN): "{version}-slim-bookworm",
+    (Runtime.PHP, OsFamily.ALPINE): "{version}-cli-alpine",
+    (Runtime.PHP, OsFamily.DEBIAN): "{version}-cli-bookworm",
+}
+
+
+def with_version(runtime: Runtime, family: OsFamily, version: str) -> RuntimeBase:
+    """O `RuntimeBase` padrão desta combinação, com a tag trocada para
+    `version`.
+
+    Levanta a mesma `UnsupportedCombinationError` da combinação em si
+    quando ela não existe, e diz que a família não tem molde de tag quando
+    a combinação existe mas ninguém ensinou o formato (hoje, distroless --
+    ele não versiona por número solto, versiona pelo runtime que embute).
+    """
+    key = (runtime, family)
+    if key not in RUNTIME_BASES:
+        raise UnsupportedCombinationError(f"no base image is published for {runtime} on {family}")
+    template = TAG_TEMPLATES.get(key)
+    if template is None:
+        raise UnsupportedCombinationError(
+            f"{family} does not take an explicit version override for {runtime}"
+        )
+    base = RUNTIME_BASES[key]
+    return replace(base, tag=template.format(version=version))
 
 
 @dataclass(frozen=True)
@@ -231,14 +318,14 @@ PACKAGE_CATALOG: tuple[PackageChoice, ...] = (
     ),
     PackageChoice(
         key="jq",
-        purpose="processar JSON em scripts de entrypoint",
-        cost="pequeno e autocontido",
+        purpose="parsing JSON in entrypoint scripts",
+        cost="small and self-contained",
         apk="jq",
         apt="jq",
     ),
     PackageChoice(
         key="openssl",
-        purpose="gerar certificados ou depurar TLS de dentro do container",
+        purpose="generating certificates or debugging TLS from inside the container",
         cost="the library is already there; this adds the command-line *tool*",
         apk="openssl",
         apt="openssl",
@@ -271,8 +358,8 @@ REFUSED_PACKAGES: dict[str, str] = {
         "different user, declare it in `USER`"
     ),
     "docker": (
-        "o cliente Docker dentro do container implica acesso ao socket do "
-        "daemon, which is equivalent to root on the host"
+        "the Docker client inside the container implies access to the daemon "
+        "socket, which is equivalent to root on the host"
     ),
 }
 
@@ -304,9 +391,16 @@ class BaseRecipe:
     #: instaladas no estágio de build.
     strip_bundled_manager: bool = False
     extra: dict[str, str] = field(default_factory=dict)
+    #: Substitui o `RuntimeBase` do catálogo por um com outra tag -- de
+    #: `--os-version`/`--runtime-version`, resolvida contra o registry pelo
+    #: chamador. `None` é o padrão em todo lugar que não pediu isso, e
+    #: preserva exatamente o comportamento de sempre: o catálogo decide.
+    base_override: RuntimeBase | None = None
 
     @property
     def base(self) -> RuntimeBase:
+        if self.base_override is not None:
+            return self.base_override
         try:
             return RUNTIME_BASES[(self.runtime, self.family)]
         except KeyError as e:
@@ -318,9 +412,10 @@ class BaseRecipe:
         base = self.base  # levanta se a combinação não existe
         if self.packages and not self.family.installs_packages:
             raise UnsupportedCombinationError(
-                "distroless has no package manager and no shell: nothing can be "
-                "installed into it. Use alpine or debian if you need packages, or no "
-                "packages at all if what you want is the smallest possible surface"
+                f"{self.family.value} has no package manager exposed here: nothing "
+                "can be installed into it this way. Use alpine or debian if you need "
+                "packages, or no packages at all if what you want is the smallest "
+                "possible surface"
             )
         for package in self.packages:
             if package in REFUSED_PACKAGES:

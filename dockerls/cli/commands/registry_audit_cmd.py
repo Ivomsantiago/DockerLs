@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import typer
 from rich.console import Console
 
-from dockerls.cli.dependencies import build_host_guard
+from dockerls.cli.dependencies import build_host_guard, build_registry_credentials
 from dockerls.cli.options import OutputFormat, parse_output_format
 from dockerls.cli.text import safe
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_POLICY
@@ -52,7 +52,9 @@ async def _audit(reference: str, *, output_format: OutputFormat) -> None:
     from dockerls.cli.dependencies import build_cache
     from dockerls.integrations.registry.inspector import RegistryInspector
 
-    inspector = RegistryInspector(guard=build_host_guard())
+    inspector = RegistryInspector(
+        guard=build_host_guard(), credentials=build_registry_credentials()
+    )
     try:
         history = TagHistoryStore(build_cache())
     except Exception:  # pragma: no cover - abrir o cache é o caminho instável

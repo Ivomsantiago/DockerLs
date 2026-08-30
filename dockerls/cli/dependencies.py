@@ -36,6 +36,7 @@ from dockerls.integrations.registry.hardened import (
     DistrolessRepository,
 )
 from dockerls.integrations.registry.inspector import RegistryInspector
+from dockerls.integrations.registry.private import PRIVATE_REGISTRY, PrivateRegistryRepository
 from dockerls.integrations.threat_intel.client import ThreatIntelClient
 from dockerls.utils.auth import load_credentials
 from dockerls.utils.resources import describe_capacity, recommended_workers
@@ -253,6 +254,31 @@ def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
             description="Docker Hardened Images catalog (dhi.io, needs credentials to scan)",
         )
     )
+    if s.private_registry_host:
+        # Registered only when a host is actually configured: an option
+        # with nothing behind it would make `--source private` fail with
+        # "no repository named that" instead of the CLI's own unknown-
+        # source message, and would list a source in `--help`/`doctor`
+        # that cannot do anything.
+        registry.register(
+            SourceSpec(
+                name="private",
+                label=PRIVATE_REGISTRY,
+                build=_source_builder(
+                    lambda: PrivateRegistryRepository(
+                        s.private_registry_host,
+                        s.private_registry_namespace,
+                        timeout=s.http_timeout,
+                        guard=build_host_guard(),
+                        username=s.private_registry_username,
+                        password=s.private_registry_password,
+                    )
+                ),
+                default_enabled=False,
+                requires_auth=bool(s.private_registry_username),
+                description=f"Private registry ({s.private_registry_host})",
+            )
+        )
     return registry
 
 
@@ -418,6 +444,22 @@ def build_host_guard() -> HostGuard:
     )
 
 
+def build_registry_credentials() -> dict[str, tuple[str, str]]:
+    """Host -> (username, password) for every registry this run has
+    credentials for -- the configured private registry, today.
+
+    `RegistryInspector` resolves a reference by its host, not by a
+    `--source` name, so `analyze`/`compare`/`alternatives` -- which take a
+    reference directly, never a source -- reach the same credentials
+    `--source private` uses for `recommend`/`search` through this instead
+    of a second, separate configuration.
+    """
+    s = _settings()
+    if not (s.private_registry_host and s.private_registry_username):
+        return {}
+    return {s.private_registry_host: (s.private_registry_username, s.private_registry_password)}
+
+
 def build_hardening_analyzer() -> HardeningAnalyzer:
     """The registry-backed evidence gatherer, or a disabled one.
 
@@ -428,7 +470,11 @@ def build_hardening_analyzer() -> HardeningAnalyzer:
     """
     s = _settings()
     inspector = (
-        RegistryInspector(timeout=s.http_timeout, guard=build_host_guard())
+        RegistryInspector(
+            timeout=s.http_timeout,
+            guard=build_host_guard(),
+            credentials=build_registry_credentials(),
+        )
         if s.inspect_image_config
         else None
     )

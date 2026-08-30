@@ -75,6 +75,62 @@ Numa `recommend` real de 100 tags, isso é ~0,3s economizados num run de
 scans.** Quem quiser o run mais rápido mexe em `max_tags` e no que decide
 quais candidatas merecem ser medidas, não no que orquestra a medição.
 
+## E a resolução de digest / leitura de config OCI?
+
+Essa é uma pergunta diferente da do scan: não existe um Trivy já-em-Go do
+outro lado, então o fan-out inteiro -- HEAD do manifesto, GET do blob de
+config -- é goroutine contra corrotina, sem terceiro escondendo o
+resultado. Valia uma medição própria em vez de herdar a conclusão do scan
+por analogia.
+
+`cmd/bench-fanout` reproduz exatamente o padrão que
+`RegistryInspector`/`_pin_digests` já usam em Python: um semáforo limitando
+a N requisições concorrentes, HEAD do manifesto seguido de GET do config
+por alvo. Os dois lados batem no mesmo servidor HTTP local, com a mesma
+latência artificial injetada, para que a diferença medida seja a
+orquestração e não a rede:
+
+    go run ./cmd/bench-fanout -serve -latency-ms 100 &
+    go run ./cmd/bench-fanout -targets 100 -workers 8
+    python3 ../benchmarks/bench_fanout.py --targets 100 --workers 8
+
+Medido nesta máquina, latência artificial de 100ms/requisição (perto do
+que um HEAD real de registry custa):
+
+| cenário                                              | Python  | Go      |
+|-------------------------------------------------------|---------|---------|
+| 100 alvos, 8 workers -- o `workers` que o CLI usa hoje | 2,80s   | 2,64s   |
+| 300 alvos, 48 workers -- concorrência de rede, não de CPU | 2,05s | 1,42s |
+| 600 alvos, 128 workers                                 | 3,03s   | 0,43s   |
+
+A leitura honesta, e ela **não** é a mesma do scan:
+
+* No `workers` que `recommend`/`fleet` usam hoje -- `resolve_workers()`,
+  dimensionado pra CPU porque um scanner é processo, não corrotina --, a
+  diferença é ~6%, dentro do ruído. Reescrever isto em Go por essa
+  diferença seria a mesma propaganda sem lastro que este documento existe
+  para evitar.
+* Mas resolução de digest e leitura de config **não são CPU-bound**: são
+  round-trips de rede, e reaproveitar o `workers` de scan pra elas é um
+  teto artificial, não uma necessidade. Numa concorrência dimensionada pra
+  rede (dezenas a mais de cem requisições em voo -- o caso real de `fleet`
+  sobre uma árvore grande, ou `recommend --all-sources` com muitas fontes),
+  o `asyncio.gather` + `Semaphore` do Python **platôs e depois piora**
+  (600@128: 3,03s, pior que 600@64 medido à parte), enquanto as goroutines
+  continuam escalando quase linear com a latência injetada.
+
+**Conclusão, e é condicional:** mover a resolução de digest/config pra Go
+só compensa se o fan-out for desacoplado do `workers` de scan e elevado a
+uma concorrência de rede de verdade primeiro -- caso contrário a mudança
+de linguagem não compra nada que o `workers` atual já não limite. Isto não
+foi feito nesta rodada: é trabalho de produto (decidir o teto de
+concorrência de rede, testar contra registries reais com repetição de
+erro/retry, e só então portar) maior do que uma medição, e fica registrado
+aqui como próximo passo justificado por número, não como funcionalidade
+entregue. Continua valendo, sem exceção: `HostGuard`, sanitização,
+redação, score, tier, EOL, KEV, EPSS, Exploit-DB e ranking não têm por que
+sair do Python nem quando o fan-out sair.
+
 ## Dependências
 
 Nenhuma. O módulo é stdlib puro, e é por isso que não existe `go.sum` --

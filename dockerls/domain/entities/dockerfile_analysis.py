@@ -203,6 +203,25 @@ class DockerfileInfo:
     #: `chmod u+s` / `chmod 4755`: binário setuid deixado dentro da imagem.
     sets_setuid_bit: bool = False
     setuid_lines: list[int] = field(default_factory=list)
+    #: `RUN --mount=type=secret,id=...`: a forma correta do BuildKit de
+    #: passar um segredo para um `RUN`, sem ele sobrar em ENV/ARG nem em
+    #: nenhuma camada. Distinto de `has_secrets_in_env`/`_build_args`: usar
+    #: isto não desculpa um segredo que ainda esteja em ENV ou ARG.
+    uses_secret_mount: bool = False
+    secret_mount_ids: list[str] = field(default_factory=list)
+    #: Pacotes instalados sem versão fixada -- `apt-get install curl` sem
+    #: `=<versão>`, `apk add` sem `=`, `pip install` sem `==`, `npm install`
+    #: sem `@<versão>`. Reprodutibilidade de build, não confidencialidade:
+    #: a mesma linha pode instalar bytes diferentes amanhã.
+    unpinned_packages: list[dict[str, Any]] = field(default_factory=list)
+    #: `npm install`/`npm ci` presente, mas sem `package-lock.json` ao lado
+    #: do Dockerfile -- sem lockfile, nem a versão instalada localmente é
+    #: reprodutível no build seguinte.
+    npm_lockfile_missing: bool = False
+    #: `ARG TARGETPLATFORM`/`TARGETARCH`/`BUILDPLATFORM`, ou `FROM
+    #: --platform=...`: o Dockerfile declara ciência de build multi-arch.
+    declares_multi_arch: bool = False
+    platform_args: list[str] = field(default_factory=list)
     raw_lines: list[str] = field(default_factory=list)
 
     def model_dump(self) -> dict[str, Any]:
@@ -234,6 +253,12 @@ class DockerfileInfo:
             "secret_build_args": self.secret_build_args,
             "pipes_remote_script_to_shell": self.pipes_remote_script_to_shell,
             "sets_setuid_bit": self.sets_setuid_bit,
+            "uses_secret_mount": self.uses_secret_mount,
+            "secret_mount_ids": self.secret_mount_ids,
+            "unpinned_packages": self.unpinned_packages,
+            "npm_lockfile_missing": self.npm_lockfile_missing,
+            "declares_multi_arch": self.declares_multi_arch,
+            "platform_args": self.platform_args,
         }
 
 
@@ -245,6 +270,11 @@ class DockerfileAnalysis:
     validation: DockerfileValidationResult
     security_score: int = 0
     security_tier: str = "C"
+    #: Se este Dockerfile parece derivado de um dos templates hardened
+    #: (`--base`), alterado à mão depois. Puramente informativo -- não
+    #: entra no score nem no tier, que continuam medindo o Dockerfile como
+    #: ele é, não de onde ele veio.
+    template_origin: TemplateOriginMatch | None = None
 
     @property
     def is_production_ready(self) -> bool:
@@ -259,4 +289,30 @@ class DockerfileAnalysis:
             "security_score": self.security_score,
             "security_tier": self.security_tier,
             "is_production_ready": self.is_production_ready,
+            "template_origin": self.template_origin.model_dump() if self.template_origin else None,
+        }
+
+
+@dataclass
+class TemplateOriginMatch:
+    """A Dockerfile that looks like one of the 39 hardened templates, edited
+    by hand afterwards.
+
+    `similarity` is a plain line-based ratio (`difflib.SequenceMatcher`),
+    not a security judgement -- a 60% match is still worth naming, because
+    "this drifted from `node-alpine`" is a more useful starting point than
+    treating the file as if it came from nowhere. `diff` carries only the
+    lines that differ, unified-diff style, so the reader sees the edit
+    instead of two full files.
+    """
+
+    template_name: str
+    similarity: float
+    diff: list[str] = field(default_factory=list)
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "template_name": self.template_name,
+            "similarity": self.similarity,
+            "diff": self.diff,
         }

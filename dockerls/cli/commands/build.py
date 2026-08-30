@@ -47,6 +47,7 @@ from dockerls.integrations.signing.cosign import (
 )
 
 if TYPE_CHECKING:
+    from dockerls.domain.entities.dockerfile_analysis import DockerfileValidationResult
     from dockerls.domain.value_objects.build_policy import PolicyViolation
     from dockerls.domain.value_objects.inheritance import InheritanceReport
     from dockerls.integrations.threat_intel.client import ThreatIntelClient
@@ -173,6 +174,13 @@ def build(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Debug detalhado"),
     output: str | None = typer.Option(None, "--output", "-o", help="Report output file"),
     force: bool = typer.Option(False, "--force", help="Build even when validation fails"),
+    compare_to_analysis: str | None = typer.Option(
+        None,
+        "--compare-to-analysis",
+        help="A report written by an earlier `analyze-dockerfile --output <file>` run "
+        "on this same Dockerfile. When given, the build report says which of those "
+        "findings are still present now and which were fixed",
+    ),
 ) -> None:
     """Build secure Docker images with validation, scanning and auto-remediation."""
     if verbose:
@@ -268,7 +276,7 @@ def build(
     labels_dict = {**identity.to_labels(), **(labels_dict or {})}
 
     # Inicializar use case
-    validator = DockerfileValidator()
+    validator = DockerfileValidator(template_provider)
     # A inteligência de ameaça só é montada quando algum portão a pede:
     # `--fail-on high` não deve sair para a rede consultar KEV, e um build
     # sem portão de exploração não deve consultar nada.
@@ -307,6 +315,9 @@ def build(
     response = _run_interactive_wizard(use_case, path) if interactive else use_case.execute(request)
 
     signature = _sign_if_requested(response, sign=sign, publishing=publishing)
+
+    if compare_to_analysis and response.validation is not None:
+        _print_analysis_comparison(compare_to_analysis, response.validation)
 
     # Output
     if ci_mode or output:
@@ -445,6 +456,40 @@ def _print_inheritance(report: InheritanceReport | None) -> None:
             "address that part: run `dockerls base --alternatives` to measure another "
             "base.[/dim]"
         )
+
+
+def _print_analysis_comparison(baseline_path: str, validation: DockerfileValidationResult) -> None:
+    """How this build's own validation compares to an earlier
+    `analyze-dockerfile --output` report on the same Dockerfile.
+
+    Both come from the exact same rule set -- `build` always runs its own
+    fresh validation as step one -- so this is a same-Dockerfile,
+    then-and-now comparison, not a guess about what changed.
+    """
+    from dockerls.cli.analysis_baseline import BaselineLoadError, compare, load_baseline_findings
+
+    try:
+        baseline = load_baseline_findings(baseline_path)
+    except BaselineLoadError as e:
+        console.print(f"\n[yellow]--compare-to-analysis:[/yellow] {safe(str(e))}")
+        return
+
+    result = compare(baseline, validation)
+    if not result.baseline_total and not result.newly_introduced:
+        return
+
+    console.print("\n[bold]Compared to the earlier analyze-dockerfile run[/bold]")
+    if result.baseline_total:
+        console.print(
+            f"[dim]{len(result.still_present)}/{result.baseline_total} of its "
+            "warnings/errors are still present in this build.[/dim]"
+        )
+    for name in result.resolved:
+        console.print(f"  [green]fixed[/green]     {safe(name)}")
+    for name in result.still_present:
+        console.print(f"  [yellow]still open[/yellow] {safe(name)}")
+    for name in result.newly_introduced:
+        console.print(f"  [red]new[/red]        {safe(name)}")
 
 
 def _print_plan(report: InheritanceReport) -> None:

@@ -45,12 +45,26 @@ class HardenedRepository(ImageRepositoryInterface):
     # application compiles at runtime.
     repositories: dict[str, tuple[str, ...]] = {}
 
-    def __init__(self, timeout: int = 30, guard: HostGuard | None = None):
+    def __init__(
+        self,
+        timeout: int = 30,
+        guard: HostGuard | None = None,
+        *,
+        username: str = "",
+        password: str = "",
+    ):
         # `self.host` is a constant of this class, but the hops that follow
         # it -- redirects and the token realm -- are chosen by the far end,
         # so the guard travels with the client here for the same reason it
         # does for a user-supplied registry.
-        self._client = OCIRegistryClient(self.host, timeout=timeout, guard=guard)
+        #
+        # `username`/`password` are empty for Chainguard and Distroless --
+        # both are anonymous, free-tier catalogues -- and only meaningful
+        # for a subclass fronting a registry that actually requires them,
+        # like `PrivateRegistryRepository`.
+        self._client = OCIRegistryClient(
+            self.host, timeout=timeout, guard=guard, username=username, password=password
+        )
 
     def repositories_for(self, image_name: str) -> list[str]:
         """Every repository of this source that could answer the query.

@@ -102,6 +102,40 @@ class TestAnalyzeDockerfile:
         assert "None" not in result.stdout
 
 
+class TestOutputFlag:
+    """`--output` writes the full report to a file, so a later `build
+    --compare-to-analysis` can reference it."""
+
+    def test_writes_a_parseable_report(self, bad_context, tmp_path):
+        report_path = tmp_path / "report.json"
+        result = runner.invoke(
+            app, ["analyze-dockerfile", str(bad_context), "-o", str(report_path)]
+        )
+
+        assert report_path.exists()
+        document = json.loads(report_path.read_text())
+        assert "validation" in document
+        assert result.exit_code == EXIT_POLICY
+
+    def test_json_format_still_writes_the_file_and_prints_json(self, bad_context, tmp_path):
+        report_path = tmp_path / "report.json"
+        result = runner.invoke(
+            app,
+            ["analyze-dockerfile", str(bad_context), "--format", "json", "-o", str(report_path)],
+        )
+
+        assert report_path.exists()
+        assert json.loads(result.stdout)  # stdout is still parseable JSON alone
+
+    def test_an_unwritable_path_is_reported_not_raised(self, bad_context):
+        result = runner.invoke(
+            app, ["analyze-dockerfile", str(bad_context), "-o", "/no/such/dir/report.json"]
+        )
+
+        assert result.exit_code == EXIT_ERROR
+        assert "Error" in result.stdout
+
+
 class TestPrintTableOutputDefensiveBranch:
     """`success=True` with no `validation` should be unreachable through the
     use case, but `_print_table_output` guards against it directly instead

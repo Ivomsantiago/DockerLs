@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 import shlex
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from dockerls.domain.entities.dockerfile_analysis import (
     DockerfileValidationResult,
     HardeningRule,
     SeverityLevel,
+    TemplateOriginMatch,
     ValidationCheck,
     ValidationStatus,
 )
@@ -71,6 +73,39 @@ _ADD_REMOTE = re.compile(r"^(?:https?|ftp|git)://|^git@", re.IGNORECASE)
 _ADD_ARCHIVE = re.compile(
     r"\.(?:tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz|tar\.zst|gz|bz2|xz)$",
     re.IGNORECASE,
+)
+
+#: `RUN --mount=type=secret,id=token ...`: a forma BuildKit de passar um
+#: segredo sem que ele sobre em ENV, ARG, nem em nenhuma camada da imagem.
+_SECRET_MOUNT = re.compile(r"--mount=type=secret(?:,[^\s]*?id=([\w.\-]+))?", re.IGNORECASE)
+
+#: Um comando de instalação de pacote, isolado de tudo que vem depois de um
+#: `&&`/`;`/`|` -- o resto da linha é outro comando, com seus próprios
+#: argumentos, e não faz parte da lista de pacotes deste.
+_APT_INSTALL = re.compile(r"(?:apt-get|apt)\s+install\b([^&;|]*)", re.IGNORECASE)
+_APK_ADD = re.compile(r"\bapk\s+add\b([^&;|]*)", re.IGNORECASE)
+_PIP_INSTALL = re.compile(r"\bpip3?\s+install\b([^&;|]*)", re.IGNORECASE)
+_NPM_INSTALL = re.compile(r"\bnpm\s+(?:install|i|ci|add)\b([^&;|]*)", re.IGNORECASE)
+
+#: Flags que carregam um valor colado sem espaço (`-i requirements.txt` já
+#: cai como token separado; `--index-url=https://...` não). Tratadas à
+#: parte de "começa com -" porque `-r requirements.txt` é uma referência a
+#: arquivo, não um nome de pacote, e não deve virar um falso "não pinado".
+_PIP_FILE_FLAGS = ("-r", "--requirement", "-c", "--constraint")
+
+#: Nomes de ARG que o Docker/BuildKit preenche sozinho num build
+#: `--platform`. Declará-los -- com ou sem uso -- é o sinal de que o autor
+#: sabe que a imagem pode ser construída para mais de uma arquitetura.
+_PLATFORM_ARG_NAMES = frozenset(
+    {
+        "targetplatform",
+        "targetarch",
+        "targetos",
+        "targetvariant",
+        "buildplatform",
+        "buildarch",
+        "buildos",
+    }
 )
 
 
@@ -137,6 +172,54 @@ def _pipes_remote_script_to_shell(command: str) -> bool:
         if _DOWNLOADER.search(left) and _SHELL_AT_HEAD.match(right):
             return True
     return False
+
+
+def _unpinned_from(
+    args: str, *, manager: str, pin_marker: str, file_flags: tuple[str, ...] = ()
+) -> list[str]:
+    """Nomes de pacote em `args` que não carregam `pin_marker`.
+
+    `args` é só a cauda de um comando de instalação, já isolada de
+    `&&`/`;`/`|` por quem chamou. Um token é candidato a pacote quando não
+    começa com `-` (é uma flag, `-y`, `--no-cache`, `--upgrade`) e não é o
+    valor de uma flag que espera um caminho de arquivo (`-r
+    requirements.txt`, que nomeia um arquivo, não um pacote).
+    """
+    tokens = args.split()
+    packages = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in file_flags:
+            skip_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        if pin_marker in token:
+            continue
+        packages.append(token)
+    return packages
+
+
+def _npm_targets(args: str) -> list[str]:
+    """Nomes de pacote sem `@versão` num `npm install`/`npm add`.
+
+    `npm install` sozinho (sem alvo nenhum) instala a partir do
+    `package.json` -- não é um pacote sem versão, é o projeto inteiro, e
+    isso é o `npm_lockfile_missing` que responde, não este.
+    """
+    unpinned = []
+    for token in args.split():
+        if token.startswith("-"):
+            continue
+        # `@scope/pacote@versão` -- o `@` do escopo não é o separador de
+        # versão; só o **último** `@` é, e só quando não está na posição 0.
+        at = token.rfind("@")
+        if at <= 0:
+            unpinned.append(token)
+    return unpinned
 
 
 class UnknownHardeningTemplateError(ValueError):
@@ -304,6 +387,11 @@ class DockerfileParser:
         if match := self.FROM_PATTERN.match(line):
             image = match.group(1).strip()
             alias = match.group(2)
+            if "--platform=" in image:
+                self._info.declares_multi_arch = True
+                flag = next((p for p in image.split() if p.startswith("--platform=")), "")
+                if flag and flag not in self._info.platform_args:
+                    self._info.platform_args.append(flag)
             self._info.base_images.append(image)
             self._stages.append(_Stage(base=image, alias=alias))
             # `FROM builder` referencia um estágio anterior, não um registry:
@@ -345,6 +433,14 @@ class DockerfileParser:
             if _SETUID_BIT.search(unquoted):
                 self._info.sets_setuid_bit = True
                 self._info.setuid_lines.append(line_num)
+
+            for mount_match in _SECRET_MOUNT.finditer(unquoted):
+                self._info.uses_secret_mount = True
+                secret_id = mount_match.group(1)
+                if secret_id and secret_id not in self._info.secret_mount_ids:
+                    self._info.secret_mount_ids.append(secret_id)
+
+            self._record_unpinned_packages(unquoted, line_num)
 
             # Check cache cleaning
             cache_clean_patterns = [
@@ -425,6 +521,10 @@ class DockerfileParser:
             arg_name = match.group(1)
             if arg_name in ("BUILDKIT_INLINE_CACHE", "DOCKER_BUILDKIT"):
                 self._info.uses_buildkit = True
+            if arg_name.lower() in _PLATFORM_ARG_NAMES:
+                self._info.declares_multi_arch = True
+                if arg_name not in self._info.platform_args:
+                    self._info.platform_args.append(arg_name)
             # Um ARG **com valor** é um segredo escrito no Dockerfile e no
             # histórico de camadas; um ARG sem valor é um parâmetro de build,
             # e acusá-lo transformaria a forma correta de passar um segredo
@@ -547,6 +647,37 @@ class DockerfileParser:
         """Verifica se um nome de variável parece ser um segredo."""
         return any(re.search(pattern, name) for pattern in self.SECRET_ENV_PATTERNS)
 
+    def _record_unpinned_packages(self, unquoted_cmd: str, line_num: int) -> None:
+        """Pacotes instalados sem versão fixada, um `RUN` de cada vez.
+
+        Reprodutibilidade, não confidencialidade: `apt-get install curl` sem
+        `=<versão>` instala o que quer que esteja no índice hoje, e a mesma
+        linha pode instalar bytes diferentes amanhã -- inclusive uma versão
+        com uma CVE que a de ontem não tinha.
+        """
+        for match in _APT_INSTALL.finditer(unquoted_cmd):
+            for pkg in _unpinned_from(match.group(1), manager="apt", pin_marker="="):
+                self._info.unpinned_packages.append(
+                    {"line": line_num, "manager": "apt", "package": pkg}
+                )
+        for match in _APK_ADD.finditer(unquoted_cmd):
+            for pkg in _unpinned_from(match.group(1), manager="apk", pin_marker="="):
+                self._info.unpinned_packages.append(
+                    {"line": line_num, "manager": "apk", "package": pkg}
+                )
+        for match in _PIP_INSTALL.finditer(unquoted_cmd):
+            for pkg in _unpinned_from(
+                match.group(1), manager="pip", pin_marker="==", file_flags=_PIP_FILE_FLAGS
+            ):
+                self._info.unpinned_packages.append(
+                    {"line": line_num, "manager": "pip", "package": pkg}
+                )
+        for match in _NPM_INSTALL.finditer(unquoted_cmd):
+            for pkg in _npm_targets(match.group(1)):
+                self._info.unpinned_packages.append(
+                    {"line": line_num, "manager": "npm", "package": pkg}
+                )
+
 
 class DockerfileValidator(DockerfileValidatorInterface):
     """Validador de Dockerfiles baseado em regras OWASP."""
@@ -591,6 +722,8 @@ class DockerfileValidator(DockerfileValidatorInterface):
         self._check_add_vs_copy(info, result)
         self._check_remote_script_execution(info, result)
         self._check_setuid(info, result)
+        self._check_pinned_package_versions(info, result, path.parent)
+        self._check_multi_arch_awareness(info, result)
 
         return result
 
@@ -616,6 +749,61 @@ class DockerfileValidator(DockerfileValidatorInterface):
             validation=validation,
             security_score=security_score,
             security_tier=security_tier,
+            template_origin=self._detect_template_origin(content),
+        )
+
+    #: Abaixo disto, dois Dockerfiles quaisquer se parecem por acidente --
+    #: mesmas diretivas comuns (`FROM`, `USER`, `WORKDIR`), não parentesco.
+    #: Escolhido por inspeção: comparar o `alpine.dockerfile` hardened contra
+    #: o `debian.dockerfile` hardened (mesma família de regras, SO
+    #: diferente) fica bem abaixo disso.
+    _TEMPLATE_MATCH_THRESHOLD = 0.55
+
+    def _detect_template_origin(self, content: str) -> TemplateOriginMatch | None:
+        """Se este Dockerfile parece um dos 39 templates hardened, editado.
+
+        Só roda quando o validador foi construído com um `template_provider`
+        -- sem ele, não há com o que comparar, e ficar calado é a resposta
+        certa, não um erro. Compara contra os 39 de uma vez: os arquivos são
+        pequenos (algumas dezenas de linhas) e a comparação é local, sem
+        rede nem disco fora dos templates já embutidos no pacote.
+        """
+        if self._template_provider is None:
+            return None
+
+        best_name = ""
+        best_ratio = 0.0
+        best_lines: list[str] = []
+        our_lines = content.splitlines()
+
+        for name in self._template_provider.list_templates():
+            try:
+                template_text = self._template_provider.get_template(name)
+            except (UnknownHardeningTemplateError, OSError):
+                # Um template ilegível não pode abortar analyze() inteiro --
+                # ele só fica fora da comparação.
+                continue
+            template_lines = template_text.splitlines()
+            ratio = difflib.SequenceMatcher(a=template_lines, b=our_lines).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_name = name
+                best_lines = template_lines
+
+        if best_ratio < self._TEMPLATE_MATCH_THRESHOLD:
+            return None
+
+        diff = list(
+            difflib.unified_diff(
+                best_lines,
+                our_lines,
+                fromfile=f"{best_name} (template)",
+                tofile="this Dockerfile",
+                lineterm="",
+            )
+        )
+        return TemplateOriginMatch(
+            template_name=best_name, similarity=round(best_ratio, 3), diff=diff
         )
 
     def suggest_hardening(self, dockerfile_path: str | Path) -> list[HardeningRule]:
@@ -885,6 +1073,22 @@ class DockerfileValidator(DockerfileValidatorInterface):
                     check="secrets_not_in_env",
                     status=ValidationStatus.PASS,
                     message="No obvious secrets in ENV variables or ARG defaults",
+                    severity=SeverityLevel.INFO,
+                    rule_id="DF004",
+                )
+            )
+
+        # Usar `--mount=type=secret` é a resposta correta a esta regra, e
+        # merece dizer isso -- sem virar desculpa para um segredo que ainda
+        # esteja em ENV/ARG: o check acima continua reprovando esse caso
+        # mesmo quando este aqui também aparece com PASS.
+        if info.uses_secret_mount:
+            ids = ", ".join(info.secret_mount_ids) if info.secret_mount_ids else "unnamed"
+            result.add_check(
+                ValidationCheck(
+                    check="buildkit_secret_mount_used",
+                    status=ValidationStatus.PASS,
+                    message=f"Uses BuildKit --mount=type=secret ({ids}) instead of ENV/ARG",
                     severity=SeverityLevel.INFO,
                     rule_id="DF004",
                 )
@@ -1343,6 +1547,102 @@ class DockerfileValidator(DockerfileValidatorInterface):
                 details={"lines": list(info.setuid_lines)},
             )
         )
+
+    def _check_pinned_package_versions(
+        self, info: DockerfileInfo, result: DockerfileValidationResult, context_path: Path
+    ) -> None:
+        """DF016 -- pacote instalado sem versão fixada.
+
+        Reprodutibilidade, não confidencialidade: `apt-get install curl` sem
+        `=<versão>` instala o que o índice tiver hoje, e a mesma linha pode
+        instalar bytes -- e CVEs -- diferentes amanhã. `WARN`, não `FAIL`:
+        isto não é o mesmo tipo de risco que um segredo em ENV, e reprovar o
+        build por padrão quebraria toda imagem que hoje só confia no
+        `latest` do gerenciador de pacotes.
+        """
+        unpinned = info.unpinned_packages
+        npm_used = any(pkg["manager"] == "npm" for pkg in unpinned) or any(
+            "npm install" in cmd["command"].lower()
+            or "npm ci" in cmd["command"].lower()
+            or "npm add" in cmd["command"].lower()
+            for cmd in info.run_commands
+        )
+        lockfile_missing = npm_used and not (context_path / "package-lock.json").exists()
+        info.npm_lockfile_missing = lockfile_missing
+
+        if not unpinned and not lockfile_missing:
+            result.add_check(
+                ValidationCheck(
+                    check="package_versions_pinned",
+                    status=ValidationStatus.PASS,
+                    message="Every installed package carries a pinned version",
+                    severity=SeverityLevel.INFO,
+                    rule_id="DF016",
+                )
+            )
+            return
+
+        by_manager: dict[str, list[str]] = {}
+        for pkg in unpinned:
+            by_manager.setdefault(pkg["manager"], []).append(pkg["package"])
+        parts = [f"{mgr}: {', '.join(names)}" for mgr, names in by_manager.items()]
+        if lockfile_missing:
+            parts.append("npm: no package-lock.json committed alongside the Dockerfile")
+
+        result.add_check(
+            ValidationCheck(
+                check="package_versions_pinned",
+                status=ValidationStatus.WARN,
+                message=f"Unpinned package install(s): {'; '.join(parts)}",
+                severity=SeverityLevel.MEDIUM,
+                rule_id="DF016",
+                fix_suggestion=(
+                    "Pin every installed package: apt-get install curl=8.5.0-2, "
+                    "apk add curl=8.9.1-r2, pip install requests==2.32.3, "
+                    "npm install lodash@4.17.21 -- and commit package-lock.json "
+                    "when the image installs from package.json"
+                ),
+                details={"unpinned_packages": unpinned, "npm_lockfile_missing": lockfile_missing},
+            )
+        )
+
+    def _check_multi_arch_awareness(
+        self, info: DockerfileInfo, result: DockerfileValidationResult
+    ) -> None:
+        """DF017 -- o Dockerfile declara ciência de build `--platform`.
+
+        Não é um pass/fail sobre segurança: `TARGETPLATFORM`/`--platform`
+        não têm um estado correto, só presente ou ausente. Quando presente,
+        o achado é informativo e lembra que um pacote pinado numa
+        arquitetura (DF016) pode não existir, ou pinar em outra versão, na
+        próxima -- então só aparece quando há algo a dizer.
+        """
+        if not info.declares_multi_arch:
+            return
+        result.add_check(
+            ValidationCheck(
+                check="multi_arch_build_declared",
+                status=ValidationStatus.PASS,
+                message=f"Multi-architecture build declared: {', '.join(info.platform_args)}",
+                severity=SeverityLevel.INFO,
+                rule_id="DF017",
+                details={"platform_args": list(info.platform_args)},
+            )
+        )
+        if info.unpinned_packages:
+            result.add_check(
+                ValidationCheck(
+                    check="multi_arch_pinned_packages",
+                    status=ValidationStatus.WARN,
+                    message=(
+                        "Multi-architecture build with unpinned package versions: a "
+                        "version pin resolved for one architecture is not guaranteed to "
+                        "exist, or to mean the same package, on another"
+                    ),
+                    severity=SeverityLevel.LOW,
+                    rule_id="DF017",
+                )
+            )
 
     def _calculate_security_score(self, validation: DockerfileValidationResult) -> int:
         """Calcula score de segurança baseado nos resultados."""

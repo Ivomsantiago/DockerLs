@@ -35,6 +35,7 @@ from dockerls.domain.value_objects.base_recipe import (
     Runtime,
     UnsupportedCombinationError,
     render,
+    with_version,
 )
 from dockerls.domain.value_objects.build_labels import BuildIdentity
 from dockerls.domain.value_objects.recipe_diff import RecipeDiff
@@ -48,7 +49,9 @@ def base_image(
     output: str = typer.Option(
         "Dockerfile", "--output", "-o", help="Where to write the generated Dockerfile"
     ),
-    os_family: str | None = typer.Option(None, "--os", help="alpine, debian, ubuntu ou distroless"),
+    os_family: str | None = typer.Option(
+        None, "--os", help="alpine, debian, ubuntu, distroless ou wolfi"
+    ),
     runtime: str | None = typer.Option(None, "--runtime", help="none, java, node, python ou go"),
     with_packages: str | None = typer.Option(
         None, "--with", help="Comma-separated packages, no menu (for pipelines)"
@@ -90,12 +93,50 @@ def base_image(
         "--compare-with",
         help="Packages on the compared side, comma-separated (default: the same ones)",
     ),
+    os_version: str | None = typer.Option(
+        None,
+        "--os-version",
+        help="Pin the OS's own version (e.g. 3.22 for alpine, 13-slim for debian) "
+        "instead of the catalog default. Only applies with --runtime none",
+    ),
+    runtime_version: str | None = typer.Option(
+        None,
+        "--runtime-version",
+        help="Pin the runtime's version (e.g. 24 for node, 3.13 for python) instead "
+        "of the catalog default",
+    ),
+    list_versions: bool = typer.Option(
+        False,
+        "--list-versions",
+        help="Print the current stable versions for --os/--runtime, resolved live "
+        "against the registry, and exit without writing anything",
+    ),
 ) -> None:
     """Generate the Dockerfile for a base image from a menu of choices."""
     try:
         family = _resolve_family(os_family)
         chosen_runtime = _resolve_runtime(runtime, family)
+    except UnsupportedCombinationError as e:
+        console.print(f"[red]Error:[/red] {safe(str(e))}")
+        raise typer.Exit(EXIT_ERROR) from e
+
+    if list_versions:
+        _print_available_versions(chosen_runtime, family)
+        raise typer.Exit(EXIT_OK)
+
+    try:
         packages = _resolve_packages(with_packages, family)
+    except UnsupportedCombinationError as e:
+        console.print(f"[red]Error:[/red] {safe(str(e))}")
+        raise typer.Exit(EXIT_ERROR) from e
+
+    version_override = os_version if chosen_runtime is Runtime.NONE else runtime_version
+    try:
+        base_override = (
+            with_version(chosen_runtime, family, version_override.strip())
+            if version_override and version_override.strip()
+            else None
+        )
     except UnsupportedCombinationError as e:
         console.print(f"[red]Error:[/red] {safe(str(e))}")
         raise typer.Exit(EXIT_ERROR) from e
@@ -110,6 +151,7 @@ def base_image(
         description=_default_description(family, chosen_runtime),
         owner=(owner or "").strip(),
         source=(source_url or "").strip(),
+        base_override=base_override,
     )
 
     if compare is not None:
@@ -283,7 +325,8 @@ def _build_now(
         title=recipe.title,
         description=recipe.description,
     )
-    use_case = BuildImageUseCase(DockerfileValidator(), HardeningTemplates())
+    templates = HardeningTemplates()
+    use_case = BuildImageUseCase(DockerfileValidator(templates), templates)
     response = use_case.execute(
         BuildImageRequest(
             context_path=str(destination.parent),
@@ -302,6 +345,34 @@ def _build_now(
 
     console.print(f"[red]{safe(response.error or 'build failed')}[/red]")
     raise typer.Exit(response.exit_code)
+
+
+def _print_available_versions(runtime: Runtime, family: OsFamily) -> None:
+    """The stable versions this combination can be pinned to right now,
+    resolved live against Docker Hub -- never a hardcoded list."""
+    from dockerls.application.services.version_discovery import (
+        discover_versions,
+        supports_version_discovery,
+    )
+
+    if not supports_version_discovery(runtime, family):
+        console.print(
+            f"[yellow]No version discovery known for {runtime.value} on {family.value}.[/yellow]"
+        )
+        return
+
+    choices = asyncio.run(discover_versions(runtime, family))
+    if not choices:
+        console.print(
+            "[yellow]Could not resolve versions from the registry right now.[/yellow]\n"
+            "[dim]Falling back to the catalog default is what --os-version/"
+            "--runtime-version without this flag already does.[/dim]"
+        )
+        return
+
+    console.print(f"[bold]Stable versions for {runtime.value} on {family.value}:[/bold]")
+    for choice in choices:
+        console.print(f"  {choice.version}  [dim]({choice.tag})[/dim]")
 
 
 def _resolve_strip(
@@ -353,11 +424,18 @@ def _resolve_family(value: str | None) -> OsFamily:
 
     console.print("\n[bold]Base operating system[/bold]")
     for index, family in enumerate(OsFamily, 1):
-        nota = (
-            "no shell and no package manager -- the smallest surface, and nothing can be installed"
-            if family is OsFamily.DISTROLESS
-            else f"libc {family.libc}"
-        )
+        if family is OsFamily.DISTROLESS:
+            nota = (
+                "no shell and no package manager -- the smallest surface, and "
+                "nothing can be installed"
+            )
+        elif family is OsFamily.WOLFI:
+            nota = (
+                "Chainguard's free tier: a ready-made minimal image on a moving tag, "
+                "no packages to add here"
+            )
+        else:
+            nota = f"libc {family.libc}"
         console.print(f"  {index}. [cyan]{family.value}[/cyan]  [dim]{nota}[/dim]")
     escolha = Prompt.ask(
         "Escolha", choices=[str(i) for i in range(1, len(OsFamily) + 1)], default="1"
@@ -397,11 +475,12 @@ def _resolve_packages(value: str | None, family: OsFamily) -> list[str]:
     if not family.installs_packages:
         if value:
             raise UnsupportedCombinationError(
-                "distroless has no package manager and no shell: nothing can be instalar nada nela"
+                f"{family.value} has no package manager and no shell: nothing can be "
+                "installed into it"
             )
         console.print(
-            "\n[dim]distroless installs no packages -- that is precisely its point. "
-            "There is no menu to show.[/dim]"
+            f"\n[dim]{family.value} installs no packages -- that is precisely its "
+            "point. There is no menu to show.[/dim]"
         )
         return []
 

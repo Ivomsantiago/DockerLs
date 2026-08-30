@@ -12,6 +12,7 @@ from dockerls.integrations.registry.oci import (
     is_runnable_tag,
     parse_www_authenticate,
 )
+from dockerls.integrations.registry.private import PrivateRegistryRepository
 from dockerls.integrations.registry.urls import source_url
 
 
@@ -238,3 +239,64 @@ class TestSourceUrls:
 
     def test_unknown_registry_has_no_url(self):
         assert source_url("ghcr.io/org/app", "v1") == ""
+
+
+PRIVATE_PAYLOAD = {"name": "team/app", "tags": ["1.0.0", "1.1.0", "latest"]}
+
+
+class TestPrivateRegistryRepository:
+    """A generic OCI Distribution V2 registry -- ECR, Harbor, GHCR, a
+    self-hosted `registry:2` -- reached with Basic credentials, the same
+    protocol every one of them speaks."""
+
+    def test_repository_name_is_the_query_when_no_namespace_is_configured(self):
+        repo = PrivateRegistryRepository("registry.example.com")
+        assert repo.repositories_for("app") == ["app"]
+
+    def test_multi_segment_queries_are_accepted_unlike_the_curated_sources(self):
+        """Chainguard/Distroless refuse a query containing '/': their
+        alias tables are single-segment ecosystem names. A private
+        registry's repositories commonly are not."""
+        repo = PrivateRegistryRepository("registry.example.com")
+        assert repo.repositories_for("team/app") == ["team/app"]
+
+    def test_a_configured_namespace_prefixes_the_query(self):
+        repo = PrivateRegistryRepository("registry.example.com", namespace="myorg")
+        assert repo.repositories_for("app") == ["myorg/app"]
+
+    def test_a_reference_naming_another_registry_is_refused(self):
+        repo = PrivateRegistryRepository("registry.example.com")
+        assert repo.repositories_for("ghcr.io/org/app:v1") == []
+
+    @pytest.mark.asyncio
+    async def test_returns_tags_labelled_with_this_source(self):
+        with _listing(PRIVATE_PAYLOAD):
+            images = await PrivateRegistryRepository("registry.example.com").search_tags("app")
+
+        assert {i.tag for i in images} == {"1.0.0", "1.1.0", "latest"}
+        assert {i.source for i in images} == {"Private Registry"}
+
+    @pytest.mark.asyncio
+    async def test_images_are_not_credited_as_official(self):
+        """An organization's own registry is not a vetted upstream
+        catalogue -- it must not collect the scoring bonus Docker Hub
+        official images or Chainguard's do."""
+        with _listing(PRIVATE_PAYLOAD):
+            images = await PrivateRegistryRepository("registry.example.com").search_tags("app")
+
+        assert all(i.is_official is False for i in images)
+
+    def test_credentials_reach_the_underlying_client(self):
+        """The repository must not construct an anonymous client when
+        credentials were given -- that would silently degrade a private
+        registry to the same unauthenticated flow as Chainguard's."""
+        repo = PrivateRegistryRepository(
+            "registry.example.com", username="AWS", password="ecr-token"
+        )
+        assert repo._client._username == "AWS"
+        assert repo._client._password == "ecr-token"
+
+    def test_no_credentials_means_the_client_stays_anonymous(self):
+        repo = PrivateRegistryRepository("registry.example.com")
+        assert repo._client._username == ""
+        assert repo._client._password == ""

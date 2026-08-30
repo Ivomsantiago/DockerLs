@@ -19,6 +19,7 @@ from dockerls.domain.value_objects.base_recipe import (
     Runtime,
     UnsupportedCombinationError,
     render,
+    with_version,
 )
 
 _DIGEST = "sha256:" + "a" * 64
@@ -189,3 +190,124 @@ class TestBundledManagerRemoval:
             )
         )
         assert "rm -rf" not in out
+
+
+class TestWithVersion:
+    """`--os-version`/`--runtime-version`: the catalog's tag with the
+    version swapped, everything else about the combination unchanged."""
+
+    def test_a_runtime_version_override_keeps_the_family_suffix(self):
+        base = with_version(Runtime.NODE, OsFamily.ALPINE, "24")
+
+        assert base.reference == "node:24-alpine"
+
+    def test_an_os_version_override_for_the_runtimeless_case(self):
+        base = with_version(Runtime.NONE, OsFamily.ALPINE, "3.22")
+
+        assert base.reference == "alpine:3.22"
+
+    def test_python_debian_keeps_its_multi_part_suffix(self):
+        base = with_version(Runtime.PYTHON, OsFamily.DEBIAN, "3.13")
+
+        assert base.reference == "python:3.13-slim-bookworm"
+
+    def test_everything_but_the_tag_is_unchanged(self):
+        default = RUNTIME_BASES[(Runtime.NODE, OsFamily.ALPINE)]
+        overridden = with_version(Runtime.NODE, OsFamily.ALPINE, "24")
+
+        assert overridden.image == default.image
+        assert overridden.builtin_user == default.builtin_user
+        assert overridden.bundled_manager == default.bundled_manager
+        assert overridden.bundled_manager_note == default.bundled_manager_note
+        assert overridden.tag != default.tag
+
+    def test_an_unknown_combination_raises_the_same_error_as_the_catalog(self):
+        with pytest.raises(UnsupportedCombinationError, match="no base image is published"):
+            with_version(Runtime.GO, OsFamily.DISTROLESS, "1.23")
+
+    def test_a_combination_with_no_tag_template_says_so(self):
+        with pytest.raises(UnsupportedCombinationError, match="does not take an explicit"):
+            with_version(Runtime.NODE, OsFamily.DISTROLESS, "22")
+
+
+class TestBaseOverrideFlowsThroughTheRecipe:
+    def test_a_recipe_with_an_override_renders_the_overridden_tag(self):
+        recipe = BaseRecipe(
+            family=OsFamily.ALPINE,
+            runtime=Runtime.NODE,
+            digest=_DIGEST,
+            base_override=with_version(Runtime.NODE, OsFamily.ALPINE, "24"),
+        )
+
+        assert recipe.base.tag == "24-alpine"
+        assert "node:24-alpine" in render(recipe)
+
+    def test_no_override_keeps_the_catalog_default(self):
+        recipe = BaseRecipe(family=OsFamily.ALPINE, runtime=Runtime.NODE, digest=_DIGEST)
+
+        assert recipe.base == RUNTIME_BASES[(Runtime.NODE, OsFamily.ALPINE)]
+
+
+class TestRubyAndPhp:
+    """Ruby and PHP already exist as `build --hardened` templates; this
+    brings the interactive `base-image` catalog in line with them, for the
+    families that actually publish an official runtime image."""
+
+    def test_ruby_alpine_and_debian_render(self):
+        alpine = render(BaseRecipe(family=OsFamily.ALPINE, runtime=Runtime.RUBY, digest=_DIGEST))
+        debian = render(BaseRecipe(family=OsFamily.DEBIAN, runtime=Runtime.RUBY, digest=_DIGEST))
+
+        assert "FROM ruby:3.3-alpine@" in alpine
+        assert "FROM ruby:3.3-slim-bookworm@" in debian
+
+    def test_php_alpine_and_debian_render(self):
+        alpine = render(BaseRecipe(family=OsFamily.ALPINE, runtime=Runtime.PHP, digest=_DIGEST))
+        debian = render(BaseRecipe(family=OsFamily.DEBIAN, runtime=Runtime.PHP, digest=_DIGEST))
+
+        assert "FROM php:8.3-cli-alpine@" in alpine
+        assert "FROM php:8.3-cli-bookworm@" in debian
+
+    def test_ruby_and_php_have_no_ubuntu_or_distroless_entry(self):
+        """Neither publishes an official `ruby:*-ubuntu`/`php:*-ubuntu`
+        image, and the Google distroless catalogue has no runtime for
+        either -- same gap Node, Python and Go already have."""
+        for runtime in (Runtime.RUBY, Runtime.PHP):
+            assert (runtime, OsFamily.UBUNTU) not in RUNTIME_BASES
+            assert (runtime, OsFamily.DISTROLESS) not in RUNTIME_BASES
+
+
+class TestWolfi:
+    """Wolfi/Chainguard as its own `--os` family, modelled like distroless:
+    a ready-made minimal image, not an apk base to install packages onto --
+    the free tier has no pinned version tag or builder image for that."""
+
+    def test_wolfi_installs_no_packages(self):
+        assert OsFamily.WOLFI.installs_packages is False
+
+    def test_a_wolfi_recipe_with_packages_is_refused(self):
+        recipe = BaseRecipe(family=OsFamily.WOLFI, runtime=Runtime.NONE, packages=("curl",))
+        with pytest.raises(UnsupportedCombinationError, match="wolfi has no package manager"):
+            recipe.validate()
+
+    def test_none_java_node_and_python_have_a_wolfi_base(self):
+        for runtime in (Runtime.NONE, Runtime.JAVA, Runtime.NODE, Runtime.PYTHON):
+            assert (runtime, OsFamily.WOLFI) in RUNTIME_BASES
+            assert RUNTIME_BASES[(runtime, OsFamily.WOLFI)].image.startswith("cgr.dev/chainguard/")
+
+    def test_go_ruby_and_php_have_no_wolfi_base(self):
+        """Chainguard's repository map (`hardened.py`) does not list ruby or
+        php, and Go compiles static -- no runtime image needed or verified."""
+        for runtime in (Runtime.GO, Runtime.RUBY, Runtime.PHP):
+            assert (runtime, OsFamily.WOLFI) not in RUNTIME_BASES
+
+    def test_a_wolfi_base_renders_with_its_builtin_nonroot_user(self):
+        out = render(BaseRecipe(family=OsFamily.WOLFI, runtime=Runtime.PYTHON, digest=_DIGEST))
+
+        assert "FROM cgr.dev/chainguard/python:latest@" in out
+        assert "USER nonroot" in out
+        assert "adduser" not in out
+
+    def test_wolfi_has_no_version_override(self):
+        """The free tier has no numeric version tag to switch to."""
+        with pytest.raises(UnsupportedCombinationError, match="does not take an explicit"):
+            with_version(Runtime.PYTHON, OsFamily.WOLFI, "3.13")

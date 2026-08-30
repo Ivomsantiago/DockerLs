@@ -144,6 +144,21 @@ class Settings(BaseSettings):
     retry_max_attempts: int = 3
     retry_backoff_base: float = 2.0
     enable_threat_intel: bool = True
+    # A private/organization registry: host, optional namespace prefix, and
+    # Basic credentials exchanged for a bearer token at the standard Docker
+    # Registry HTTP API V2 token endpoint -- the same protocol ECR, Harbor,
+    # GHCR's container registry and a self-hosted `registry:2` all speak.
+    # Off by default (empty host): a source nobody configured must not
+    # appear as an option, the same reasoning `include_dhi_source` follows
+    # for a source that needs credentials to be useful.
+    private_registry_host: str = ""
+    private_registry_namespace: str = ""
+    private_registry_username: str = Field(
+        default="", validation_alias="DOCKERLS_PRIVATE_REGISTRY_USERNAME"
+    )
+    private_registry_password: str = Field(
+        default="", validation_alias="DOCKERLS_PRIVATE_REGISTRY_PASSWORD"
+    )
 
     @classmethod
     def settings_customise_sources(
