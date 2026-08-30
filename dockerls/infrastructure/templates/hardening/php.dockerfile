@@ -1,5 +1,5 @@
 # Dockerfile.hardened.php
-# Template hardened para PHP 8.3 - Production Ready
+# Hardened template for PHP 8.3 - Production Ready
 
 # Stage 1: Composer Builder
 FROM composer:2 AS composer_stage
@@ -16,7 +16,7 @@ LABEL security.hardened="true"
 LABEL maintainer="your-team@company.com"
 LABEL security.cve-contact="security@company.com"
 
-# Opcache e extensões seguras
+# Opcache and secure extensions
 RUN docker-php-ext-enable opcache || true
 
 RUN addgroup -g 10001 appgroup && \
@@ -27,7 +27,7 @@ WORKDIR /app
 COPY --from=composer_stage --chown=appuser:appgroup /app/vendor /app/vendor
 COPY --chown=appuser:appgroup . .
 
-# Metadados de build
+# Build metadata
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"

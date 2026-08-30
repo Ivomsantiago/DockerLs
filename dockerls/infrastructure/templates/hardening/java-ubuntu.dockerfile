@@ -1,5 +1,5 @@
 # Dockerfile.hardened.java-ubuntu
-# Template hardened para Java 21 (Eclipse Temurin JRE Ubuntu 24.04)
+# Hardened template for Java 21 (Eclipse Temurin JRE Ubuntu 24.04)
 
 ARG UBUNTU_VERSION=24.04
 

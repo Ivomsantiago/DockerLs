@@ -1,5 +1,5 @@
 # Dockerfile.hardened.go-distroless
-# Template hardened para Go (Google Distroless Static)
+# Hardened template for Go (Google Distroless Static)
 
 ARG GO_VERSION=1.23-alpine
 
@@ -35,7 +35,7 @@ ARG BUILD_TIME=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 LABEL org.opencontainers.image.created="${BUILD_TIME}"
 
-# nonroot user no Distroless
+# nonroot user in Distroless
 USER 65532:65532
 
 EXPOSE 8080

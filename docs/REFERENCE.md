@@ -1144,7 +1144,7 @@ colateral que ninguém pediu.
 ```console
 $ dockerls base-image --os alpine --runtime node --with ca-certificates,tzdata --compare distroless
 
-npm e yarn serão removidos da imagem final (--keep-manager mantém).
+npm and yarn will be removed from the final image (--keep-manager mantém).
 
 node:22-alpine  ->  gcr.io/distroless/nodejs22-debian12:nonroot
 

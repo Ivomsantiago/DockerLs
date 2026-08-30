@@ -1,5 +1,5 @@
 # Dockerfile.hardened.alpine
-# Template hardened para Alpine Linux - Minimal Base Container
+# Hardened template for Alpine Linux - Minimal Base Container
 
 ARG BASE_VERSION=3.20
 
@@ -18,7 +18,7 @@ LABEL security.hardened="true"
 LABEL maintainer="security@company.com"
 LABEL security.cve-contact="security@company.com"
 
-# Atualizar pacotes de segurança e criar usuário não-root dedicado (UID 10001)
+# Update security packages and create a dedicated non-root user (UID 10001)
 RUN apk update && apk upgrade --no-cache \
     && apk add --no-cache ca-certificates tzdata \
     && addgroup -g 10001 appgroup \
@@ -27,7 +27,7 @@ RUN apk update && apk upgrade --no-cache \
 
 WORKDIR /app
 
-# Copiar arquivos da aplicação com ownership apropriado
+# Copy application files with proper ownership
 COPY --chown=appuser:appgroup . .
 
 ARG GIT_SHA=unknown

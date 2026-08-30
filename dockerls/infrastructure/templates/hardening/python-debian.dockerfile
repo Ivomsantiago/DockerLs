@@ -1,5 +1,5 @@
 # Dockerfile.hardened.python-debian
-# Template hardened para Python 3.12 (Debian Bookworm Slim - glibc)
+# Hardened template for Python 3.12 (Debian Bookworm Slim - glibc)
 
 ARG PYTHON_VERSION=3.12-slim-bookworm
 

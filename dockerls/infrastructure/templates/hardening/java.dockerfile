@@ -1,24 +1,24 @@
 # Dockerfile.hardened.java
-# Template hardened para Java / JVM - Production Ready (Eclipse Temurin 21)
+# Hardened template for Java / JVM - Production Ready (Eclipse Temurin 21)
 
 # Stage 1: Builder
 FROM eclipse-temurin:21-jdk-alpine AS builder
 
 WORKDIR /app
 
-# Copiar arquivos de build do Maven ou Gradle
+# Copy build output from Maven or Gradle
 COPY pom.xml* mvnw* ./
 COPY .mvn ./.mvn
 COPY build.gradle* settings.gradle* gradlew* ./
 COPY gradle ./gradle
 
-# Baixar dependências
+# Download dependencies
 RUN if [ -f "./mvnw" ]; then ./mvnw dependency:go-offline; \
     elif [ -f "./gradlew" ]; then ./gradlew --no-daemon dependencies; fi || true
 
 COPY src ./src
 
-# Compilar pacote jar
+# Compile the jar package
 RUN if [ -f "./mvnw" ]; then ./mvnw clean package -DskipTests; \
     elif [ -f "./gradlew" ]; then ./gradlew --no-daemon bootJar || ./gradlew --no-daemon build -x test; \
     fi || true
@@ -33,7 +33,7 @@ LABEL security.hardened="true"
 LABEL maintainer="your-team@company.com"
 LABEL security.cve-contact="security@company.com"
 
-# Flags de otimização para containers e segurança JVM
+# JVM flags tuned for containers and security
 ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/./urandom"
 
 RUN addgroup -g 10001 appgroup && \
@@ -43,7 +43,7 @@ WORKDIR /app
 
 COPY --from=builder --chown=appuser:appgroup /app/app.jar /app/app.jar
 
-# Metadados de build
+# Build metadata
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"

@@ -250,9 +250,9 @@ $ dockerls base-image --os alpine --runtime node \
     --with "ca-certificates,tzdata,tini" -o Dockerfile \
     --owner "team-x" --title minhaapp
 
-npm e yarn will be removed from the final image (--keep-manager keeps them).
+npm and yarn will be removed from the final image (--keep-manager keeps them).
 
-Dockerfile escrito em Dockerfile.
+Dockerfile written to Dockerfile.
 
 Next step
   dockerls build -t minhaapp:1.0 --fail-on critical .

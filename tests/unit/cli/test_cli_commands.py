@@ -339,6 +339,14 @@ class TestCacheCommand:
         assert result.exit_code == 0
         assert "3" in result.stdout
 
+    def test_cache_without_a_subcommand_lists_the_available_ones(self):
+        """A bare `dockerls cache` used to print only "Missing command." and
+        leave the reader to guess or reach for `--help` themselves."""
+        result = runner.invoke(app, ["cache"])
+        assert "clear" in result.stdout
+        assert "cleanup" in result.stdout
+        assert "stats" in result.stdout
+
 
 class TestVersionCommand:
     def test_version_prints(self):

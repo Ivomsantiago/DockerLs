@@ -1,5 +1,5 @@
 # Dockerfile.hardened.ubuntu
-# Template hardened para Ubuntu Linux (24.04 LTS Noble Numbat)
+# Hardened template for Ubuntu Linux (24.04 LTS Noble Numbat)
 
 ARG UBUNTU_VERSION=24.04
 
@@ -23,7 +23,7 @@ LABEL security.cve-contact="security@company.com"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Atualizar pacotes de segurança e criar usuário non-root (UID 10001)
+# Update security packages and create a non-root user (UID 10001)
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates tzdata \

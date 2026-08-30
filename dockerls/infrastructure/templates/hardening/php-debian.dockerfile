@@ -1,5 +1,5 @@
 # Dockerfile.hardened.php-debian
-# Template hardened para PHP 8.3 (Debian Bookworm Slim)
+# Hardened template for PHP 8.3 (Debian Bookworm Slim)
 
 ARG PHP_VERSION=8.3-cli-bookworm
 ARG COMPOSER_VERSION=2

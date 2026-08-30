@@ -1,5 +1,5 @@
 # Dockerfile.hardened.debian
-# Template hardened para Debian GNU/Linux (Bookworm Slim)
+# Hardened template for Debian GNU/Linux (Bookworm Slim)
 
 ARG DEBIAN_VERSION=bookworm-slim
 
@@ -19,7 +19,7 @@ LABEL security.hardened="true"
 LABEL maintainer="security@company.com"
 LABEL security.cve-contact="security@company.com"
 
-# Atualizar pacotes do SO e criar usuário non-root (UID 10001)
+# Update OS packages and create a non-root user (UID 10001)
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates tzdata \

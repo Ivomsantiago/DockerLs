@@ -1,5 +1,5 @@
 # Dockerfile.hardened.php-alpine
-# Template hardened para PHP 8.3 (Alpine Linux)
+# Hardened template for PHP 8.3 (Alpine Linux)
 
 ARG PHP_VERSION=8.3-cli-alpine
 ARG COMPOSER_VERSION=2

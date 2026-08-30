@@ -426,9 +426,9 @@ def _print_inheritance(report: InheritanceReport | None) -> None:
     console.print(f"[dim]{safe(report.explain())}[/dim]\n")
 
     linhas = (
-        ("herdadas da base", len(report.inherited), FindingOrigin.INHERITED, "yellow"),
-        ("das suas camadas", len(report.introduced), FindingOrigin.INTRODUCED, "red"),
-        ("removidas no build", len(report.removed), FindingOrigin.REMOVED, "green"),
+        ("inherited from base", len(report.inherited), FindingOrigin.INHERITED, "yellow"),
+        ("from your layers", len(report.introduced), FindingOrigin.INTRODUCED, "red"),
+        ("removed in build", len(report.removed), FindingOrigin.REMOVED, "green"),
     )
     for rotulo, quantidade, origem, cor in linhas:
         if not quantidade:

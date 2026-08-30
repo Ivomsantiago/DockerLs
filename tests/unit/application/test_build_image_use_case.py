@@ -377,6 +377,34 @@ class TestBuildImageUseCase:
         assert response.exit_code == EXIT_ERROR
         assert "no scanner" in response.error
 
+    def test_production_without_a_scanner_is_an_execution_error_not_a_pass(self, use_case, context):
+        """`--production` sets `fail_on="critical"` through `BuildPolicy.production()`,
+        the same gate `--fail-on critical` sets by hand. A CI runner with neither trivy
+        nor grype installed must fail this exactly like the explicit flag does -- never
+        publish an image nobody scanned, and never report it as if 0 vulnerabilities
+        were an actual measurement.
+        """
+        from dockerls.domain.value_objects.build_policy import BuildPolicy
+
+        with (
+            patch.object(use_case, "_build_image") as mock_build,
+            patch.object(use_case, "_scan_image", return_value=None),
+        ):
+            mock_build.return_value = BuildResult(success=True, image_tag="test:latest")
+            response = use_case.execute(
+                BuildImageRequest(
+                    context_path=str(context),
+                    tag="test:latest",
+                    scan=True,
+                    policy=BuildPolicy.production(),
+                )
+            )
+
+        assert response.success is False
+        assert response.exit_code == EXIT_ERROR
+        assert "no scanner" in response.error
+        assert "0 vulnerabilit" not in (response.error or "").lower()
+
     def test_docker_build_failure_is_an_execution_error(self, use_case, context):
         """Erro do `docker build` é exit 1: infraestrutura, não política."""
         with patch.object(use_case, "_build_image") as mock_build:

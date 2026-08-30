@@ -1,5 +1,5 @@
 # Dockerfile.hardened.node-debian
-# Template hardened para Node.js 22 (Debian Bookworm Slim - glibc)
+# Hardened template for Node.js 22 (Debian Bookworm Slim - glibc)
 
 ARG NODE_VERSION=22-bookworm-slim
 
@@ -28,13 +28,13 @@ LABEL security.cve-contact="security@company.com"
 
 ENV NODE_ENV=production
 
-# Atualizar pacotes de segurança do SO
+# Update OS security packages
 RUN apt-get update && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 WORKDIR /app
 
-# Usuário 'node' (UID 1000) já existe na imagem oficial Debian do Node
+# The 'node' user (UID 1000) already exists in the official Debian Node image
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node . .
 

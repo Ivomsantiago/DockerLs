@@ -1,5 +1,5 @@
 # Dockerfile.hardened.node-ubuntu
-# Template hardened para Node.js 22 (Ubuntu 24.04 LTS)
+# Hardened template for Node.js 22 (Ubuntu 24.04 LTS)
 
 ARG UBUNTU_VERSION=24.04
 

@@ -144,7 +144,7 @@ def base_image(
         raise typer.Exit(EXIT_ERROR)
 
     destination.write_text(content, encoding="utf-8")
-    console.print(f"\n[green]Dockerfile escrito em {safe(str(destination))}.[/green]")
+    console.print(f"\n[green]Dockerfile written to {safe(str(destination))}.[/green]")
 
     if not build:
         console.print(
@@ -300,7 +300,7 @@ def _build_now(
         console.print(f"[green]Image {safe(image_tag)} built and scanned.[/green]")
         raise typer.Exit(EXIT_OK)
 
-    console.print(f"[red]{safe(response.error or 'build falhou')}[/red]")
+    console.print(f"[red]{safe(response.error or 'build failed')}[/red]")
     raise typer.Exit(response.exit_code)
 
 
