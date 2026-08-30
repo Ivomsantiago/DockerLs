@@ -5,7 +5,17 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
-## [Não publicado]
+## [1.0.0] -- 2026-08-30
+
+**Primeira versão pública.** A numeração interna usada durante o
+desenvolvimento chegou a `3.0.0` antes deste projeto jamais ter sido
+publicado no PyPI ou taggeado no git (`git tag -l` estava vazio, e o nome
+`dockerls` nunca foi reservado no índice) -- então essa numeração nunca foi
+uma versão real que alguém instalou. O contador público de SemVer começa
+aqui, em `1.0.0`. Nada abaixo desta seção foi apagado: o `## [1.0.0] --
+2024-01-01` mais adiante neste arquivo é o registro do que foi de fato a
+*primeira* entrada do desenvolvimento interno, renomeado para
+`[1.0.0-internal]` só para não colidir com este.
 
 ### Corrigido -- a política de rede só julgava o primeiro salto
 
@@ -1863,7 +1873,11 @@ funcionais, novos recursos de produção e endurecimento de engenharia.
 - Removido o stub da integração com Docker Scout, que nunca foi usado nem
   conectado.
 
-## [1.0.0] - 2024-01-01
+## [1.0.0-internal] - 2024-01-01
+
+> Renomeado de `[1.0.0]`: esta é a primeira entrada do desenvolvimento
+> interno, de antes deste projeto ser publicado -- não a versão pública
+> `1.0.0`, que é a seção mais recente no topo deste arquivo.
 
 ### Adicionado
 - Lançamento inicial

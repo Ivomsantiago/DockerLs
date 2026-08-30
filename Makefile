@@ -1,4 +1,4 @@
-.PHONY: install dev check-dev-deps lint type-check test security audit build run clean \
+.PHONY: install dev check-dev-deps check-version lint type-check test security audit build run clean \
 	engine engine-test engine-lint engine-clean
 
 install:
@@ -20,6 +20,11 @@ type-check:
 
 check-dev-deps:
 	python -c "import pytest_asyncio" || (echo "pytest-asyncio is required; run: make dev" && exit 1)
+
+# The tag being released must name exactly the version python -m build will
+# actually produce -- see scripts/check_version.py for why this exists.
+check-version:
+	python3 scripts/check_version.py
 
 test: check-dev-deps
 	pytest tests/ -v --cov=dockerls --cov-report=term-missing

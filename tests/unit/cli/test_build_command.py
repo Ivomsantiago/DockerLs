@@ -695,10 +695,10 @@ class TestBaseImageCommand:
         result = CliRunner().invoke(
             app,
             ["base-image", "-o", str(tmp_path / "Dockerfile"), "--no-pin"],
-            input="1\n1\n1,2\ns\n",
+            input="1\n1\n1,2\ny\n",
         )
         assert "used for:" in result.output
-        assert "custa:" in result.output
+        assert "cost:" in result.output
 
     def test_a_refused_package_names_the_reason(self, tmp_path):
         result = CliRunner().invoke(

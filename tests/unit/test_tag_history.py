@@ -137,5 +137,5 @@ class TestSerialization:
         payload = history.to_dict()
 
         assert payload["moves"] == 1
-        assert "1 vez" in str(payload["explanation"])
+        assert "1 time" in str(payload["explanation"])
         assert len(payload["observations"]) == 2  # type: ignore[arg-type]

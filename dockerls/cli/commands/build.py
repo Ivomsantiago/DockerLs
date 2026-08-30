@@ -62,12 +62,12 @@ def build(
         None,
         "--base",
         help=(
-            "Template hardened da base: alpine, debian, ubuntu, distroless, "
+            "Hardened base template: alpine, debian, ubuntu, distroless, "
             "node-alpine, python-alpine, maven-alpine, go-scratch, ... "
-            "(--list-templates mostra os 39)"
+            "(--list-templates shows all 39)"
         ),
     ),
-    hardened: bool = typer.Option(False, "--hardened", help="Usa templates Dockerfile hardened"),
+    hardened: bool = typer.Option(False, "--hardened", help="Use hardened Dockerfile templates"),
     list_templates: bool = typer.Option(
         False, "--list-templates", help="List the available hardened templates and exit"
     ),
@@ -98,12 +98,14 @@ def build(
         None, "--report", "-r", help="Save the security report (JSON/HTML)"
     ),
     no_cache: bool = typer.Option(False, "--no-cache", help="Disable the Docker build cache"),
-    build_args: str | None = typer.Option(None, "--build-args", help="Argumentos de build (JSON)"),
+    build_args: str | None = typer.Option(None, "--build-args", help="Build arguments (JSON)"),
     labels: str | None = typer.Option(None, "--labels", help="Security labels (JSON)"),
     ci_mode: bool = typer.Option(
         False, "--ci-mode", help="CI/CD mode (JSON output, no interaction)"
     ),
-    validate_only: bool = typer.Option(False, "--validate-only", help="Apenas valida Dockerfile"),
+    validate_only: bool = typer.Option(
+        False, "--validate-only", help="Only validate the Dockerfile"
+    ),
     suggest_hardening: bool = typer.Option(
         False, "--suggest-hardening", help="Suggest improvements without building"
     ),
@@ -171,7 +173,7 @@ def build(
         "--non-interactive",
         help="Ask nothing: anything missing becomes an error instead of stalling the pipeline",
     ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Debug detalhado"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose debug output"),
     output: str | None = typer.Option(None, "--output", "-o", help="Report output file"),
     force: bool = typer.Option(False, "--force", help="Build even when validation fails"),
     compare_to_analysis: str | None = typer.Option(
@@ -383,7 +385,7 @@ def _sign_if_requested(
         )
 
     alvo = _digest_reference(reference, digest)
-    console.print(f"[dim]Assinando {safe(alvo)} com cosign (keyless).[/dim]")
+    console.print(f"[dim]Signing {safe(alvo)} with cosign (keyless).[/dim]")
     return asyncio.run(CosignClient().sign(alvo))
 
 
@@ -504,9 +506,9 @@ def _print_plan(report: InheritanceReport) -> None:
     if not plano:
         return
 
-    console.print("\n[bold]Plano de trabalho[/bold]")
+    console.print("\n[bold]Work plan[/bold]")
     for bucket in plano:
-        de_onde = "da base" if bucket.origin is FindingOrigin.INHERITED else "suas"
+        de_onde = "from the base" if bucket.origin is FindingOrigin.INHERITED else "yours"
         com_correcao = "fixable" if bucket.fixable else "no fix"
         criticas = f", {bucket.critical} CRITICAL" if bucket.critical else ""
         cor = "red" if bucket.critical else "yellow"
@@ -657,7 +659,7 @@ def _print_templates(template_provider: HardeningTemplates, ci_mode: bool = Fals
         for name in grouped[stack]:
             console.print(f"  [cyan]{name:<18}[/cyan] [dim]{_TEMPLATE_HINTS.get(name, '')}[/dim]")
 
-    console.print("\n[bold]Exemplos[/bold]")
+    console.print("\n[bold]Examples[/bold]")
     for example in _BUILD_EXAMPLES:
         console.print(f"  [dim]{example}[/dim]")
     console.print(
@@ -674,8 +676,8 @@ _STACK_TITLES = {
     "node": "Node.js",
     "python": "Python",
     "java": "Java (runtime)",
-    "maven": "Java com Maven (build + runtime)",
-    "gradle": "Java com Gradle (build + runtime)",
+    "maven": "Java, built with Maven (build + runtime)",
+    "gradle": "Java, built with Gradle (build + runtime)",
     "go": "Go",
     "rust": "Rust",
     "php": "PHP",
@@ -685,7 +687,7 @@ _STACK_TITLES = {
 #: O que distingue cada variante. Sem isto, escolher entre `node-alpine` e
 #: `node-distroless` é adivinhação.
 _TEMPLATE_HINTS = {
-    "alpine": "musl, ~5 MB, com shell",
+    "alpine": "musl, ~5 MB, has a shell",
     "debian": "glibc, stable, has a shell",
     "ubuntu": "glibc, more packages available",
     "distroless": "no shell and no package manager",
@@ -695,7 +697,7 @@ _TEMPLATE_HINTS = {
     "node-ubuntu": "glibc",
     "node-distroless": "no shell; runtime only",
     "python": "Debian slim",
-    "python-alpine": "musl -- wheels precisam ser musllinux",
+    "python-alpine": "musl -- wheels must be musllinux",
     "python-debian": "glibc",
     "python-ubuntu": "glibc",
     "python-distroless": "no shell; interpreter only",
@@ -793,7 +795,7 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
     distros = [
         "alpine (Alpine Linux - Ultra-lightweight musl)",
         "debian (Debian Bookworm Slim - glibc)",
-        "ubuntu (Ubuntu 24.04 LTS - Alta compatibilidade)",
+        "ubuntu (Ubuntu 24.04 LTS - highest package compatibility)",
         "distroless (Google Distroless - no shell, zero OS CVEs)",
         "scratch (plain scratch, for static binaries)",
     ]
@@ -804,7 +806,7 @@ def _run_interactive_wizard(use_case: BuildImageUseCase, path: str) -> BuildImag
 
     # 4. Usar template hardened
     console.print(
-        "\n[bold yellow]? 4. Utilizar template multi-stage com non-root user?[/bold yellow]"
+        "\n[bold yellow]? 4. Use a multi-stage template with a non-root user?[/bold yellow]"
     )
     console.print("  1. yes (recommended - reduces the attack surface)")
     console.print("  2. no (use the directory default Dockerfile)")
