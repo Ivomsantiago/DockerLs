@@ -88,9 +88,7 @@ class FallbackScanner(ScannerInterface):
         primeira falha acontecer, então o paralelismo é o que garante isso
         sem alongar o caminho comum.
         """
-        primary_ok, _ = await asyncio.gather(
-            _refresh(self._primary), _refresh(self._secondary)
-        )
+        primary_ok, _ = await asyncio.gather(_refresh(self._primary), _refresh(self._secondary))
         return primary_ok
 
     async def close(self) -> None:

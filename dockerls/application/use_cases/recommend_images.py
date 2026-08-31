@@ -206,9 +206,7 @@ class RecommendImagesUseCase:
         """
 
         def on_attempt(attempt: int, total: int) -> None:
-            self._observer.phase(
-                f"Preparing vulnerability database (attempt {attempt}/{total})"
-            )
+            self._observer.phase(f"Preparing vulnerability database (attempt {attempt}/{total})")
 
         try:
             result = await refresh_db(on_attempt=on_attempt)
@@ -280,9 +278,7 @@ class RecommendImagesUseCase:
         # Named so a slow first run doesn't look like a hang: the database
         # download this triggers can take a few minutes and has no
         # sub-progress to report, so the spinner alone would sit still.
-        self._observer.phase(
-            "Preparing vulnerability database (first run may take a few minutes)"
-        )
+        self._observer.phase("Preparing vulnerability database (first run may take a few minutes)")
         setup_errors: list[str] = []
         refresh_db = getattr(self._scanner, "refresh_db", None)
         db_ready = True
