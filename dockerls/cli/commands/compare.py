@@ -9,6 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from dockerls.cli.dependencies import build_compare_use_case
+from dockerls.cli.progress import scan_status
 from dockerls.cli.scan_failure import describe_scan_failure
 from dockerls.cli.text import safe
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK
@@ -57,7 +58,8 @@ def compare(
 async def _compare(images: list[str]) -> None:
     use_case = await build_compare_use_case()
     try:
-        result = await use_case.execute(images)
+        with scan_status(f"Scanning {len(images)} image(s) to compare..."):
+            result = await use_case.execute(images)
     except ValueError as e:
         console.print(f"[red]Scan failed: {e}[/red]")
         raise typer.Exit(EXIT_ERROR_CODE) from e

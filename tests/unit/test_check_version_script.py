@@ -12,9 +12,18 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check_version.py"
+# Read once, dynamically, instead of hard-coding "v1.0.0": a literal here
+# goes stale every time pyproject.toml's version is bumped, which is exactly
+# what happened -- these tests kept asserting against 1.0.0 long after the
+# project moved past it.
+_PYPROJECT_VERSION = tomllib.loads(
+    (_SCRIPT.parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
+_MATCHING_TAG = f"v{_PYPROJECT_VERSION}"
 
 
 def _run(tag_arg: str | None = None, *, ref_name: str | None = None) -> subprocess.CompletedProcess:
@@ -37,13 +46,13 @@ def _run(tag_arg: str | None = None, *, ref_name: str | None = None) -> subproce
 
 class TestCheckVersionScript:
     def test_a_matching_tag_passed_explicitly_exits_zero(self):
-        result = _run("v1.0.0")
+        result = _run(_MATCHING_TAG)
 
         assert result.returncode == 0
         assert "matches pyproject.toml" in result.stdout
 
     def test_a_matching_tag_from_github_ref_name_exits_zero(self):
-        result = _run(ref_name="v1.0.0")
+        result = _run(ref_name=_MATCHING_TAG)
 
         assert result.returncode == 0
 
@@ -52,8 +61,8 @@ class TestCheckVersionScript:
 
         assert result.returncode == 1
         assert "v3.0.0" in result.stderr
-        assert "1.0.0" in result.stderr
-        assert "v1.0.0" in result.stderr
+        assert _PYPROJECT_VERSION in result.stderr
+        assert _MATCHING_TAG in result.stderr
 
     def test_a_tag_missing_the_v_prefix_is_rejected(self):
         """`1.0.0` is not `v1.0.0` -- the release workflow only ever

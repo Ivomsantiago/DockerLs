@@ -8,6 +8,7 @@ from rich.console import Console
 
 from dockerls.cli.dependencies import build_recommend_use_case, resolve_tag_limit
 from dockerls.cli.image_names import reject_tagged_reference
+from dockerls.cli.progress import scan_status
 from dockerls.cli.validators import check_limit, check_workers
 from dockerls.exit_codes import EXIT_ERROR
 from dockerls.exporters.factory import ExporterFactory
@@ -57,7 +58,8 @@ async def _export(
     # Same fallback as `recommend`: omitting a flag means "use the
     # configured value", rather than a hard-coded default shadowing it.
     use_case = await build_recommend_use_case(workers=workers)
-    result = await use_case.execute(image, limit=resolve_tag_limit(limit))
+    with scan_status(f"Scanning {image}..."):
+        result = await use_case.execute(image, limit=resolve_tag_limit(limit))
 
     try:
         exporter = ExporterFactory.create(fmt)

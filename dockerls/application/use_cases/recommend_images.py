@@ -253,7 +253,12 @@ class RecommendImagesUseCase:
 
     async def _execute(self, image_name: str, limit: int = 100) -> AnalysisResult:
         await self._identify_scanner()
-        self._observer.phase("Preparing vulnerability database")
+        # Named so a slow first run doesn't look like a hang: the database
+        # download this triggers can take a few minutes and has no
+        # sub-progress to report, so the spinner alone would sit still.
+        self._observer.phase(
+            "Preparing vulnerability database (first run may take a few minutes)"
+        )
         setup_errors: list[str] = []
         refresh_db = getattr(self._scanner, "refresh_db", None)
         if callable(refresh_db) and not await refresh_db():

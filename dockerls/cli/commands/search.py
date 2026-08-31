@@ -9,6 +9,7 @@ from rich.table import Table
 from dockerls.application.services.source_registry import UnknownSourceError
 from dockerls.cli.dependencies import build_search_use_case
 from dockerls.cli.image_names import reject_tagged_reference
+from dockerls.cli.progress import scan_status
 from dockerls.cli.validators import check_limit
 from dockerls.exit_codes import EXIT_ERROR
 
@@ -62,7 +63,8 @@ async def _search(
     all_sources: bool = False,
 ) -> None:
     use_case = await build_search_use_case(sources, all_sources=all_sources)
-    tags = await use_case.execute(image, limit=limit)
+    with scan_status(f"Searching tags for {image}..."):
+        tags = await use_case.execute(image, limit=limit)
 
     if not tags:
         console.print(f"[red]No tags found for '{image}'[/red]")

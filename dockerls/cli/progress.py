@@ -16,6 +16,27 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
 
+    from rich.status import Status
+
+
+def scan_status(message: str) -> Status:
+    """A transient one-line stderr spinner for the commands that have no
+    per-image `RichScanObserver` (analyze, verify, compare, search, export,
+    build).
+
+    Before this, `use_case.execute(...)` in those commands ran in total
+    silence: nothing was printed between the command starting and its final
+    table, however long that took -- and on a first run, "however long"
+    includes a several-hundred-MB vulnerability database download. A silent
+    terminal for a minute or more reads as a hang, not as work in progress.
+
+    A fresh stderr `Console` is used rather than the command's own (stdout)
+    console so this can never interleave with `--format json` output: Rich
+    already no-ops a `Status` against a non-terminal (a pipe, a CI log)
+    instead of spamming it, so this is safe unconditionally.
+    """
+    return Console(stderr=True).status(message, spinner="dots")
+
 
 class RichScanObserver:
     """Renders scan progress as a single self-updating line.

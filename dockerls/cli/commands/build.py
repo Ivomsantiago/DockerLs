@@ -19,6 +19,7 @@ from dockerls.application.use_cases.build_image import (
     BuildReport,
 )
 from dockerls.cli.dependencies import enable_console_logging
+from dockerls.cli.progress import scan_status
 from dockerls.cli.publish_prompt import resolve_destination, resolve_identity
 from dockerls.cli.rendering import render_validation_report
 from dockerls.cli.text import safe
@@ -314,7 +315,11 @@ def build(
     )
 
     # Executar
-    response = _run_interactive_wizard(use_case, path) if interactive else use_case.execute(request)
+    if interactive:
+        response = _run_interactive_wizard(use_case, path)
+    else:
+        with scan_status(f"Building {tag or path}..."):
+            response = use_case.execute(request)
 
     signature = _sign_if_requested(response, sign=sign, publishing=publishing)
 

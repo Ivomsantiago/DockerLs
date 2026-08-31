@@ -35,7 +35,7 @@ from dockerls.application.services.source_registry import UnknownSourceError
 from dockerls.cli.dependencies import build_analyze_use_case, build_recommend_use_case
 from dockerls.cli.image_names import display_reference, split_repository_and_tag
 from dockerls.cli.options import OutputFormat, parse_output_format
-from dockerls.cli.progress import RichScanObserver
+from dockerls.cli.progress import RichScanObserver, scan_status
 from dockerls.cli.scan_failure import describe_scan_failure
 from dockerls.cli.text import safe
 from dockerls.cli.validators import check_workers
@@ -128,7 +128,8 @@ async def _alternatives(
     # repositório "registry.internal" não devolve nada.
     repository, tag = split_repository_and_tag(reference)
 
-    current = await _analyze_current(reference)
+    with scan_status(f"Scanning {reference} (your current image)..."):
+        current = await _analyze_current(reference)
     if current is None:
         # No measurement of the current image means no honest claim about
         # an improvement over it. The command fails rather than presenting
@@ -137,6 +138,10 @@ async def _alternatives(
         raise typer.Exit(EXIT_ERROR)
 
     with RichScanObserver(enabled=show_progress) as observer:
+        # See the same line in `recommend`: without it, resolving sources
+        # and probing the scanner ran in silence before the first tag was
+        # even found.
+        observer.phase("Initializing")
         use_case = await build_recommend_use_case(
             workers=workers,
             observer=observer,

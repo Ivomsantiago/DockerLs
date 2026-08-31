@@ -5,6 +5,27 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.10] -- 2026-08-31
+
+### Changed
+- Fixed the "loading looks frozen" experience at the start of a run.
+  `analyze`, `verify`, `compare`, `search`, `export` and `build` printed
+  nothing at all while `use_case.execute(...)` ran -- which, on a first
+  run, includes a several-hundred-MB vulnerability database download that
+  can take minutes. They now show a transient stderr spinner
+  (`dockerls.cli.progress.scan_status`) for the duration of the scan, so
+  the terminal never goes silent. `recommend` and `alternatives` already
+  had a progress bar, but it stayed blank (no spinner, no text) while
+  sources were resolved and the scanner was probed, before the first tag
+  was even found; both now show an "Initializing" phase immediately. The
+  vulnerability-database phase message now also says up front that a
+  first run can take a few minutes, since that step has no sub-progress
+  to report.
+- Fixed `tests/unit/test_check_version_script.py` asserting against a
+  hard-coded `v1.0.0`/`1.0.0` instead of reading `pyproject.toml`'s actual
+  version, which made the suite fail every time the version moved past
+  `1.0.0` (unrelated to and pre-existing before this change).
+
 ## [1.0.9] -- 2026-08-31
 
 ### Added

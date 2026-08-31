@@ -25,6 +25,7 @@ import typer
 from rich.console import Console
 
 from dockerls.cli.options import OutputFormat, parse_output_format
+from dockerls.cli.progress import scan_status
 from dockerls.cli.text import safe
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_POLICY
 from dockerls.integrations.signing.cosign import CosignClient, SignatureStatus
@@ -64,13 +65,14 @@ def verify(
         console.no_color = True
     fmt = parse_output_format(output_format)
 
-    result = asyncio.run(
-        CosignClient().verify(
-            reference,
-            certificate_identity_regexp=identity,
-            certificate_oidc_issuer=issuer,
+    with scan_status(f"Verifying signature for {reference}..."):
+        result = asyncio.run(
+            CosignClient().verify(
+                reference,
+                certificate_identity_regexp=identity,
+                certificate_oidc_issuer=issuer,
+            )
         )
-    )
 
     if fmt == OutputFormat.JSON:
         console.print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False), soft_wrap=True)
