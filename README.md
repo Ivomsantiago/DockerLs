@@ -202,40 +202,47 @@ preciso". `base-image` faz essa escolha acontecer antes de qualquer coisa
 existir: sem `--with`, ele mostra um menu com o custo de cada pacote em
 superfície de ataque, não só o que ele serve.
 
-```ansi
-[1;32m$[0m [1;37mdockerls base-image --os alpine --runtime node[0m
+![menu de pacotes do base-image](docs/assets/base_image_menu.svg)
 
-[1;37mPackages in the base image[0m
+<details>
+<summary>Ver como texto (copiar/colar)</summary>
+
+```console
+$ dockerls base-image --os alpine --runtime node
+
+Packages in the base image
 Each one exists in every application that consumes this base, and every CVE in
 it becomes triage for someone who does not even know it is there.
 
-  [1;36m1. ca-certificates[0m [2m(already present in most bases)[0m
-       [1;37mused for:[0m validating TLS when talking to any HTTPS service
-       [1;37mcusta:[0m practically none; without it every TLS connection fails
+  1. ca-certificates (already present in most bases)
+       used for: validating TLS when talking to any HTTPS service
+       custa: practically none; without it every TLS connection fails
 verification
-  [1;36m2. tzdata[0m
-       [1;37mused for:[0m time zones; without it the container stays on UTC and local
+  2. tzdata
+       used for: time zones; without it the container stays on UTC and local
 dates are wrong
-       [1;37mcusta:[0m a few MB of data, no new executable
-  [1;36m3. curl[0m
-       [1;37mused for:[0m HTTP HEALTHCHECK and network diagnostics
-       [1;37mcusta:[0m a full HTTP client inside the container -- what an attacker uses
+       custa: a few MB of data, no new executable
+  3. curl
+       used for: HTTP HEALTHCHECK and network diagnostics
+       custa: a full HTTP client inside the container -- what an attacker uses
 to fetch the second stage
-  [1;36m4. wget[0m
-       [1;37mused for:[0m an alternative to curl for downloading files
-       [1;37mcusta:[0m the same cost as curl; having both doubles the surface, not the
+  4. wget
+       used for: an alternative to curl for downloading files
+       custa: the same cost as curl; having both doubles the surface, not the
 use
-  [1;36m5. bash[0m
-       [1;37mused for:[0m scripts relying on features the Alpine `sh` does not have
-       [1;37mcusta:[0m a more capable shell is a more useful shell for whoever breaks in
-  [2m...[0m
-  [1;36m9. tini[0m
-       [1;37mused for:[0m a minimal init that forwards signals and reaps orphaned
+  5. bash
+       used for: scripts relying on features the Alpine `sh` does not have
+       custa: a more capable shell is a more useful shell for whoever breaks in
+  ...
+  9. tini
+       used for: a minimal init that forwards signals and reaps orphaned
 processes
-       [1;37mcusta:[0m almost nothing, and it fixes the pid 1 that ignores SIGTERM
+       custa: almost nothing, and it fixes the pid 1 that ignores SIGTERM
 
-Comma-separated numbers (empty = no packages): [1;37m1,2,9[0m
+Comma-separated numbers (empty = no packages): 1,2,9
 ```
+
+</details>
 
 Repare no `curl`: o propósito ("HEALTHCHECK e diagnóstico de rede") é
 legítimo, mas o custo dito ali do lado é o mesmo que um atacante usa pra
@@ -245,20 +252,27 @@ mostra na hora de marcar.
 Em pipeline não tem menu pra responder. `--with` aceita a mesma lista
 separada por vírgula e pula direto pro Dockerfile:
 
-```ansi
-[1;32m$[0m [1;37mdockerls base-image --os alpine --runtime node [0m[1;37m\[0m
-[1;37m    --with "ca-certificates,tzdata,tini" -o Dockerfile \[0m
-[1;37m    --owner "team-x" --title minhaapp[0m
+![base-image com --with, gerando o Dockerfile](docs/assets/base_image_with.svg)
 
-[33mnpm and yarn will be removed from the final image[0m (--keep-manager keeps them).
+<details>
+<summary>Ver como texto (copiar/colar)</summary>
 
-[1;32mDockerfile written to Dockerfile.[0m
+```console
+$ dockerls base-image --os alpine --runtime node \
+    --with "ca-certificates,tzdata,tini" -o Dockerfile \
+    --owner "team-x" --title minhaapp
 
-[1;37mNext step[0m
+npm and yarn will be removed from the final image (--keep-manager keeps them).
+
+Dockerfile written to Dockerfile.
+
+Next step
   dockerls build -t minhaapp:1.0 --fail-on critical .
-  [2mBuilding and scanning is what turns this recipe into a claim about security;[0m
-[2muntil then it is only an intention.[0m
+  Building and scanning is what turns this recipe into a claim about security;
+until then it is only an intention.
 ```
+
+</details>
 
 Existem três pacotes que esse catálogo se recusa a oferecer, mesmo por
 `--with` — são recusas documentadas, não omissões:
@@ -279,26 +293,33 @@ travada no catálogo (`RUNTIME_BASES`, em
 pra cada um. Se você precisa de outra versão, o caminho é editar a linha
 `FROM` manualmente e resolver o digest de novo:
 
-```ansi
-[1;32m$[0m [1;37msed -i 's/FROM node:22-alpine@${BASE_DIGEST}/FROM node:20-alpine/; s/ARG BASE_DIGEST=.*/ARG BASE_DIGEST=/' Dockerfile[0m
-[1;32m$[0m [1;37mdockerls base .[0m
+![dockerls base . repinando o digest](docs/assets/base_pin_digest.svg)
 
-[1;37mDockerfile[0m
+<details>
+<summary>Ver como texto (copiar/colar)</summary>
 
-  [1;33mline 14  UNPINNED[0m
+```console
+$ sed -i 's/FROM node:22-alpine@\${BASE_DIGEST}/FROM node:20-alpine/; s/ARG BASE_DIGEST=.*/ARG BASE_DIGEST=/' Dockerfile
+$ dockerls base .
+
+Dockerfile
+
+  line 14  UNPINNED
     node:20-alpine
-    [2mmoving tag, no digest: what you tested and what goes to production can be[0m
-[2mdifferent bytes with no change on your part[0m
+    moving tag, no digest: what you tested and what goes to production can be
+different bytes with no change on your part
     ->
-[1;32mnode:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609[0m
-[1;32m372293[0m  (line 14)
+node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609
+372293  (line 14)
 
-[1;33m1 without a digest[0m
+1 without a digest
 
-[1;32m1 update(s) written to Dockerfile.[0m
-[2mRebuild and scan before publishing: changing the base digest changes the image,[0m
-[2mand only a scan tells you whether for the better.[0m
+1 update(s) written to Dockerfile.
+Rebuild and scan before publishing: changing the base digest changes the image,
+and only a scan tells you whether for the better.
 ```
+
+</details>
 
 `base` não sabe (nem tenta adivinhar) se a troca de versão é segura — ele só
 garante que, seja qual for a tag, ela fica pinada por digest antes de ir pra
@@ -315,32 +336,39 @@ do PowerShell inteiro a partir dali.
 
 ### 4. Validar antes de construir
 
-```ansi
-[1;32m$[0m [1;37mdockerls analyze-dockerfile .[0m
+![resultado do analyze-dockerfile](docs/assets/analyze_dockerfile.svg)
 
-[1;37mSummary:[0m [1;32m9 passed[0m | [1;33m4 warnings[0m | [31m0 errors[0m
+<details>
+<summary>Ver como texto (copiar/colar)</summary>
 
-  [1;32mPASS[0m   base_image_pinned         Base image tag is not 'latest' (still a
+```console
+$ dockerls analyze-dockerfile .
+
+Summary: 9 passed | 4 warnings | 0 errors
+
+  PASS   base_image_pinned         Base image tag is not 'latest' (still a
                                     moving tag -- `dockerls base` pins it by
                                     digest)
-  [1;32mPASS[0m   non_root_user             Container runs as non-root user: node
-  [1;33mWARN[0m   multi_stage_build         Single-stage build detected
-  [1;32mPASS[0m   secrets_not_in_env        No obvious secrets in ENV variables or ARG
+  PASS   non_root_user             Container runs as non-root user: node
+  WARN   multi_stage_build         Single-stage build detected
+  PASS   secrets_not_in_env        No obvious secrets in ENV variables or ARG
                                     defaults
-  [1;33mWARN[0m   package_cache_clean       Package manager cache not cleaned
-  [1;33mWARN[0m   healthcheck_present       No HEALTHCHECK directive
-  [1;32mPASS[0m   security_labels           Security labels present
-  [1;32mPASS[0m   minimal_base              Using minimal base image
-  [1;32mPASS[0m   no_sudo                   No sudo usage detected
-  [1;33mWARN[0m   dockerignore_exists       .dockerignore not found
-  [1;32mPASS[0m   add_not_used_for_copy     No ADD directives (COPY is used to bring
+  WARN   package_cache_clean       Package manager cache not cleaned
+  WARN   healthcheck_present       No HEALTHCHECK directive
+  PASS   security_labels           Security labels present
+  PASS   minimal_base              Using minimal base image
+  PASS   no_sudo                   No sudo usage detected
+  WARN   dockerignore_exists       .dockerignore not found
+  PASS   add_not_used_for_copy     No ADD directives (COPY is used to bring
                                     files in)
-  [1;32mPASS[0m   no_unverified_remote_scr… No remote script is piped straight into a
+  PASS   no_unverified_remote_scr… No remote script is piped straight into a
                                     shell
-  [1;32mPASS[0m   no_setuid_binaries_added  No setuid or setgid bit is set in the build
+  PASS   no_setuid_binaries_added  No setuid or setgid bit is set in the build
 
-[1;37mSecurity Score: 90/100[0m   [1;37mTier:[0m [1;32mA[0m   [1;37mProduction Ready:[0m [1;32mYes[0m
+Security Score: 90/100   Tier: A   Production Ready: Yes
 ```
+
+</details>
 
 Isso roda sem Docker, sem scanner, sem rede — é análise estática do texto do
 Dockerfile. Os warnings aqui (sem multi-stage, sem HEALTHCHECK, sem
@@ -357,52 +385,59 @@ findings (base vs. suas camadas). `--fail-on critical,kev` soma mais um
 critério: falhar também se algum CVE encontrado está no catálogo CISA KEV —
 sendo explorado ativamente, mesmo que não seja CRITICAL.
 
-```ansi
-[1;32m$[0m [1;37mdockerls build . -t minhaapp:1.0 --production --fail-on critical,kev `[0m
-[1;37m    --owner "team-x" `[0m
-[1;37m    --source "https://github.com/suaorg/minhaapp" `[0m
-[1;37m    --security-contact "security@suaorg.com"[0m
+![dockerls build --production com o gate de segurança](docs/assets/build_production.svg)
 
-[1;37mProduction profile[0m
-  fail_on  [1;33mcritical[0m
-  require_scan  [1;32mTrue[0m
-  require_pinned_bases  [1;32mTrue[0m
-  require_nonroot  [1;32mTrue[0m
+<details>
+<summary>Ver como texto (copiar/colar)</summary>
+
+```console
+$ dockerls build . -t minhaapp:1.0 --production --fail-on critical,kev `
+    --owner "team-x" `
+    --source "https://github.com/suaorg/minhaapp" `
+    --security-contact "security@suaorg.com"
+
+Production profile
+  fail_on  critical
+  require_scan  True
+  require_pinned_bases  True
+  require_nonroot  True
   required_labels  org.opencontainers.image.source, org.opencontainers.image.vendor, security.contact
-  require_provenance  [1;32mTrue[0m
+  require_provenance  True
 
-[1;32m╭──────────────────╮[0m
-[1;32m│ Build Successful │[0m
-[1;32m│ minhaapp:1.0     │[0m
-[1;32m╰──────────────────╯[0m
+╭──────────────────╮
+│ Build Successful │
+│ minhaapp:1.0     │
+╰──────────────────╯
 
-[1;33m╭────────────────────────╮[0m
-[1;33m│ Security Score: 85/100 │[0m
-[1;33m│ Tier: B                │[0m
-[1;33m╰────────────────────────╯[0m
+╭────────────────────────╮
+│ Security Score: 85/100 │
+│ Tier: B                │
+╰────────────────────────╯
 
-[1;37mValidation:[0m [1;32m8 passed[0m | [1;33m5 warnings[0m | [31m0 errors[0m
+Validation: 8 passed | 5 warnings | 0 errors
 
 ╭───────────────────────╮
-│ [1;37mSecurity Scan Results[0m │
+│ Security Scan Results │
 ╰───────────────────────╯
-  CRITICAL: [1;32m0[0m
-  HIGH: [1;32m0[0m
-  MEDIUM: [1;32m0[0m
-  LOW: [1;32m0[0m
+  CRITICAL: 0
+  HIGH: 0
+  MEDIUM: 0
+  LOW: 0
 
-[1;32m╭────────────────────────╮[0m
-[1;32m│ Supply chain: VERIFIED │[0m
-[1;32m╰────────────────────────╯[0m
-  [2minput and output digested, and the input did not change during the build[0m
+╭────────────────────────╮
+│ Supply chain: VERIFIED │
+╰────────────────────────╯
+  input and output digested, and the input did not change during the build
 
-[1;37mINPUT[0m [2m(measured before the build)[0m
-  Dockerfile  [2msha256:e696d147012323b8b1c27de847b48f566ab4a8282b2377ba00fe35215a71a249[0m
-  Contexto    [2msha256:a8d265c6ff3c1a57b43ad00c24f9d07b13531923d66acaa5948c85697476252c[0m  (1 files)
+INPUT (measured before the build)
+  Dockerfile  sha256:e696d147012323b8b1c27de847b48f566ab4a8282b2377ba00fe35215a71a249
+  Contexto    sha256:a8d265c6ff3c1a57b43ad00c24f9d07b13531923d66acaa5948c85697476252c  (1 files)
 
-[1;37mOUTPUT[0m [2m(measured after the build)[0m
-  Image       [2msha256:5e5a079bbd616d166b155f15dac48c9c603a9d605876c732fde620a7aa7958bc[0m
+OUTPUT (measured after the build)
+  Image       sha256:5e5a079bbd616d166b155f15dac48c9c603a9d605876c732fde620a7aa7958bc
 ```
+
+</details>
 
 Sem `--owner`, `--source` e `--security-contact`, esse mesmo comando falha —
 de propósito: `required_labels` é parte do perfil `--production`, e o motivo
@@ -411,10 +446,17 @@ ligar quando essa imagem aparecer num alerta às três da manhã".
 
 ### 6. Usando a imagem depois de construída
 
-```ansi
-[1;32m$[0m [1;37mdocker run --rm minhaapp:1.0 id[0m
-[32muid=1000(node) gid=1000(node) groups=1000(node),1000(node)[0m
+![docker run --rm minhaapp:1.0 id](docs/assets/docker_run_id.svg)
+
+<details>
+<summary>Ver como texto (copiar/colar)</summary>
+
+```console
+$ docker run --rm minhaapp:1.0 id
+uid=1000(node) gid=1000(node) groups=1000(node),1000(node)
 ```
+
+</details>
 
 `uid=1000`, não `uid=0`. É o `USER node` do Dockerfile confirmado em
 execução, não só lido no texto — a mesma checagem que `non_root_user` faz de
@@ -422,24 +464,31 @@ forma estática no passo 4, agora contra o container de verdade.
 
 ### 7. Fechando o loop
 
-```ansi
-[1;32m$[0m [1;37mdockerls analyze minhaapp:1.0[0m
+![dockerls analyze minhaapp:1.0 (imagem já construída)](docs/assets/analyze_final.svg)
 
-[1;37mAnalysis: minhaapp:1.0[0m
+<details>
+<summary>Ver como texto (copiar/colar)</summary>
 
-  Score                [1;32m96.0[0m
-  Tier                 [1;32mA[0m
-  Critical             [1;32m0[0m
-  High                 [1;32m0[0m
-  Medium               [1;32m0[0m
-  Low                  [1;32m0[0m
-  Total Vulns          [1;32m0[0m
-  Fixable              [32m0 (n/a)[0m
-  Remediation Score    [1;32m100/100[0m
-  EOL                  [32mNo[0m
-  LTS                  [33mNo[0m
+```console
+$ dockerls analyze minhaapp:1.0
+
+Analysis: minhaapp:1.0
+
+  Score                96.0
+  Tier                 A
+  Critical             0
+  High                 0
+  Medium               0
+  Low                  0
+  Total Vulns          0
+  Fixable              0 (n/a)
+  Remediation Score    100/100
+  EOL                  No
+  LTS                  No
   Scanner              trivy
 ```
+
+</details>
 
 O mesmo `analyze` que você rodaria contra `node:22-alpine` pra decidir se
 confia nela funciona igual contra o que você acabou de construir. Não existe
