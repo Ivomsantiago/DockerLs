@@ -5,6 +5,17 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] -- 2026-08-31
+
+### Security
+- Fixed CSV injection (formula injection) in `CSVExporter`: cells built from
+  external/attacker-influenceable data (image name, tag, source, digest,
+  pinned reference) that start with `=`, `+`, `-`, `@`, tab, or CR are now
+  prefixed with a leading apostrophe before being written, so Excel/Sheets
+  render them as text instead of evaluating them as a formula when the CSV
+  is opened. Numeric/enum/internal fields (scores, tiers, counts,
+  confidence, EOL status) are untouched.
+
 ## [1.0.2] -- 2026-08-30
 
 ### Changed

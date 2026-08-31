@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 
 import pytest
@@ -49,6 +51,26 @@ class TestCSVExporter:
         assert "node" in output
         assert "22-alpine" in output
         assert "Image,Tag,Score" in output
+
+    def test_sanitizes_formula_injection_in_external_fields(self, analysis_result):
+        """A malicious image name starting with '=' must not be interpreted
+        as a formula by Excel/Sheets: it must be prefixed with a leading
+        apostrophe before being written to the CSV cell."""
+        malicious_name = "=cmd|'/c calc'!A1"
+        analysis_result.recommendations[0].image.name = malicious_name
+        exporter = CSVExporter()
+        output = exporter.export_string(analysis_result)
+        rows = list(csv.reader(io.StringIO(output)))
+        header, row = rows[0], rows[1]
+        assert row[header.index("Image")] == f"'{malicious_name}"
+
+    def test_legitimate_name_is_unaffected(self, analysis_result):
+        exporter = CSVExporter()
+        output = exporter.export_string(analysis_result)
+        rows = list(csv.reader(io.StringIO(output)))
+        header, row = rows[0], rows[1]
+        assert row[header.index("Image")] == "node"
+        assert row[header.index("Tag")] == "22-alpine"
 
 
 class TestHTMLExporter:
