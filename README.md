@@ -202,7 +202,7 @@ preciso". `base-image` faz essa escolha acontecer antes de qualquer coisa
 existir: sem `--with`, ele mostra um menu com o custo de cada pacote em
 superfície de ataque, não só o que ele serve.
 
-![menu de pacotes do base-image](docs/assets/base_image_menu.svg)
+![menu de pacotes do base-image](https://raw.githubusercontent.com/Ivomsantiago/DockerLs/Master/docs/assets/base_image_menu.svg)
 
 <details>
 <summary>Ver como texto (copiar/colar)</summary>
@@ -252,7 +252,7 @@ mostra na hora de marcar.
 Em pipeline não tem menu pra responder. `--with` aceita a mesma lista
 separada por vírgula e pula direto pro Dockerfile:
 
-![base-image com --with, gerando o Dockerfile](docs/assets/base_image_with.svg)
+![base-image com --with, gerando o Dockerfile](https://raw.githubusercontent.com/Ivomsantiago/DockerLs/Master/docs/assets/base_image_with.svg)
 
 <details>
 <summary>Ver como texto (copiar/colar)</summary>
@@ -293,7 +293,7 @@ travada no catálogo (`RUNTIME_BASES`, em
 pra cada um. Se você precisa de outra versão, o caminho é editar a linha
 `FROM` manualmente e resolver o digest de novo:
 
-![dockerls base . repinando o digest](docs/assets/base_pin_digest.svg)
+![dockerls base . repinando o digest](https://raw.githubusercontent.com/Ivomsantiago/DockerLs/Master/docs/assets/base_pin_digest.svg)
 
 <details>
 <summary>Ver como texto (copiar/colar)</summary>
@@ -336,7 +336,7 @@ do PowerShell inteiro a partir dali.
 
 ### 4. Validar antes de construir
 
-![resultado do analyze-dockerfile](docs/assets/analyze_dockerfile.svg)
+![resultado do analyze-dockerfile](https://raw.githubusercontent.com/Ivomsantiago/DockerLs/Master/docs/assets/analyze_dockerfile.svg)
 
 <details>
 <summary>Ver como texto (copiar/colar)</summary>
@@ -385,7 +385,7 @@ findings (base vs. suas camadas). `--fail-on critical,kev` soma mais um
 critério: falhar também se algum CVE encontrado está no catálogo CISA KEV —
 sendo explorado ativamente, mesmo que não seja CRITICAL.
 
-![dockerls build --production com o gate de segurança](docs/assets/build_production.svg)
+![dockerls build --production com o gate de segurança](https://raw.githubusercontent.com/Ivomsantiago/DockerLs/Master/docs/assets/build_production.svg)
 
 <details>
 <summary>Ver como texto (copiar/colar)</summary>
@@ -446,7 +446,7 @@ ligar quando essa imagem aparecer num alerta às três da manhã".
 
 ### 6. Usando a imagem depois de construída
 
-![docker run --rm minhaapp:1.0 id](docs/assets/docker_run_id.svg)
+![docker run --rm minhaapp:1.0 id](https://raw.githubusercontent.com/Ivomsantiago/DockerLs/Master/docs/assets/docker_run_id.svg)
 
 <details>
 <summary>Ver como texto (copiar/colar)</summary>
@@ -464,7 +464,7 @@ forma estática no passo 4, agora contra o container de verdade.
 
 ### 7. Fechando o loop
 
-![dockerls analyze minhaapp:1.0 (imagem já construída)](docs/assets/analyze_final.svg)
+![dockerls analyze minhaapp:1.0 (imagem já construída)](https://raw.githubusercontent.com/Ivomsantiago/DockerLs/Master/docs/assets/analyze_final.svg)
 
 <details>
 <summary>Ver como texto (copiar/colar)</summary>
