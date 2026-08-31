@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from dockerls.integrations.registry.hardened import HardenedRepository
+from dockerls.utils.retry import DEFAULT_BACKOFF_BASE, DEFAULT_MAX_ATTEMPTS
 
 if TYPE_CHECKING:
     from dockerls.domain.entities.image import DockerImage
@@ -56,10 +57,19 @@ class PrivateRegistryRepository(HardenedRepository):
         *,
         username: str = "",
         password: str = "",
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        backoff_base: float = DEFAULT_BACKOFF_BASE,
     ):
         self.host = host
         self.namespace = namespace
-        super().__init__(timeout=timeout, guard=guard, username=username, password=password)
+        super().__init__(
+            timeout=timeout,
+            guard=guard,
+            username=username,
+            password=password,
+            max_attempts=max_attempts,
+            backoff_base=backoff_base,
+        )
 
     def repositories_for(self, image_name: str) -> list[str]:
         name = image_name.strip().strip("/")

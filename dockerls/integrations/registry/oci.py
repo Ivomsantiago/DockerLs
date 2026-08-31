@@ -8,9 +8,23 @@ import httpx
 from loguru import logger
 
 from dockerls.infrastructure.network.guarded_client import guarded_async_client
+from dockerls.utils.rate_limit import CircuitBreaker, CircuitOpenError, RateLimiter
+from dockerls.utils.retry import (
+    DEFAULT_BACKOFF_BASE,
+    DEFAULT_MAX_ATTEMPTS,
+    retry_policy,
+)
 
 if TYPE_CHECKING:
     from dockerls.infrastructure.network.host_guard import HostGuard
+
+#: Requests per second this client paces itself to, per registry host. A
+#: generic OCI registry publishes no documented budget the way Docker Hub
+#: or GitHub do, so this is a conservative default that protects against a
+#: self-inflicted burst (many concurrent tag/candidate lookups against the
+#: same host) rather than a number tuned to any one registry's real limit.
+_REGISTRY_RATE = 10
+_REGISTRY_PERIOD = 1.0
 
 # Cosign and friends publish their signatures, attestations and SBOMs as
 # ordinary tags in the same repository. They are not runnable images, so
@@ -110,6 +124,8 @@ class OCIRegistryClient:
         *,
         username: str = "",
         password: str = "",
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        backoff_base: float = DEFAULT_BACKOFF_BASE,
     ):
         self._host = host
         self._timeout = timeout
@@ -126,10 +142,19 @@ class OCIRegistryClient:
         # existed.
         self._username = username
         self._password = password
+        self._max_attempts = max_attempts
+        self._backoff_base = backoff_base
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
         self._listings: dict[str, dict[str, Any] | None] = {}
         self._listing_locks: dict[str, asyncio.Lock] = {}
+        # One limiter/breaker per client, i.e. per registry host: a burst of
+        # concurrent candidate lookups against the same registry is paced
+        # rather than fired all at once, and a registry that is down stops
+        # being retried request after request once it has failed enough in
+        # a row.
+        self._limiter = RateLimiter(rate=_REGISTRY_RATE, period=_REGISTRY_PERIOD)
+        self._breaker = CircuitBreaker()
 
     @property
     def host(self) -> str:
@@ -149,6 +174,42 @@ class OCIRegistryClient:
         client, self._client = self._client, None
         if client is not None:
             await client.aclose()
+
+    @staticmethod
+    async def _request_once(
+        client: httpx.AsyncClient, method: str, url: str, headers: dict[str, str]
+    ) -> httpx.Response:
+        """One HTTP request. A 5xx is turned into an exception so the retry
+        policy above it can distinguish "the registry is having a bad
+        moment" from a definitive answer (2xx/4xx), which is returned as-is
+        for the caller to interpret."""
+        resp = await client.request(method, url, headers=headers)
+        if resp.status_code >= 500:
+            resp.raise_for_status()
+        return resp
+
+    async def _request(
+        self, client: httpx.AsyncClient, method: str, url: str, headers: dict[str, str]
+    ) -> httpx.Response:
+        """Retry policy + rate limit + circuit breaker around one request.
+
+        Mirrors the pattern in `DockerHubClient._get_json` and
+        `DHICatalogClient._get_text`: the policy is built fresh per call so
+        `retry_max_attempts`/`retry_backoff_base` reach it, transient
+        failures (network errors, 5xx) are retried, and a registry that
+        keeps failing trips the breaker so further calls fail fast instead
+        of repeating a doomed request.
+        """
+        self._breaker.check(self._host)
+        await self._limiter.acquire()
+        policy = retry_policy(self._max_attempts, self._backoff_base)
+        try:
+            resp: httpx.Response = await policy(self._request_once, client, method, url, headers)
+        except httpx.HTTPError:
+            self._breaker.record_failure()
+            raise
+        self._breaker.record_success()
+        return resp
 
     async def _token(self, client: httpx.AsyncClient, challenge: str) -> str:
         realm, params = parse_www_authenticate(challenge)
@@ -209,20 +270,19 @@ class OCIRegistryClient:
         """
         url = f"https://{self._host}/v2/{path}"
         headers = {"Accept": accept} if accept else {}
+        method = "HEAD" if head else "GET"
         try:
             client = await self._get_client()
-            resp = await client.request("HEAD" if head else "GET", url, headers=headers)
+            resp = await self._request(client, method, url, headers)
             if resp.status_code == 401:
                 token = await self._token(client, resp.headers.get("WWW-Authenticate", ""))
                 if not token:
                     logger.info(f"No anonymous token available for {self._host}/{path}")
                     return None
-                resp = await client.request(
-                    "HEAD" if head else "GET",
-                    url,
-                    headers={**headers, "Authorization": f"Bearer {token}"},
+                resp = await self._request(
+                    client, method, url, {**headers, "Authorization": f"Bearer {token}"}
                 )
-        except (httpx.HTTPError, ValueError) as e:
+        except (httpx.HTTPError, ValueError, CircuitOpenError) as e:
             logger.warning(f"Registry request failed for {self._host}/{path}: {e}")
             return None
 
@@ -240,13 +300,13 @@ class OCIRegistryClient:
         url = f"https://{self._host}/v2/{repository}/tags/list"
         try:
             client = await self._get_client()
-            resp = await client.get(url)
+            resp = await self._request(client, "GET", url, {})
             if resp.status_code == 401:
                 token = await self._token(client, resp.headers.get("WWW-Authenticate", ""))
                 if not token:
                     logger.warning(f"No anonymous token available for {self._host}")
                     return None
-                resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+                resp = await self._request(client, "GET", url, {"Authorization": f"Bearer {token}"})
 
             if resp.status_code == 404:
                 logger.info(f"Repository not found: {self._host}/{repository}")
@@ -254,6 +314,6 @@ class OCIRegistryClient:
             resp.raise_for_status()
             payload: dict[str, Any] = resp.json()
             return payload
-        except (httpx.HTTPError, ValueError) as e:
+        except (httpx.HTTPError, ValueError, CircuitOpenError) as e:
             logger.warning(f"Tag listing failed for {self._host}/{repository}: {e}")
             return None

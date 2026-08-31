@@ -37,6 +37,7 @@ from dockerls.domain.entities.image_facts import EvidenceSource, HardeningFacts
 from dockerls.domain.value_objects.tristate import Tristate
 from dockerls.infrastructure.network.host_guard import HostGuard
 from dockerls.integrations.registry.oci import OCIRegistryClient
+from dockerls.utils.retry import DEFAULT_BACKOFF_BASE, DEFAULT_MAX_ATTEMPTS
 
 if TYPE_CHECKING:
     from dockerls.domain.entities.image import DockerImage
@@ -83,8 +84,12 @@ class RegistryInspector:
         timeout: int = 30,
         guard: HostGuard | None = None,
         credentials: dict[str, tuple[str, str]] | None = None,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        backoff_base: float = DEFAULT_BACKOFF_BASE,
     ):
         self._timeout = timeout
+        self._max_attempts = max_attempts
+        self._backoff_base = backoff_base
         # Where this inspector is permitted to send a request. A reference is
         # user input carrying a hostname, so without a policy `dockerls
         # analyze 169.254.169.254/x` is an outbound request to the cloud
@@ -124,6 +129,8 @@ class RegistryInspector:
                     guard=self._guard,
                     username=username,
                     password=password,
+                    max_attempts=self._max_attempts,
+                    backoff_base=self._backoff_base,
                 )
                 self._clients[host] = client
             return client

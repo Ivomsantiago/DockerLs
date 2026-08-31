@@ -5,6 +5,22 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] -- 2026-08-31
+
+### Changed
+- Standardized retry policy + rate limiting + circuit breaking (the same
+  pattern already used by `DockerHubClient`, `EndOfLifeChecker` and
+  `DHICatalogClient`) into the remaining direct HTTP clients:
+  `OCIRegistryClient` (generic OCI Distribution V2, used by public
+  registries and `--source private`), `ThreatIntelClient` (CISA KEV + FIRST
+  EPSS), and `ExploitDBClient`. A transient network error or 5xx is now
+  retried with exponential backoff instead of failing the lookup outright,
+  a token bucket paces bursts of concurrent lookups against the same
+  provider, and a circuit breaker stops calling a provider that is
+  consistently failing instead of repeating a doomed request. Every
+  provider's existing "unavailable" contract is unchanged: a source that
+  cannot be reached still degrades to `unknown`, never to a false negative.
+
 ## [1.0.3] -- 2026-08-31
 
 ### Security

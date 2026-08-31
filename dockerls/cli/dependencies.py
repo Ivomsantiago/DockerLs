@@ -170,7 +170,12 @@ def _threat_intel() -> ThreatIntelClient | None:
     s = _settings()
     if not s.enable_threat_intel:
         return None
-    return ThreatIntelClient(timeout=s.http_timeout, cache=build_cache())
+    return ThreatIntelClient(
+        timeout=s.http_timeout,
+        cache=build_cache(),
+        max_attempts=s.retry_max_attempts,
+        backoff_base=s.retry_backoff_base,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -187,7 +192,13 @@ def _exploitdb() -> ExploitDBClient | None:
     s = _settings()
     if not s.enable_threat_intel:
         return None
-    return ExploitDBClient(timeout=s.http_timeout, cache=build_cache(), guard=build_host_guard())
+    return ExploitDBClient(
+        timeout=s.http_timeout,
+        cache=build_cache(),
+        guard=build_host_guard(),
+        max_attempts=s.retry_max_attempts,
+        backoff_base=s.retry_backoff_base,
+    )
 
 
 def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
@@ -213,7 +224,12 @@ def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
             name="chainguard",
             label=CHAINGUARD,
             build=_source_builder(
-                lambda: ChainguardRepository(timeout=s.http_timeout, guard=build_host_guard())
+                lambda: ChainguardRepository(
+                    timeout=s.http_timeout,
+                    guard=build_host_guard(),
+                    max_attempts=s.retry_max_attempts,
+                    backoff_base=s.retry_backoff_base,
+                )
             ),
             default_enabled=s.include_hardened_sources,
             description="Chainguard free tier (cgr.dev)",
@@ -224,7 +240,12 @@ def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
             name="distroless",
             label=DISTROLESS,
             build=_source_builder(
-                lambda: DistrolessRepository(timeout=s.http_timeout, guard=build_host_guard())
+                lambda: DistrolessRepository(
+                    timeout=s.http_timeout,
+                    guard=build_host_guard(),
+                    max_attempts=s.retry_max_attempts,
+                    backoff_base=s.retry_backoff_base,
+                )
             ),
             default_enabled=s.include_hardened_sources,
             description="Google Distroless (gcr.io/distroless)",
@@ -272,6 +293,8 @@ def build_source_registry(cache: SQLiteCache | None = None) -> SourceRegistry:
                         guard=build_host_guard(),
                         username=s.private_registry_username,
                         password=s.private_registry_password,
+                        max_attempts=s.retry_max_attempts,
+                        backoff_base=s.retry_backoff_base,
                     )
                 ),
                 default_enabled=False,
@@ -474,6 +497,8 @@ def build_hardening_analyzer() -> HardeningAnalyzer:
             timeout=s.http_timeout,
             guard=build_host_guard(),
             credentials=build_registry_credentials(),
+            max_attempts=s.retry_max_attempts,
+            backoff_base=s.retry_backoff_base,
         )
         if s.inspect_image_config
         else None
