@@ -5,6 +5,18 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] -- 2026-08-30
+
+### Changed
+- Fixed a Windows portability bug in the Go engine client (os.killpg/os.getpgid
+  guarded with a sys.platform check).
+- Fixed a cross-Python-patch-version SSRF classification instability in
+  NetworkPolicy (removed reliance on ipaddress.is_reserved for IPv4-mapped
+  addresses).
+- Fixed a bug in the release workflow where Sigstore signature bundles were
+  left in dist/, breaking the PyPI publish step.
+- Fixed stale Portuguese example output in README.md and docs/REFERENCE.md.
+
 ## [1.0.0] -- 2026-08-30
 
 **Primeira versão pública.** A numeração interna usada durante o
