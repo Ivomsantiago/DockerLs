@@ -8,9 +8,23 @@ import httpx
 from loguru import logger
 
 from dockerls.infrastructure.network.guarded_client import guarded_async_client
+from dockerls.utils.rate_limit import CircuitBreaker, CircuitOpenError, RateLimiter
+from dockerls.utils.retry import (
+    DEFAULT_BACKOFF_BASE,
+    DEFAULT_MAX_ATTEMPTS,
+    retry_policy,
+)
 
 if TYPE_CHECKING:
     from dockerls.infrastructure.network.host_guard import HostGuard
+
+#: Requests per second this client paces itself to, per registry host. A
+#: generic OCI registry publishes no documented budget the way Docker Hub
+#: or GitHub do, so this is a conservative default that protects against a
+#: self-inflicted burst (many concurrent tag/candidate lookups against the
+#: same host) rather than a number tuned to any one registry's real limit.
+_REGISTRY_RATE = 10
+_REGISTRY_PERIOD = 1.0
 
 # Cosign and friends publish their signatures, attestations and SBOMs as
 # ordinary tags in the same repository. They are not runnable images, so
@@ -39,6 +53,12 @@ _COMMIT_TAG = re.compile(r"(-[0-9a-f]{32,}$|^[0-9a-f]{32,}$)")
 #: pretending to be one) answering with more than this is not serving
 #: metadata, and the body is discarded rather than parsed.
 MAX_BLOB_BYTES = 8 * 1024 * 1024
+
+#: Safety cap on `Link: rel="next"` pagination of a tag listing. A registry
+#: that always advertises another page -- by bug or by design -- must not
+#: be followed forever; real catalogues, even large ones, finish in a
+#: handful of pages long before this.
+MAX_TAG_PAGES = 50
 
 
 def is_runnable_tag(tag: str) -> bool:
@@ -110,6 +130,8 @@ class OCIRegistryClient:
         *,
         username: str = "",
         password: str = "",
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        backoff_base: float = DEFAULT_BACKOFF_BASE,
     ):
         self._host = host
         self._timeout = timeout
@@ -126,10 +148,19 @@ class OCIRegistryClient:
         # existed.
         self._username = username
         self._password = password
+        self._max_attempts = max_attempts
+        self._backoff_base = backoff_base
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
         self._listings: dict[str, dict[str, Any] | None] = {}
         self._listing_locks: dict[str, asyncio.Lock] = {}
+        # One limiter/breaker per client, i.e. per registry host: a burst of
+        # concurrent candidate lookups against the same registry is paced
+        # rather than fired all at once, and a registry that is down stops
+        # being retried request after request once it has failed enough in
+        # a row.
+        self._limiter = RateLimiter(rate=_REGISTRY_RATE, period=_REGISTRY_PERIOD)
+        self._breaker = CircuitBreaker()
 
     @property
     def host(self) -> str:
@@ -149,6 +180,42 @@ class OCIRegistryClient:
         client, self._client = self._client, None
         if client is not None:
             await client.aclose()
+
+    @staticmethod
+    async def _request_once(
+        client: httpx.AsyncClient, method: str, url: str, headers: dict[str, str]
+    ) -> httpx.Response:
+        """One HTTP request. A 5xx is turned into an exception so the retry
+        policy above it can distinguish "the registry is having a bad
+        moment" from a definitive answer (2xx/4xx), which is returned as-is
+        for the caller to interpret."""
+        resp = await client.request(method, url, headers=headers)
+        if resp.status_code >= 500:
+            resp.raise_for_status()
+        return resp
+
+    async def _request(
+        self, client: httpx.AsyncClient, method: str, url: str, headers: dict[str, str]
+    ) -> httpx.Response:
+        """Retry policy + rate limit + circuit breaker around one request.
+
+        Mirrors the pattern in `DockerHubClient._get_json` and
+        `DHICatalogClient._get_text`: the policy is built fresh per call so
+        `retry_max_attempts`/`retry_backoff_base` reach it, transient
+        failures (network errors, 5xx) are retried, and a registry that
+        keeps failing trips the breaker so further calls fail fast instead
+        of repeating a doomed request.
+        """
+        self._breaker.check(self._host)
+        await self._limiter.acquire()
+        policy = retry_policy(self._max_attempts, self._backoff_base)
+        try:
+            resp: httpx.Response = await policy(self._request_once, client, method, url, headers)
+        except httpx.HTTPError:
+            self._breaker.record_failure()
+            raise
+        self._breaker.record_success()
+        return resp
 
     async def _token(self, client: httpx.AsyncClient, challenge: str) -> str:
         realm, params = parse_www_authenticate(challenge)
@@ -209,20 +276,19 @@ class OCIRegistryClient:
         """
         url = f"https://{self._host}/v2/{path}"
         headers = {"Accept": accept} if accept else {}
+        method = "HEAD" if head else "GET"
         try:
             client = await self._get_client()
-            resp = await client.request("HEAD" if head else "GET", url, headers=headers)
+            resp = await self._request(client, method, url, headers)
             if resp.status_code == 401:
                 token = await self._token(client, resp.headers.get("WWW-Authenticate", ""))
                 if not token:
                     logger.info(f"No anonymous token available for {self._host}/{path}")
                     return None
-                resp = await client.request(
-                    "HEAD" if head else "GET",
-                    url,
-                    headers={**headers, "Authorization": f"Bearer {token}"},
+                resp = await self._request(
+                    client, method, url, {**headers, "Authorization": f"Bearer {token}"}
                 )
-        except (httpx.HTTPError, ValueError) as e:
+        except (httpx.HTTPError, ValueError, CircuitOpenError) as e:
             logger.warning(f"Registry request failed for {self._host}/{path}: {e}")
             return None
 
@@ -236,24 +302,83 @@ class OCIRegistryClient:
             return None
         return resp
 
+    @staticmethod
+    def _next_page_url(resp: httpx.Response, base_url: str) -> str | None:
+        """The absolute URL of the next page, from a `Link: <...>; rel="next"`
+        response header (GHCR, Harbor, Artifactory), or None on the last page.
+
+        `httpx.Response.links` parses the header but leaves a relative
+        target exactly as advertised; it is resolved against the URL that
+        was actually requested, not `self._host` directly, so a registry
+        that names an absolute URL on a different path or port is followed
+        as it asked.
+        """
+        next_link = resp.links.get("next")
+        target = next_link.get("url") if next_link else None
+        if not target:
+            return None
+        return str(httpx.URL(base_url).join(target))
+
     async def _fetch_tags(self, repository: str) -> dict[str, Any] | None:
+        """Fetch every page of `/v2/<repository>/tags/list`, merging `tags`.
+
+        GHCR, Harbor and Artifactory paginate a large tag listing via the
+        `Link` response header rather than returning it all in one body.
+        Followed here, page by page, up to `MAX_TAG_PAGES` -- a registry
+        that always advertises another `next` link (deliberately or by a
+        pagination bug) must not hang this process forever; whatever was
+        gathered up to the cap is returned rather than discarded, with a
+        warning that the listing may be incomplete.
+        """
         url = f"https://{self._host}/v2/{repository}/tags/list"
+        headers: dict[str, str] = {}
         try:
             client = await self._get_client()
-            resp = await client.get(url)
+            resp = await self._request(client, "GET", url, headers)
             if resp.status_code == 401:
                 token = await self._token(client, resp.headers.get("WWW-Authenticate", ""))
                 if not token:
                     logger.warning(f"No anonymous token available for {self._host}")
                     return None
-                resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+                headers = {"Authorization": f"Bearer {token}"}
+                resp = await self._request(client, "GET", url, headers)
 
             if resp.status_code == 404:
                 logger.info(f"Repository not found: {self._host}/{repository}")
                 return None
             resp.raise_for_status()
             payload: dict[str, Any] = resp.json()
+            all_tags = list(payload.get("tags") or [])
+
+            pages = 1
+            page_url = url
+            next_url = self._next_page_url(resp, page_url)
+            while next_url is not None:
+                if pages >= MAX_TAG_PAGES:
+                    logger.warning(
+                        f"Tag listing for {self._host}/{repository} exceeded "
+                        f"{MAX_TAG_PAGES} pages; returning the {len(all_tags)} tags "
+                        "gathered so far instead of following it further"
+                    )
+                    break
+                page_resp = await self._request(client, "GET", next_url, headers)
+                if not page_resp.is_success:
+                    logger.warning(
+                        f"Tag listing page for {self._host}/{repository} answered "
+                        f"{page_resp.status_code}; returning the {len(all_tags)} tags "
+                        "gathered so far"
+                    )
+                    break
+                page_payload = page_resp.json()
+                if not isinstance(page_payload, dict):
+                    break
+                all_tags.extend(page_payload.get("tags") or [])
+                pages += 1
+                page_url = next_url
+                next_url = self._next_page_url(page_resp, page_url)
+
+            payload["tags"] = all_tags
             return payload
-        except (httpx.HTTPError, ValueError) as e:
+        except (httpx.HTTPError, ValueError, CircuitOpenError) as e:
             logger.warning(f"Tag listing failed for {self._host}/{repository}: {e}")
             return None

@@ -97,8 +97,24 @@ CRITICAL findings is a well-configured vulnerable image.</p>
             f"<td>{'Yes' if a.is_eol else 'No'}</td>"
             f"<td>{f'{a.hardening.score:.0f}' if a.hardening.reportable else 'n/a'}</td>"
             f"<td>{f'{a.attack_surface.score:.0f}' if a.attack_surface.reportable else 'n/a'}</td>"
-            f"<td>{_esc(a.confidence.value)}</td></tr>"
+            f"<td>{self._confidence_cell(a)}</td></tr>"
         )
+
+    @staticmethod
+    def _confidence_cell(a: ImageAnalysis) -> str:
+        """The confidence value, with its own reasons -- every row, not
+        only the first UNVERIFIED one in the report.
+
+        A bare "UNVERIFIED" on row two reads as if nothing is wrong, right
+        next to a row that explained itself; the project's own rule against
+        presenting absence of measurement as safety applies here just as
+        much as it does to the first row. `confidence_reasons` is the same
+        field the "Why" section below already reads for the top pick.
+        """
+        cell = _esc(a.confidence.value)
+        if a.confidence_reasons:
+            cell += f' <span class="note">({_esc("; ".join(a.confidence_reasons))})</span>'
+        return cell
 
 
 def _esc(s: str) -> str:

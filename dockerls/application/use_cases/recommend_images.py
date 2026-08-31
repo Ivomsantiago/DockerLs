@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from dockerls.infrastructure.evidence import EvidenceStore
     from dockerls.integrations.exploitdb.client import ExploitDBClient, ExploitEntry
     from dockerls.integrations.threat_intel.client import ThreatIntelClient
+    from dockerls.integrations.threat_intel.osv import OSVClient, OSVEnrichment
 
 # How many ranked candidates are surfaced to the user.
 TOP_N = 5
@@ -87,6 +88,7 @@ class RecommendImagesUseCase:
         hardening: HardeningAnalyzer | None = None,
         resolve_digests: bool = True,
         exploitdb: ExploitDBClient | None = None,
+        osv: OSVClient | None = None,
         scan_budget: int = DEFAULT_SCAN_BUDGET,
     ):
         # Guarded at construction rather than only at the CLI boundary: the
@@ -109,6 +111,7 @@ class RecommendImagesUseCase:
         self._ignored_cves = active_ignored_cve_ids(load_ignore_rules(ignore_path))
         self._threat_intel = threat_intel
         self._exploitdb = exploitdb
+        self._osv = osv
         self._observer: ScanObserver = observer or NullObserver()
         self._cross_validator = cross_validator
         self._evidence = evidence
@@ -143,6 +146,8 @@ class RecommendImagesUseCase:
                 # Uma análise enriquecida com Exploit-DB carrega campos que a
                 # anterior não tinha; servir a antiga esconderia a coluna.
                 "exploitdb" if self._exploitdb is not None else "no-exploitdb",
+                # Same reason: OSV enrichment adds osv_aliases/osv_affected_ranges.
+                "osv" if self._osv is not None else "no-osv",
                 # Which tool, at which version, produced the cached numbers.
                 # Without this the cache served a Trivy result to a run using
                 # Grype, and kept serving results from before a scanner
@@ -477,7 +482,7 @@ class RecommendImagesUseCase:
                     scan = _apply_ignore_rules(scan, self._ignored_cves)
                 if self._threat_intel is not None:
                     scan = await _enrich_with_threat_intel(
-                        scan, self._threat_intel, self._exploitdb
+                        scan, self._threat_intel, self._exploitdb, self._osv
                     )
 
                 product, version = _extract_product_version(image)
@@ -851,10 +856,23 @@ def _exploitdb_fields(entries: list[ExploitEntry] | None, *, available: bool) ->
     }
 
 
+async def _osv_lookup(osv: OSVClient | None, cve_ids: list[str]) -> dict[str, OSVEnrichment]:
+    """Same shape as `_exploitdb_lookup`: an unexpected exception here must
+    degrade this optional source, not the whole enrichment pass."""
+    if osv is None:
+        return {}
+    try:
+        return await osv.enrich(cve_ids)
+    except Exception as e:  # pragma: no cover - o cliente já trata o previsível
+        logger.warning(f"OSV.dev lookup failed, no supplementary data attached: {e}")
+        return {}
+
+
 async def _enrich_with_threat_intel(
     scan: Any,
     threat_intel: ThreatIntelClient,
     exploitdb: ExploitDBClient | None = None,
+    osv: OSVClient | None = None,
 ) -> Any:
     """Tag CRITICAL/HIGH vulnerabilities with CISA KEV / EPSS / Exploit-DB signal.
 
@@ -873,6 +891,14 @@ async def _enrich_with_threat_intel(
     in the wild, Exploit-DB means published exploit code -- so a CVE can
     carry one and not the other.
 
+    OSV.dev rides the same entry point too, but it answers a different kind
+    of question: it never sets a verdict field, only `osv_aliases` and
+    `osv_affected_ranges` -- supplementary identifiers and ranges that
+    complement what Trivy/Grype already reported, never overwrite it. An
+    absent OSV answer for a CVE simply leaves those two fields empty; there
+    is no false-negative to guard against because nothing here asserts
+    "not exploitable" on OSV's behalf.
+
     Enrichment is attempted only for CRITICAL/HIGH findings, so anything
     below stays UNKNOWN by construction -- which is correct: it was not
     looked up.
@@ -885,19 +911,21 @@ async def _enrich_with_threat_intel(
     if not notable_ids:
         return scan
 
-    # As três fontes respondem sobre o mesmo lote de CVEs e não dependem
-    # uma da outra -- pedi-las em sequência somava a latência das três num
+    # As quatro fontes respondem sobre o mesmo lote de CVEs e não dependem
+    # uma da outra -- pedi-las em sequência somava a latência de todas num
     # scan que já espera pelo scanner. Uma falha isolada não derruba as
-    # outras: cada chamada já degrada sozinha para o tri-state UNKNOWN.
-    kev_ids, epss, exploits = await asyncio.gather(
+    # outras: cada chamada já degrada sozinha para o tri-state UNKNOWN (ou,
+    # no caso do OSV, para campos de enriquecimento simplesmente vazios).
+    kev_ids, epss, exploits, osv_data = await asyncio.gather(
         threat_intel.known_exploited(notable_ids),
         threat_intel.epss_scores(notable_ids),
         _exploitdb_lookup(exploitdb, notable_ids),
+        _osv_lookup(osv, notable_ids),
     )
     exploitdb_available = exploitdb is not None and bool(exploitdb.available)
     kev_available = _answered(threat_intel.kev_available, bool(kev_ids))
     epss_available = _answered(threat_intel.epss_available, bool(epss))
-    if not kev_available and not epss_available and not exploitdb_available:
+    if not kev_available and not epss_available and not exploitdb_available and not osv_data:
         # Nothing was learned. Returning the scan untouched leaves every
         # `kev_status` at UNKNOWN, which is exactly what happened.
         logger.warning(
@@ -916,6 +944,7 @@ async def _enrich_with_threat_intel(
         key = v.cve_id.upper()
         listed = key in kev_ids
         score = epss.get(key)
+        osv_enrichment = osv_data.get(key)
         updated.append(
             v.model_copy(
                 update={
@@ -926,6 +955,14 @@ async def _enrich_with_threat_intel(
                     "epss_percentile": threat_intel.percentile_of(key),
                     "threat_intel_timestamp": timestamp,
                     **_exploitdb_fields(exploits.get(key), available=exploitdb_available),
+                    **(
+                        {
+                            "osv_aliases": osv_enrichment.aliases,
+                            "osv_affected_ranges": osv_enrichment.affected_ranges,
+                        }
+                        if osv_enrichment is not None
+                        else {}
+                    ),
                 }
             )
         )

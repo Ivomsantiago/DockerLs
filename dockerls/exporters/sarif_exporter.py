@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from typing import TYPE_CHECKING, Any
@@ -109,6 +110,9 @@ class SARIFExporter(ExporterInterface):
                         # UNVERIFIED verdict belongs to. `properties` is the
                         # spec's extension point, so nothing existing moves.
                         "properties": _image_properties(analysis),
+                        "partialFingerprints": {
+                            "dockerlsFindingId/v1": _finding_fingerprint(vuln, analysis)
+                        },
                     }
                 )
 
@@ -193,6 +197,33 @@ def _image_properties(analysis: ImageAnalysis) -> dict[str, Any]:
     if analysis.attack_surface.reportable:
         properties["attackSurfaceScore"] = analysis.attack_surface.score
     return properties
+
+
+def _finding_fingerprint(vuln: Any, analysis: ImageAnalysis) -> str:
+    """A stable identity for this finding, so GitHub code scanning can track
+    it across separate scans instead of marking it resolved-then-reopened
+    on every run.
+
+    Without a `partialFingerprints` entry, GitHub falls back to matching by
+    location + rule, which shifts under this exporter's own `ruleId` when a
+    finding has no CVE (`DOCKERLS-UNIDENTIFIED-<package>`) and shifts under
+    the artifact URI whenever a tag is re-resolved. The tuple here --
+    CVE-ID, package name, image digest -- is what actually names "the same
+    vulnerability, in the same package, in the same immutable image" across
+    runs; a tag or a rule-grouping detail changing must not reset it.
+
+    SHA-256, truncated to 16 hex characters: enough entropy that two
+    distinct findings colliding is not a practical concern, short enough
+    that the field reads as an identifier rather than a raw digest.
+    """
+    identity = "|".join(
+        [
+            (vuln.cve_id or "").strip().upper(),
+            (vuln.package_name or "").strip().lower(),
+            analysis.image.digest or "",
+        ]
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
 
 def _rule_id(vuln: Any) -> str:

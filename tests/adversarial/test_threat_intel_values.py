@@ -158,6 +158,95 @@ class TestKevPlausibility:
         assert client.kev_available is False
 
 
+class TestKevHttpErrorPaths:
+    """Every failure mode a real feed can hand back -- not just "unreachable"
+    -- must degrade `kev_status` to UNKNOWN, never to a false "not in KEV".
+    `max_attempts=1` keeps each of these a sustained failure rather than
+    exercising the retry policy, which has its own tests."""
+
+    @pytest.mark.asyncio
+    async def test_a_401_is_a_failed_lookup(self):
+        client = ThreatIntelClient(max_attempts=1)
+        resp = httpx.Response(401, text="Unauthorized", request=httpx.Request("GET", "https://x"))
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            assert await client.known_exploited(["CVE-2024-0001"]) == set()
+        assert client.kev_available is False
+
+    @pytest.mark.asyncio
+    async def test_a_403_is_a_failed_lookup(self):
+        client = ThreatIntelClient(max_attempts=1)
+        resp = httpx.Response(403, text="Forbidden", request=httpx.Request("GET", "https://x"))
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            assert await client.known_exploited(["CVE-2024-0001"]) == set()
+        assert client.kev_available is False
+
+    @pytest.mark.asyncio
+    async def test_a_503_is_a_failed_lookup(self):
+        client = ThreatIntelClient(max_attempts=1)
+        resp = httpx.Response(
+            503, text="Service Unavailable", request=httpx.Request("GET", "https://x")
+        )
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            assert await client.known_exploited(["CVE-2024-0001"]) == set()
+        assert client.kev_available is False
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_is_a_failed_lookup(self):
+        """A 200 whose body is not valid JSON at all -- distinct from valid
+        JSON with the wrong shape, covered above."""
+        client = ThreatIntelClient(max_attempts=1)
+        resp = httpx.Response(
+            200, text="{not valid json", request=httpx.Request("GET", "https://x")
+        )
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            assert await client.known_exploited(["CVE-2024-0001"]) == set()
+        assert client.kev_available is False
+
+
+class TestEpssHttpErrorPaths:
+    """Same failure modes, for the FIRST EPSS feed."""
+
+    @pytest.mark.asyncio
+    async def test_a_401_is_a_failed_lookup(self):
+        client = ThreatIntelClient(max_attempts=1)
+        resp = httpx.Response(401, text="Unauthorized", request=httpx.Request("GET", "https://x"))
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            scores = await client.epss_scores(["CVE-2024-0001"])
+        assert scores == {}
+        assert client.epss_available is False
+
+    @pytest.mark.asyncio
+    async def test_a_403_is_a_failed_lookup(self):
+        client = ThreatIntelClient(max_attempts=1)
+        resp = httpx.Response(403, text="Forbidden", request=httpx.Request("GET", "https://x"))
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            scores = await client.epss_scores(["CVE-2024-0001"])
+        assert scores == {}
+        assert client.epss_available is False
+
+    @pytest.mark.asyncio
+    async def test_a_503_is_a_failed_lookup(self):
+        client = ThreatIntelClient(max_attempts=1)
+        resp = httpx.Response(
+            503, text="Service Unavailable", request=httpx.Request("GET", "https://x")
+        )
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            scores = await client.epss_scores(["CVE-2024-0001"])
+        assert scores == {}
+        assert client.epss_available is False
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_is_a_failed_lookup(self):
+        client = ThreatIntelClient(max_attempts=1)
+        resp = httpx.Response(
+            200, text="{not valid json", request=httpx.Request("GET", "https://x")
+        )
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            scores = await client.epss_scores(["CVE-2024-0001"])
+        assert scores == {}
+        assert client.epss_available is False
+
+
 class TestEpssParsing:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("hostile", ["nan", "-1", "2", "inf", "not-a-number"])

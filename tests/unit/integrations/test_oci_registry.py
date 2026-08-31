@@ -7,7 +7,7 @@ um catálogo hardened entra ou não na recomendação -- não eram.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -159,13 +159,18 @@ class TestListTags:
 
     @pytest.mark.asyncio
     async def test_server_error_returns_none_instead_of_raising(self):
-        """Um registry fora do ar degrada a busca, não derruba o comando."""
+        """Um registry fora do ar degrada a busca, não derruba o comando.
+
+        `max_attempts=1` keeps this a real, sustained failure (every
+        attempt sees the same 503) rather than exercising the retry policy.
+        """
 
         def handler(request):
             return httpx.Response(503)
 
         with _use_handler(handler):
-            assert await OCIRegistryClient("cgr.dev").list_tags("chainguard/node") is None
+            client = OCIRegistryClient("cgr.dev", max_attempts=1)
+            assert await client.list_tags("chainguard/node") is None
 
     @pytest.mark.asyncio
     async def test_network_failure_returns_none(self):
@@ -173,7 +178,48 @@ class TestListTags:
             raise httpx.ConnectError("no route to host")
 
         with _use_handler(handler):
-            assert await OCIRegistryClient("cgr.dev").list_tags("chainguard/node") is None
+            client = OCIRegistryClient("cgr.dev", max_attempts=1)
+            assert await client.list_tags("chainguard/node") is None
+
+    @pytest.mark.asyncio
+    async def test_transient_server_error_is_recovered_by_retry(self):
+        """A 503 followed by a 200 must be recovered transparently -- the
+        whole point of wiring the retry policy into this client."""
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(503)
+            return httpx.Response(200, json={"tags": ["1.0.0"]})
+
+        with _use_handler(handler), patch("asyncio.sleep", new=AsyncMock()):
+            client = OCIRegistryClient("cgr.dev", max_attempts=3, backoff_base=1.1)
+            payload = await client.list_tags("chainguard/node")
+
+        assert payload == {"tags": ["1.0.0"]}
+        assert calls["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_sustained_server_error_opens_the_circuit_breaker(self):
+        """After enough consecutive failures, further calls fail fast
+        instead of repeating a doomed request against the same host."""
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            return httpx.Response(503)
+
+        with _use_handler(handler), patch("asyncio.sleep", new=AsyncMock()):
+            client = OCIRegistryClient("cgr.dev", max_attempts=1, backoff_base=1.1)
+            client._breaker.threshold = 2
+            assert await client.get("chainguard/node/manifests/latest") is None
+            assert await client.get("chainguard/node/manifests/latest") is None
+            calls_before_open = calls["n"]
+            assert await client.get("chainguard/node/manifests/latest") is None
+            # The breaker is now open: this call must not have reached the
+            # network at all.
+            assert calls["n"] == calls_before_open
 
     @pytest.mark.asyncio
     async def test_non_json_body_returns_none(self):
@@ -182,6 +228,58 @@ class TestListTags:
 
         with _use_handler(handler):
             assert await OCIRegistryClient("cgr.dev").list_tags("chainguard/node") is None
+
+
+class TestPagination:
+    """GHCR, Harbor e Artifactory paginam `/tags/list` via `Link: rel="next"`."""
+
+    @pytest.mark.asyncio
+    async def test_all_pages_are_merged(self):
+        pages = {
+            "/v2/org/app/tags/list": (["a", "b"], "/v2/org/app/tags/list?next=2"),
+            "/v2/org/app/tags/list?next=2": (["c", "d"], "/v2/org/app/tags/list?next=3"),
+            "/v2/org/app/tags/list?next=3": (["e"], None),
+        }
+
+        def handler(request):
+            key = request.url.path
+            if request.url.query:
+                key += "?" + request.url.query.decode()
+            tags, next_path = pages[key]
+            headers = {"Link": f'<{next_path}>; rel="next"'} if next_path else {}
+            return httpx.Response(200, json={"name": "org/app", "tags": tags}, headers=headers)
+
+        with _use_handler(handler):
+            payload = await OCIRegistryClient("registry.example.com").list_tags("org/app")
+
+        assert payload is not None
+        assert payload["tags"] == ["a", "b", "c", "d", "e"]
+
+    @pytest.mark.asyncio
+    async def test_a_registry_that_never_stops_paginating_is_capped(self):
+        """A server that always advertises another `next` link must not
+        hang this process forever; whatever was gathered up to the cap is
+        returned instead."""
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            return httpx.Response(
+                200,
+                json={"tags": [f"tag-{calls['n']}"]},
+                headers={"Link": '</v2/org/app/tags/list?forever=1>; rel="next"'},
+            )
+
+        with _use_handler(handler):
+            payload = await OCIRegistryClient("registry.example.com").list_tags("org/app")
+
+        assert payload is not None
+        # One initial request plus MAX_TAG_PAGES-1 follow-up pages, capped
+        # rather than unbounded.
+        from dockerls.integrations.registry.oci import MAX_TAG_PAGES
+
+        assert calls["n"] == MAX_TAG_PAGES
+        assert len(payload["tags"]) == MAX_TAG_PAGES
 
 
 class TestHost:

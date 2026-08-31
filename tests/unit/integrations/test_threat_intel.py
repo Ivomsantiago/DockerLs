@@ -25,7 +25,7 @@ class TestThreatIntelClient:
 
     @pytest.mark.asyncio
     async def test_kev_unreachable_degrades_gracefully(self):
-        client = ThreatIntelClient()
+        client = ThreatIntelClient(max_attempts=1)
         with patch(
             "httpx.AsyncClient.get",
             AsyncMock(
@@ -47,7 +47,7 @@ class TestThreatIntelClient:
 
     @pytest.mark.asyncio
     async def test_epss_unreachable_degrades_gracefully(self):
-        client = ThreatIntelClient()
+        client = ThreatIntelClient(max_attempts=1)
         with patch(
             "httpx.AsyncClient.get",
             AsyncMock(
@@ -108,8 +108,14 @@ class TestEpssBatching:
 
     @pytest.mark.asyncio
     async def test_one_failed_batch_does_not_discard_the_others(self):
-        """Sinal parcial ainda é melhor que nenhum."""
-        client = ThreatIntelClient()
+        """Sinal parcial ainda é melhor que nenhum.
+
+        `max_attempts=1` keeps the failing batch a sustained failure -- one
+        attempt, no retry -- so it does not consume the second batch's
+        response and inflate the count this test asserts on. Retry
+        recovery itself has its own test below.
+        """
+        client = ThreatIntelClient(max_attempts=1)
         cve_ids = [f"CVE-2026-{i:05d}" for i in range(150)]
         calls = {"n": 0}
 
@@ -128,6 +134,57 @@ class TestEpssBatching:
             scores = await client.epss_scores(cve_ids)
 
         assert len(scores) == 50
+
+
+class TestRetryRecovery:
+    """A transient 5xx followed by success must be recovered by the retry
+    policy wired into both feeds -- the point of item 2."""
+
+    @pytest.mark.asyncio
+    async def test_kev_recovers_from_a_transient_5xx(self):
+        client = ThreatIntelClient(min_kev_entries=1, max_attempts=3, backoff_base=1.1)
+        kev_payload = {"vulnerabilities": [{"cveID": "CVE-2024-0001"}]}
+        calls = {"n": 0}
+
+        async def fake_get(self, url, **kwargs):
+            calls["n"] += 1
+            request = httpx.Request("GET", url)
+            if calls["n"] == 1:
+                return httpx.Response(503, request=request)
+            return httpx.Response(200, json=kev_payload, request=request)
+
+        with (
+            patch("httpx.AsyncClient.get", fake_get),
+            patch("asyncio.sleep", AsyncMock()),
+        ):
+            result = await client.known_exploited(["CVE-2024-0001"])
+
+        assert result == {"CVE-2024-0001"}
+        assert calls["n"] == 2
+        assert client.kev_available is True
+
+    @pytest.mark.asyncio
+    async def test_epss_recovers_from_a_transient_5xx(self):
+        client = ThreatIntelClient(max_attempts=3, backoff_base=1.1)
+        calls = {"n": 0}
+
+        async def fake_get(self, url, params=None, **kwargs):
+            calls["n"] += 1
+            request = httpx.Request("GET", url)
+            if calls["n"] == 1:
+                return httpx.Response(503, request=request)
+            return httpx.Response(
+                200, json={"data": [{"cve": "CVE-2024-0001", "epss": "0.87"}]}, request=request
+            )
+
+        with (
+            patch("httpx.AsyncClient.get", fake_get),
+            patch("asyncio.sleep", AsyncMock()),
+        ):
+            scores = await client.epss_scores(["CVE-2024-0001"])
+
+        assert scores == {"CVE-2024-0001": 0.87}
+        assert calls["n"] == 2
 
 
 class TestKevIsFetchedOnce:

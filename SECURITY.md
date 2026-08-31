@@ -51,6 +51,12 @@ DockerLs follows these security principles:
 - Timeouts are enforced on all external calls
 - Retry logic uses exponential backoff to avoid overwhelming services
 - Rate limiting is respected
+- Threat-intel enrichment (CISA KEV, FIRST EPSS, Exploit-DB, and OSV.dev)
+  sends the CVE IDs found in a scan to `api.first.org` and `api.osv.dev` to
+  fetch exploitation/advisory signal for them; the KEV and Exploit-DB feeds
+  are downloaded whole and send nothing image-specific. See "Que dados saem
+  da sua máquina" in `docs/REFERENCE.md` for the full outbound-host table,
+  and disable all four with `DOCKERLS_ENABLE_THREAT_INTEL=false`
 
 ### Supply chain
 - Dependencies are pinned in pyproject.toml

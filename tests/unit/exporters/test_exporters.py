@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 
 import pytest
@@ -50,6 +52,65 @@ class TestCSVExporter:
         assert "22-alpine" in output
         assert "Image,Tag,Score" in output
 
+    def test_sanitizes_formula_injection_in_external_fields(self, analysis_result):
+        """A malicious image name starting with '=' must not be interpreted
+        as a formula by Excel/Sheets: it must be prefixed with a leading
+        apostrophe before being written to the CSV cell."""
+        malicious_name = "=cmd|'/c calc'!A1"
+        analysis_result.recommendations[0].image.name = malicious_name
+        exporter = CSVExporter()
+        output = exporter.export_string(analysis_result)
+        rows = list(csv.reader(io.StringIO(output)))
+        header, row = rows[0], rows[1]
+        assert row[header.index("Image")] == f"'{malicious_name}"
+
+    def test_legitimate_name_is_unaffected(self, analysis_result):
+        exporter = CSVExporter()
+        output = exporter.export_string(analysis_result)
+        rows = list(csv.reader(io.StringIO(output)))
+        header, row = rows[0], rows[1]
+        assert row[header.index("Image")] == "node"
+        assert row[header.index("Tag")] == "22-alpine"
+
+
+@pytest.fixture
+def two_unverified_result():
+    """Two UNVERIFIED candidates with *different* reasons, neither of which
+    is the top pick's own "Why" section -- the case that used to lose its
+    context after the first row."""
+    from dockerls.domain.value_objects.confidence import Confidence
+
+    img_a = DockerImage(name="node", tag="20-alpine", is_official=True)
+    scan_a = ScanResult(image_reference="node:20-alpine")
+    analysis_a = ImageAnalysis(
+        image=img_a,
+        scan=scan_a,
+        security_score=0.0,
+        tier="F",
+        remediation_score=0,
+        confidence=Confidence.UNVERIFIED,
+        confidence_reasons=["scan did not complete"],
+    )
+
+    img_b = DockerImage(name="node", tag="22-alpine", is_official=True)
+    scan_b = ScanResult(image_reference="node:22-alpine")
+    analysis_b = ImageAnalysis(
+        image=img_b,
+        scan=scan_b,
+        security_score=0.0,
+        tier="F",
+        remediation_score=0,
+        confidence=Confidence.UNVERIFIED,
+        confidence_reasons=["digest could not be resolved"],
+    )
+
+    return AnalysisResult(
+        query="node",
+        total_tags_scanned=2,
+        baseline_met=False,
+        recommendations=[analysis_a, analysis_b],
+    )
+
 
 class TestHTMLExporter:
     def test_export_string(self, analysis_result):
@@ -59,6 +120,14 @@ class TestHTMLExporter:
         assert "node:22-alpine" in output
         assert "DockerLs" in output
 
+    def test_every_unverified_row_carries_its_own_reason(self, two_unverified_result):
+        """Only the first row's context used to survive; a later UNVERIFIED
+        row showed the bare word with no explanation."""
+        exporter = HTMLExporter()
+        output = exporter.export_string(two_unverified_result)
+        assert "scan did not complete" in output
+        assert "digest could not be resolved" in output
+
 
 class TestMarkdownExporter:
     def test_export_string(self, analysis_result):
@@ -66,6 +135,12 @@ class TestMarkdownExporter:
         output = exporter.export_string(analysis_result)
         assert "# DockerLs" in output
         assert "node:22-alpine" in output
+
+    def test_every_unverified_row_carries_its_own_reason(self, two_unverified_result):
+        exporter = MarkdownExporter()
+        output = exporter.export_string(two_unverified_result)
+        assert "scan did not complete" in output
+        assert "digest could not be resolved" in output
 
 
 class TestSARIFExporter:

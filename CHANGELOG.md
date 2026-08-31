@@ -5,6 +5,96 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.9] -- 2026-08-31
+
+### Added
+- SARIF results now carry a `partialFingerprints.dockerlsFindingId/v1`
+  entry: a stable SHA-256-derived identifier computed from CVE-ID +
+  package name + image digest, truncated to 16 hex characters. Without it,
+  GitHub code scanning matched findings by location and rule alone, which
+  shifts under this exporter's own rule grouping (`DOCKERLS-UNIDENTIFIED-
+  <package>` for a CVE-less finding) and under the artifact URI whenever a
+  tag is re-resolved -- marking the same finding resolved-then-reopened on
+  every scan. The same finding now produces the same fingerprint across
+  separate export calls; a different package, CVE, or image digest
+  produces a different one.
+
+## [1.0.8] -- 2026-08-31
+
+### Fixed
+- `HTMLExporter` and `MarkdownExporter` now repeat the reason for every
+  `UNVERIFIED` row in the results table, not just the first one. Previously
+  only the top-ranked candidate's confidence reasons were shown (in the
+  "Why this image" section); every other row -- including other UNVERIFIED
+  ones -- showed the bare word with no context, which reads as if nothing
+  was wrong right next to a row that explained itself. Both exporters now
+  reuse the existing `confidence_reasons` field per row, the same field
+  already used for the top pick's explanation.
+
+## [1.0.7] -- 2026-08-31
+
+### Added
+- New `OSVClient` (`dockerls/integrations/threat_intel/osv.py`) queries
+  [OSV.dev](https://osv.dev) by CVE-ID to attach supplementary advisory
+  data -- other identifiers (e.g. a GHSA alias) and a human-readable
+  summary of affected version ranges -- to CRITICAL/HIGH findings, as
+  `osv_aliases`/`osv_affected_ranges` on `Vulnerability`. Purely additive:
+  it never re-scores or overwrites what Trivy/Grype already reported, and
+  follows the same retry/rate-limit/circuit-breaker + disk-cache pattern as
+  the existing EPSS client, with "unavailable" degrading to empty fields
+  rather than a false claim. Wired into `analyze`/`recommend` the same
+  best-effort way as CISA KEV/FIRST EPSS/Exploit-DB, gated by the same
+  `DOCKERLS_ENABLE_THREAT_INTEL` switch. Documented in `docs/REFERENCE.md`
+  ("Que dados saem da sua máquina") and `SECURITY.md`.
+
+## [1.0.6] -- 2026-08-31
+
+### Added
+- Explicit test coverage for CISA KEV and FIRST EPSS failure modes in
+  `ThreatIntelClient`: HTTP 401, 403, 503 and malformed (non-JSON) 200
+  responses, for both feeds. Each case asserts `kev_available`/
+  `epss_available` land on `False` and every affected finding stays
+  `unknown`, never a false "not exploited"/"no EPSS signal" -- only a
+  generic "unavailable" case existed before this.
+
+## [1.0.5] -- 2026-08-31
+
+### Added
+- `OCIRegistryClient.list_tags` now follows `Link: <...>; rel="next"`
+  pagination on `/v2/<repository>/tags/list`, merging `tags` across pages
+  instead of returning only the first page -- GHCR, Harbor and Artifactory
+  all page a large tag listing this way. Capped at `MAX_TAG_PAGES` (50): a
+  registry that always advertises another page cannot hang the process
+  forever, and whatever was gathered up to the cap is returned with a
+  warning rather than discarded.
+
+## [1.0.4] -- 2026-08-31
+
+### Changed
+- Standardized retry policy + rate limiting + circuit breaking (the same
+  pattern already used by `DockerHubClient`, `EndOfLifeChecker` and
+  `DHICatalogClient`) into the remaining direct HTTP clients:
+  `OCIRegistryClient` (generic OCI Distribution V2, used by public
+  registries and `--source private`), `ThreatIntelClient` (CISA KEV + FIRST
+  EPSS), and `ExploitDBClient`. A transient network error or 5xx is now
+  retried with exponential backoff instead of failing the lookup outright,
+  a token bucket paces bursts of concurrent lookups against the same
+  provider, and a circuit breaker stops calling a provider that is
+  consistently failing instead of repeating a doomed request. Every
+  provider's existing "unavailable" contract is unchanged: a source that
+  cannot be reached still degrades to `unknown`, never to a false negative.
+
+## [1.0.3] -- 2026-08-31
+
+### Security
+- Fixed CSV injection (formula injection) in `CSVExporter`: cells built from
+  external/attacker-influenceable data (image name, tag, source, digest,
+  pinned reference) that start with `=`, `+`, `-`, `@`, tab, or CR are now
+  prefixed with a leading apostrophe before being written, so Excel/Sheets
+  render them as text instead of evaluating them as a formula when the CSV
+  is opened. Numeric/enum/internal fields (scores, tiers, counts,
+  confidence, EOL status) are untouched.
+
 ## [1.0.2] -- 2026-08-30
 
 ### Changed

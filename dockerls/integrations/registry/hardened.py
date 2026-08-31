@@ -8,6 +8,7 @@ from loguru import logger
 from dockerls.domain.entities.image import DockerImage
 from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
 from dockerls.integrations.registry.oci import OCIRegistryClient, is_runnable_tag
+from dockerls.utils.retry import DEFAULT_BACKOFF_BASE, DEFAULT_MAX_ATTEMPTS
 
 if TYPE_CHECKING:
     from dockerls.infrastructure.network.host_guard import HostGuard
@@ -52,6 +53,8 @@ class HardenedRepository(ImageRepositoryInterface):
         *,
         username: str = "",
         password: str = "",
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        backoff_base: float = DEFAULT_BACKOFF_BASE,
     ):
         # `self.host` is a constant of this class, but the hops that follow
         # it -- redirects and the token realm -- are chosen by the far end,
@@ -63,7 +66,13 @@ class HardenedRepository(ImageRepositoryInterface):
         # for a subclass fronting a registry that actually requires them,
         # like `PrivateRegistryRepository`.
         self._client = OCIRegistryClient(
-            self.host, timeout=timeout, guard=guard, username=username, password=password
+            self.host,
+            timeout=timeout,
+            guard=guard,
+            username=username,
+            password=password,
+            max_attempts=max_attempts,
+            backoff_base=backoff_base,
         )
 
     def repositories_for(self, image_name: str) -> list[str]:

@@ -7,6 +7,13 @@ from typing import TYPE_CHECKING
 import httpx
 from loguru import logger
 
+from dockerls.utils.rate_limit import CircuitBreaker, CircuitOpenError, RateLimiter
+from dockerls.utils.retry import (
+    DEFAULT_BACKOFF_BASE,
+    DEFAULT_MAX_ATTEMPTS,
+    retry_policy,
+)
+
 if TYPE_CHECKING:
     from dockerls.domain.interfaces.cache_store import CacheStoreInterface
 
@@ -15,6 +22,13 @@ if TYPE_CHECKING:
 #: floor an order of magnitude below that discriminates against proxy error
 #: pages and truncated transfers, not against the feed.
 MIN_PLAUSIBLE_KEV_ENTRIES = 100
+
+#: Both feeds are public, unauthenticated APIs with no documented per-client
+#: budget. These are conservative defaults that pace a burst of concurrent
+#: lookups within one run, not numbers derived from either provider's docs.
+_KEV_RATE = 5
+_EPSS_RATE = 10
+_RATE_PERIOD = 1.0
 
 
 def _probability(value: object) -> float | None:
@@ -51,12 +65,23 @@ class ThreatIntelClient:
         timeout: int = 15,
         cache: CacheStoreInterface | None = None,
         min_kev_entries: int = MIN_PLAUSIBLE_KEV_ENTRIES,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        backoff_base: float = DEFAULT_BACKOFF_BASE,
     ):
         self._timeout = timeout
         self._cache = cache
         # Injectable so a test can exercise the parsing path with a small
         # fixture without lowering the floor that protects real runs.
         self._min_kev_entries = min_kev_entries
+        self._max_attempts = max_attempts
+        self._backoff_base = backoff_base
+        # One limiter/breaker per feed: KEV and EPSS are different hosts
+        # with different call shapes (one download vs many small batches),
+        # so a run of failures against one must not throttle the other.
+        self._kev_limiter = RateLimiter(rate=_KEV_RATE, period=_RATE_PERIOD)
+        self._kev_breaker = CircuitBreaker()
+        self._epss_limiter = RateLimiter(rate=_EPSS_RATE, period=_RATE_PERIOD)
+        self._epss_breaker = CircuitBreaker()
         self._kev_ids: set[str] | None = None
         # Whether each feed actually answered during this run. Without this,
         # "no KEV hits" and "the KEV catalogue was unreachable" are the same
@@ -125,11 +150,31 @@ class ThreatIntelClient:
         """True once at least one EPSS batch answered; see `kev_available`."""
         return self._epss_available
 
+    @staticmethod
+    async def _get_raising(client: httpx.AsyncClient, url: str, **kwargs: object) -> httpx.Response:
+        """GET and raise on a non-2xx status, all inside one retryable step.
+
+        A bare `client.get(...)` never raises on a 5xx by itself, so the
+        `raise_for_status()` has to live *inside* the callable the retry
+        policy re-invokes -- otherwise only the network call is retried and
+        a persistent 5xx would be seen (and given up on) after one attempt.
+        """
+        resp = await client.get(url, **kwargs)  # type: ignore[arg-type]
+        resp.raise_for_status()
+        return resp
+
     async def _fetch_kev(self) -> set[str]:
         try:
+            self._kev_breaker.check("CISA KEV")
+        except CircuitOpenError as e:
+            logger.warning(str(e))
+            self._kev_available = False
+            return set()
+        try:
+            await self._kev_limiter.acquire()
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.get(self.KEV_URL)
-                resp.raise_for_status()
+                policy = retry_policy(self._max_attempts, self._backoff_base)
+                resp: httpx.Response = await policy(self._get_raising, client, self.KEV_URL)
                 data = resp.json()
                 entries = data.get("vulnerabilities", [])
                 if not isinstance(entries, list):
@@ -147,6 +192,7 @@ class ThreatIntelClient:
                 # affirmative "not known to be exploited" derived from a
                 # response that was never the catalogue.
                 self._kev_available = len(ids) >= self._min_kev_entries
+                self._kev_breaker.record_success()
                 if ids and not self._kev_available:
                     logger.warning(
                         f"CISA KEV answered with only {len(ids)} entries, far below the "
@@ -156,6 +202,7 @@ class ThreatIntelClient:
                     return set()
                 return ids
         except (httpx.HTTPError, ValueError) as e:
+            self._kev_breaker.record_failure()
             logger.warning(
                 f"CISA KEV catalog unavailable: exploitation status will be UNKNOWN ({e})"
             )
@@ -258,11 +305,19 @@ class ThreatIntelClient:
 
     async def _epss_batch(self, client: httpx.AsyncClient, batch: list[str]) -> dict[str, float]:
         try:
-            resp = await client.get(
+            self._epss_breaker.check("FIRST EPSS")
+        except CircuitOpenError as e:
+            logger.debug(str(e))
+            return {}
+        try:
+            await self._epss_limiter.acquire()
+            policy = retry_policy(self._max_attempts, self._backoff_base)
+            resp: httpx.Response = await policy(
+                self._get_raising,
+                client,
                 self.EPSS_URL,
                 params={"cve": ",".join(batch), "limit": str(len(batch))},
             )
-            resp.raise_for_status()
             data = resp.json()
             scores: dict[str, float] = {}
             for entry in data.get("data", []):
@@ -284,7 +339,9 @@ class ThreatIntelClient:
                 percentile = _probability(entry.get("percentile"))
                 if percentile is not None:
                     self._percentiles[cve] = percentile
+            self._epss_breaker.record_success()
             return scores
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+            self._epss_breaker.record_failure()
             logger.debug(f"EPSS lookup unavailable for {len(batch)} CVEs, continuing without: {e}")
             return {}
