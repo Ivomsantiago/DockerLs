@@ -73,6 +73,45 @@ class TestCSVExporter:
         assert row[header.index("Tag")] == "22-alpine"
 
 
+@pytest.fixture
+def two_unverified_result():
+    """Two UNVERIFIED candidates with *different* reasons, neither of which
+    is the top pick's own "Why" section -- the case that used to lose its
+    context after the first row."""
+    from dockerls.domain.value_objects.confidence import Confidence
+
+    img_a = DockerImage(name="node", tag="20-alpine", is_official=True)
+    scan_a = ScanResult(image_reference="node:20-alpine")
+    analysis_a = ImageAnalysis(
+        image=img_a,
+        scan=scan_a,
+        security_score=0.0,
+        tier="F",
+        remediation_score=0,
+        confidence=Confidence.UNVERIFIED,
+        confidence_reasons=["scan did not complete"],
+    )
+
+    img_b = DockerImage(name="node", tag="22-alpine", is_official=True)
+    scan_b = ScanResult(image_reference="node:22-alpine")
+    analysis_b = ImageAnalysis(
+        image=img_b,
+        scan=scan_b,
+        security_score=0.0,
+        tier="F",
+        remediation_score=0,
+        confidence=Confidence.UNVERIFIED,
+        confidence_reasons=["digest could not be resolved"],
+    )
+
+    return AnalysisResult(
+        query="node",
+        total_tags_scanned=2,
+        baseline_met=False,
+        recommendations=[analysis_a, analysis_b],
+    )
+
+
 class TestHTMLExporter:
     def test_export_string(self, analysis_result):
         exporter = HTMLExporter()
@@ -81,6 +120,14 @@ class TestHTMLExporter:
         assert "node:22-alpine" in output
         assert "DockerLs" in output
 
+    def test_every_unverified_row_carries_its_own_reason(self, two_unverified_result):
+        """Only the first row's context used to survive; a later UNVERIFIED
+        row showed the bare word with no explanation."""
+        exporter = HTMLExporter()
+        output = exporter.export_string(two_unverified_result)
+        assert "scan did not complete" in output
+        assert "digest could not be resolved" in output
+
 
 class TestMarkdownExporter:
     def test_export_string(self, analysis_result):
@@ -88,6 +135,12 @@ class TestMarkdownExporter:
         output = exporter.export_string(analysis_result)
         assert "# DockerLs" in output
         assert "node:22-alpine" in output
+
+    def test_every_unverified_row_carries_its_own_reason(self, two_unverified_result):
+        exporter = MarkdownExporter()
+        output = exporter.export_string(two_unverified_result)
+        assert "scan did not complete" in output
+        assert "digest could not be resolved" in output
 
 
 class TestSARIFExporter:

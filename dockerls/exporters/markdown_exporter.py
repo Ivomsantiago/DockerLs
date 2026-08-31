@@ -35,12 +35,20 @@ class MarkdownExporter(ExporterInterface):
             eol = "Yes" if a.is_eol else "No"
             hardening = f"{a.hardening.score:.0f}" if a.hardening.reportable else "n/a"
             surface = f"{a.attack_surface.score:.0f}" if a.attack_surface.reportable else "n/a"
+            confidence = a.confidence.value
+            # Every row states its own reason, not only the first
+            # UNVERIFIED one -- a bare "UNVERIFIED" on a later row read as
+            # if nothing was wrong with it. `confidence_reasons` is the
+            # same field the "Why this image" section below already reads
+            # for the top pick.
+            if a.confidence_reasons:
+                confidence += f" ({'; '.join(a.confidence_reasons)})"
             lines.append(
                 f"| {a.image.full_reference} | {a.image.source} | {a.security_score} | {a.tier} "
                 f"| {a.scan.critical_count} | {a.scan.high_count} "
                 f"| {a.scan.medium_count} | {a.scan.low_count} "
                 f"| {a.scan.fixable_count} | {a.remediation_score}/100 | {eol} "
-                f"| {hardening} | {surface} | {a.confidence.value} |"
+                f"| {hardening} | {surface} | {confidence} |"
             )
 
         if items:

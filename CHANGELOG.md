@@ -5,6 +5,18 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] -- 2026-08-31
+
+### Fixed
+- `HTMLExporter` and `MarkdownExporter` now repeat the reason for every
+  `UNVERIFIED` row in the results table, not just the first one. Previously
+  only the top-ranked candidate's confidence reasons were shown (in the
+  "Why this image" section); every other row -- including other UNVERIFIED
+  ones -- showed the bare word with no context, which reads as if nothing
+  was wrong right next to a row that explained itself. Both exporters now
+  reuse the existing `confidence_reasons` field per row, the same field
+  already used for the top pick's explanation.
+
 ## [1.0.7] -- 2026-08-31
 
 ### Added
