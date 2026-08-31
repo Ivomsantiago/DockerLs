@@ -5,6 +5,14 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] -- 2026-08-30
+
+### Changed
+- Fixed README images not rendering on PyPI: they used relative paths
+  (docs/assets/*.svg) that only resolve inside the GitHub repo tree, so
+  the PyPI project page showed broken image placeholders. Switched to
+  absolute raw.githubusercontent.com URLs.
+
 ## [1.0.1] -- 2026-08-30
 
 ### Changed
