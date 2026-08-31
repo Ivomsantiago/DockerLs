@@ -54,6 +54,12 @@ _COMMIT_TAG = re.compile(r"(-[0-9a-f]{32,}$|^[0-9a-f]{32,}$)")
 #: metadata, and the body is discarded rather than parsed.
 MAX_BLOB_BYTES = 8 * 1024 * 1024
 
+#: Safety cap on `Link: rel="next"` pagination of a tag listing. A registry
+#: that always advertises another page -- by bug or by design -- must not
+#: be followed forever; real catalogues, even large ones, finish in a
+#: handful of pages long before this.
+MAX_TAG_PAGES = 50
+
 
 def is_runnable_tag(tag: str) -> bool:
     """True for tags that name a distinct image a user would actually pull."""
@@ -296,23 +302,82 @@ class OCIRegistryClient:
             return None
         return resp
 
+    @staticmethod
+    def _next_page_url(resp: httpx.Response, base_url: str) -> str | None:
+        """The absolute URL of the next page, from a `Link: <...>; rel="next"`
+        response header (GHCR, Harbor, Artifactory), or None on the last page.
+
+        `httpx.Response.links` parses the header but leaves a relative
+        target exactly as advertised; it is resolved against the URL that
+        was actually requested, not `self._host` directly, so a registry
+        that names an absolute URL on a different path or port is followed
+        as it asked.
+        """
+        next_link = resp.links.get("next")
+        target = next_link.get("url") if next_link else None
+        if not target:
+            return None
+        return str(httpx.URL(base_url).join(target))
+
     async def _fetch_tags(self, repository: str) -> dict[str, Any] | None:
+        """Fetch every page of `/v2/<repository>/tags/list`, merging `tags`.
+
+        GHCR, Harbor and Artifactory paginate a large tag listing via the
+        `Link` response header rather than returning it all in one body.
+        Followed here, page by page, up to `MAX_TAG_PAGES` -- a registry
+        that always advertises another `next` link (deliberately or by a
+        pagination bug) must not hang this process forever; whatever was
+        gathered up to the cap is returned rather than discarded, with a
+        warning that the listing may be incomplete.
+        """
         url = f"https://{self._host}/v2/{repository}/tags/list"
+        headers: dict[str, str] = {}
         try:
             client = await self._get_client()
-            resp = await self._request(client, "GET", url, {})
+            resp = await self._request(client, "GET", url, headers)
             if resp.status_code == 401:
                 token = await self._token(client, resp.headers.get("WWW-Authenticate", ""))
                 if not token:
                     logger.warning(f"No anonymous token available for {self._host}")
                     return None
-                resp = await self._request(client, "GET", url, {"Authorization": f"Bearer {token}"})
+                headers = {"Authorization": f"Bearer {token}"}
+                resp = await self._request(client, "GET", url, headers)
 
             if resp.status_code == 404:
                 logger.info(f"Repository not found: {self._host}/{repository}")
                 return None
             resp.raise_for_status()
             payload: dict[str, Any] = resp.json()
+            all_tags = list(payload.get("tags") or [])
+
+            pages = 1
+            page_url = url
+            next_url = self._next_page_url(resp, page_url)
+            while next_url is not None:
+                if pages >= MAX_TAG_PAGES:
+                    logger.warning(
+                        f"Tag listing for {self._host}/{repository} exceeded "
+                        f"{MAX_TAG_PAGES} pages; returning the {len(all_tags)} tags "
+                        "gathered so far instead of following it further"
+                    )
+                    break
+                page_resp = await self._request(client, "GET", next_url, headers)
+                if not page_resp.is_success:
+                    logger.warning(
+                        f"Tag listing page for {self._host}/{repository} answered "
+                        f"{page_resp.status_code}; returning the {len(all_tags)} tags "
+                        "gathered so far"
+                    )
+                    break
+                page_payload = page_resp.json()
+                if not isinstance(page_payload, dict):
+                    break
+                all_tags.extend(page_payload.get("tags") or [])
+                pages += 1
+                page_url = next_url
+                next_url = self._next_page_url(page_resp, page_url)
+
+            payload["tags"] = all_tags
             return payload
         except (httpx.HTTPError, ValueError, CircuitOpenError) as e:
             logger.warning(f"Tag listing failed for {self._host}/{repository}: {e}")

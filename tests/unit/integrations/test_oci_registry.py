@@ -230,6 +230,58 @@ class TestListTags:
             assert await OCIRegistryClient("cgr.dev").list_tags("chainguard/node") is None
 
 
+class TestPagination:
+    """GHCR, Harbor e Artifactory paginam `/tags/list` via `Link: rel="next"`."""
+
+    @pytest.mark.asyncio
+    async def test_all_pages_are_merged(self):
+        pages = {
+            "/v2/org/app/tags/list": (["a", "b"], "/v2/org/app/tags/list?next=2"),
+            "/v2/org/app/tags/list?next=2": (["c", "d"], "/v2/org/app/tags/list?next=3"),
+            "/v2/org/app/tags/list?next=3": (["e"], None),
+        }
+
+        def handler(request):
+            key = request.url.path
+            if request.url.query:
+                key += "?" + request.url.query.decode()
+            tags, next_path = pages[key]
+            headers = {"Link": f'<{next_path}>; rel="next"'} if next_path else {}
+            return httpx.Response(200, json={"name": "org/app", "tags": tags}, headers=headers)
+
+        with _use_handler(handler):
+            payload = await OCIRegistryClient("registry.example.com").list_tags("org/app")
+
+        assert payload is not None
+        assert payload["tags"] == ["a", "b", "c", "d", "e"]
+
+    @pytest.mark.asyncio
+    async def test_a_registry_that_never_stops_paginating_is_capped(self):
+        """A server that always advertises another `next` link must not
+        hang this process forever; whatever was gathered up to the cap is
+        returned instead."""
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            return httpx.Response(
+                200,
+                json={"tags": [f"tag-{calls['n']}"]},
+                headers={"Link": '</v2/org/app/tags/list?forever=1>; rel="next"'},
+            )
+
+        with _use_handler(handler):
+            payload = await OCIRegistryClient("registry.example.com").list_tags("org/app")
+
+        assert payload is not None
+        # One initial request plus MAX_TAG_PAGES-1 follow-up pages, capped
+        # rather than unbounded.
+        from dockerls.integrations.registry.oci import MAX_TAG_PAGES
+
+        assert calls["n"] == MAX_TAG_PAGES
+        assert len(payload["tags"]) == MAX_TAG_PAGES
+
+
 class TestHost:
     def test_exposes_the_host_it_was_built_with(self):
         assert OCIRegistryClient("cgr.dev").host == "cgr.dev"

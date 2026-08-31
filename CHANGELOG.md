@@ -5,6 +5,17 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] -- 2026-08-31
+
+### Added
+- `OCIRegistryClient.list_tags` now follows `Link: <...>; rel="next"`
+  pagination on `/v2/<repository>/tags/list`, merging `tags` across pages
+  instead of returning only the first page -- GHCR, Harbor and Artifactory
+  all page a large tag listing this way. Capped at `MAX_TAG_PAGES` (50): a
+  registry that always advertises another page cannot hang the process
+  forever, and whatever was gathered up to the cap is returned with a
+  warning rather than discarded.
+
 ## [1.0.4] -- 2026-08-31
 
 ### Changed
