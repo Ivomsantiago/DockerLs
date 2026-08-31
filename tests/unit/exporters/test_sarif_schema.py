@@ -254,6 +254,66 @@ def test_the_declared_schema_url_is_the_one_that_resolves():
     )
 
 
+# --------------------------------------------------------------------------
+# partialFingerprints
+# --------------------------------------------------------------------------
+
+
+def test_a_result_carries_a_stable_fingerprint():
+    _, doc = _export(_result(_analysis(_vuln())))
+    fingerprints = doc["runs"][0]["results"][0]["partialFingerprints"]
+    fp = fingerprints["dockerlsFindingId/v1"]
+    assert isinstance(fp, str) and fp
+    assert len(fp) == 16
+    assert all(c in "0123456789abcdef" for c in fp)
+
+
+def test_the_same_finding_produces_the_same_fingerprint_across_exports():
+    """The whole point: GitHub code scanning tracks a finding across scans
+    by this value, so it must survive two separate export calls."""
+    image = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "a" * 64)
+    result = _result(_analysis(_vuln(), image=image))
+
+    _, doc1 = _export(result)
+    _, doc2 = _export(result)
+
+    fp1 = doc1["runs"][0]["results"][0]["partialFingerprints"]["dockerlsFindingId/v1"]
+    fp2 = doc2["runs"][0]["results"][0]["partialFingerprints"]["dockerlsFindingId/v1"]
+    assert fp1 == fp2
+
+
+def test_a_different_package_produces_a_different_fingerprint():
+    image = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "a" * 64)
+    result = _result(
+        _analysis(_vuln(package_name="openssl"), _vuln(package_name="zlib"), image=image)
+    )
+    _, doc = _export(result)
+    fps = [r["partialFingerprints"]["dockerlsFindingId/v1"] for r in doc["runs"][0]["results"]]
+    assert fps[0] != fps[1]
+
+
+def test_a_different_cve_produces_a_different_fingerprint():
+    image = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "a" * 64)
+    result = _result(
+        _analysis(_vuln(cve_id="CVE-2024-0001"), _vuln(cve_id="CVE-2024-0002"), image=image)
+    )
+    _, doc = _export(result)
+    fps = [r["partialFingerprints"]["dockerlsFindingId/v1"] for r in doc["runs"][0]["results"]]
+    assert fps[0] != fps[1]
+
+
+def test_a_different_image_digest_produces_a_different_fingerprint():
+    image_a = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "a" * 64)
+    image_b = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "b" * 64)
+    result_a = _result(_analysis(_vuln(), image=image_a))
+    result_b = _result(_analysis(_vuln(), image=image_b))
+    _, doc_a = _export(result_a)
+    _, doc_b = _export(result_b)
+    fp_a = doc_a["runs"][0]["results"][0]["partialFingerprints"]["dockerlsFindingId/v1"]
+    fp_b = doc_b["runs"][0]["results"][0]["partialFingerprints"]["dockerlsFindingId/v1"]
+    assert fp_a != fp_b
+
+
 def test_the_exporter_never_builds_json_by_string_concatenation():
     """A hostile description must be escaped, not interpolated."""
     source = Path(sys.modules[SARIFExporter.__module__].__file__ or "")

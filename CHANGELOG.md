@@ -5,6 +5,20 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.9] -- 2026-08-31
+
+### Added
+- SARIF results now carry a `partialFingerprints.dockerlsFindingId/v1`
+  entry: a stable SHA-256-derived identifier computed from CVE-ID +
+  package name + image digest, truncated to 16 hex characters. Without it,
+  GitHub code scanning matched findings by location and rule alone, which
+  shifts under this exporter's own rule grouping (`DOCKERLS-UNIDENTIFIED-
+  <package>` for a CVE-less finding) and under the artifact URI whenever a
+  tag is re-resolved -- marking the same finding resolved-then-reopened on
+  every scan. The same finding now produces the same fingerprint across
+  separate export calls; a different package, CVE, or image digest
+  produces a different one.
+
 ## [1.0.8] -- 2026-08-31
 
 ### Fixed
