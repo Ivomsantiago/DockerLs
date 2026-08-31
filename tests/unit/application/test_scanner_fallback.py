@@ -9,6 +9,7 @@ verificadas, uma a uma, sem que a segunda ferramenta fosse sequer consultada.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -173,3 +174,62 @@ class TestFactoryWiresTheFallback:
         secondary = await ScannerFactory.create_secondary(primary)
 
         assert isinstance(secondary, GrypeScanner)
+
+
+class _SlowRefresh(ScannerInterface):
+    """A scanner whose DB download takes measurable time, so refresh order
+    can be observed."""
+
+    def __init__(self, name: str, delay: float, log: list[str]):
+        self._name = name
+        self._delay = delay
+        self._log = log
+
+    async def is_available(self) -> bool:
+        return True
+
+    async def scan(self, image_reference: str) -> ScanResult:  # pragma: no cover - unused here
+        raise NotImplementedError
+
+    async def refresh_db(self) -> bool:
+        self._log.append(f"{self._name}-start")
+        await asyncio.sleep(self._delay)
+        self._log.append(f"{self._name}-end")
+        return True
+
+
+class TestFallbackRefreshDbRunsInParallel:
+    """The primary and secondary DB downloads used to run one after the
+    other; a run that never needed the secondary still paid for both in
+    sequence."""
+
+    @pytest.mark.asyncio
+    async def test_both_downloads_overlap(self):
+        log: list[str] = []
+        primary = _SlowRefresh("primary", delay=0.05, log=log)
+        secondary = _SlowRefresh("secondary", delay=0.05, log=log)
+        fallback = FallbackScanner(primary, secondary)
+
+        ok = await fallback.refresh_db()
+
+        assert ok is True
+        # Sequential would read primary-start, primary-end, secondary-start,
+        # secondary-end. Overlapping, secondary starts before primary ends.
+        assert log.index("secondary-start") < log.index("primary-end")
+
+    @pytest.mark.asyncio
+    async def test_primary_result_is_returned_even_if_secondary_fails(self):
+        class _Failing(ScannerInterface):
+            async def is_available(self) -> bool:
+                return True
+
+            async def scan(self, image_reference: str) -> ScanResult:  # pragma: no cover
+                raise NotImplementedError
+
+            async def refresh_db(self) -> bool:
+                return False
+
+        log: list[str] = []
+        fallback = FallbackScanner(_SlowRefresh("primary", 0.0, log), _Failing())
+
+        assert await fallback.refresh_db() is True
