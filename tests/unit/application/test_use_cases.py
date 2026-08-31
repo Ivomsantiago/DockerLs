@@ -429,6 +429,94 @@ class TestVulnTrendDetection:
         assert result.vuln_trend_note == ""
 
 
+class _RecordingObserver:
+    """Records every `phase()` description, in order, for assertions."""
+
+    def __init__(self):
+        self.phases: list[str] = []
+
+    def start(self, total):
+        return None
+
+    def scanning(self, image_reference):
+        return None
+
+    def finished(self, image_reference, ok):
+        return None
+
+    def phase(self, description):
+        self.phases.append(description)
+
+    def phase_result(self, title, facts):
+        return None
+
+
+class _ScannerWithAttemptCallback(MockScanner):
+    """A scanner whose `refresh_db` reports retry attempts, like Trivy's."""
+
+    def __init__(self, attempts_before_success: int = 1):
+        super().__init__()
+        self.attempts_before_success = attempts_before_success
+        self.refresh_calls = 0
+
+    async def refresh_db(self, on_attempt=None):
+        for attempt in range(1, self.attempts_before_success + 1):
+            self.refresh_calls += 1
+            if on_attempt is not None:
+                on_attempt(attempt, self.attempts_before_success)
+        return True
+
+
+class _ScannerWithPlainRefreshDb(MockScanner):
+    """A scanner whose `refresh_db` takes no arguments -- Grype's, and every
+    test double written before the attempt callback existed."""
+
+    def __init__(self):
+        super().__init__()
+        self.refresh_calls = 0
+
+    async def refresh_db(self):
+        self.refresh_calls += 1
+        return True
+
+
+class TestRefreshDbProgress:
+    """`RecommendImagesUseCase` surfaces DB-download retry attempts on the
+    observer when the scanner supports it, and still works when it does
+    not."""
+
+    @pytest.mark.asyncio
+    async def test_attempt_progress_reaches_the_observer(self, tags):
+        scanner = _ScannerWithAttemptCallback(attempts_before_success=2)
+        observer = _RecordingObserver()
+        uc = RecommendImagesUseCase(
+            repository=MockRepo(tags),
+            scanner=scanner,
+            eol_checker=MockEOL(),
+            observer=observer,
+        )
+        await uc.execute("node")
+
+        assert scanner.refresh_calls == 2
+        assert any("attempt 1/2" in p for p in observer.phases)
+        assert any("attempt 2/2" in p for p in observer.phases)
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_db_with_no_on_attempt_parameter_still_runs(self, tags):
+        """TypeError from an incompatible signature falls back to the plain
+        call rather than being mistaken for a scanner failure."""
+        scanner = _ScannerWithPlainRefreshDb()
+        uc = RecommendImagesUseCase(
+            repository=MockRepo(tags),
+            scanner=scanner,
+            eol_checker=MockEOL(),
+        )
+        result = await uc.execute("node")
+
+        assert scanner.refresh_calls == 1
+        assert result.baseline_met is True
+
+
 class TestCompareImages:
     @pytest.mark.asyncio
     async def test_compare(self, tags):

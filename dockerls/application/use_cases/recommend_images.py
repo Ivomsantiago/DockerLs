@@ -192,6 +192,30 @@ class RecommendImagesUseCase:
         self._analysis_fingerprint = self._compute_analysis_fingerprint()
         logger.info(f"Scanner identity for this run: {self._scanner_identity}")
 
+    async def _refresh_db_with_progress(self, refresh_db: Callable[..., Any]) -> bool:
+        """Calls `scanner.refresh_db()`, surfacing retry attempts when the
+        scanner supports it.
+
+        `TrivyScanner.refresh_db` accepts an `on_attempt(attempt, total)`
+        callback so a retry on a transient GHCR error shows up as "attempt
+        2/3" instead of staying invisible until the log file is opened
+        afterwards. Not every `refresh_db` -- Grype's, the fallback
+        scanner's, a test double's -- takes that argument, so it is offered
+        and the `TypeError` from an incompatible signature falls back to the
+        plain call rather than being treated as a scanner failure.
+        """
+
+        def on_attempt(attempt: int, total: int) -> None:
+            self._observer.phase(
+                f"Preparing vulnerability database (attempt {attempt}/{total})"
+            )
+
+        try:
+            result = await refresh_db(on_attempt=on_attempt)
+        except TypeError:
+            result = await refresh_db()
+        return bool(result)
+
     def _cache_key(self, image: DockerImage) -> str:
         """Chaveia a análise pelo **digest** do manifesto, não pela tag.
 
@@ -261,7 +285,10 @@ class RecommendImagesUseCase:
         )
         setup_errors: list[str] = []
         refresh_db = getattr(self._scanner, "refresh_db", None)
-        if callable(refresh_db) and not await refresh_db():
+        db_ready = True
+        if callable(refresh_db):
+            db_ready = await self._refresh_db_with_progress(refresh_db)
+        if not db_ready:
             # O retorno era descartado. Sem a DB pronta, cada worker sai
             # baixando a própria cópia em paralelo e o run inteiro reprova com
             # `init error: DB error` -- uma vez por tag. Registrar a causa raiz

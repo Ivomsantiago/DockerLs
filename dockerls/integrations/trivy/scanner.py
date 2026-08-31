@@ -24,6 +24,7 @@ from dockerls.utils.subprocess_runner import (
 from dockerls.utils.validation import sanitize_image_name
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from dockerls.infrastructure.evidence import EvidenceStore
@@ -162,13 +163,20 @@ class TrivyScanner(ScannerInterface):
     DB_DOWNLOAD_ATTEMPTS = 3
     DB_BACKOFF_SECONDS = 2.0
 
-    async def refresh_db(self) -> bool:
+    async def refresh_db(self, on_attempt: Callable[[int, int], None] | None = None) -> bool:
         """Download the vulnerability DB once, up front, then build the
         per-worker cache dir pool.
 
         Doing the download here (rather than letting the first scan trigger
         it) is what makes `--skip-db-update` safe for every subsequent scan,
         and it removes the single biggest source of cache lock contention.
+
+        `on_attempt(attempt, total)` is called before each attempt, so a
+        caller wired to the CLI's progress display can say "attempt 2/3"
+        instead of leaving a retry on a transient GHCR error invisible until
+        the log file is opened afterwards -- three attempts times an
+        exponential backoff can be the difference between a ten-second wait
+        and a two-minute one, and only the log knew why.
 
         Retorna False quando a DB não ficou pronta -- e isso **importa**: sem
         ela, `_skip_db_update` continua False e cada worker sai baixando a
@@ -177,6 +185,8 @@ class TrivyScanner(ScannerInterface):
         """
         base = self._cache_pool.base_dir
         for attempt in range(1, self.DB_DOWNLOAD_ATTEMPTS + 1):
+            if on_attempt is not None:
+                on_attempt(attempt, self.DB_DOWNLOAD_ATTEMPTS)
             ok, detail = await self._download_db(base)
             if ok:
                 break

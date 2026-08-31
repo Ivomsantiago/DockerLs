@@ -5,6 +5,21 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.11] -- 2026-08-31
+
+### Changed
+- `FallbackScanner.refresh_db` now downloads the primary and secondary
+  vulnerability databases in parallel instead of one after the other. A run
+  that never ends up needing the secondary scanner was still paying for
+  both downloads in sequence, which could add minutes to the setup phase
+  for no benefit.
+- `TrivyScanner.refresh_db` accepts an optional `on_attempt(attempt, total)`
+  callback. `RecommendImagesUseCase` wires it to the progress observer, so a
+  retry on a transient GHCR error now shows as "Preparing vulnerability
+  database (attempt 2/3)" on the terminal instead of only in the log file --
+  three attempts with exponential backoff previously looked identical to a
+  stalled spinner from the outside.
+
 ## [1.0.10] -- 2026-08-31
 
 ### Changed
