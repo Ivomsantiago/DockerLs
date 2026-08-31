@@ -5,6 +5,16 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] -- 2026-08-31
+
+### Added
+- Explicit test coverage for CISA KEV and FIRST EPSS failure modes in
+  `ThreatIntelClient`: HTTP 401, 403, 503 and malformed (non-JSON) 200
+  responses, for both feeds. Each case asserts `kev_available`/
+  `epss_available` land on `False` and every affected finding stays
+  `unknown`, never a false "not exploited"/"no EPSS signal" -- only a
+  generic "unavailable" case existed before this.
+
 ## [1.0.5] -- 2026-08-31
 
 ### Added
