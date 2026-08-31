@@ -5,6 +5,22 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.7] -- 2026-08-31
+
+### Added
+- New `OSVClient` (`dockerls/integrations/threat_intel/osv.py`) queries
+  [OSV.dev](https://osv.dev) by CVE-ID to attach supplementary advisory
+  data -- other identifiers (e.g. a GHSA alias) and a human-readable
+  summary of affected version ranges -- to CRITICAL/HIGH findings, as
+  `osv_aliases`/`osv_affected_ranges` on `Vulnerability`. Purely additive:
+  it never re-scores or overwrites what Trivy/Grype already reported, and
+  follows the same retry/rate-limit/circuit-breaker + disk-cache pattern as
+  the existing EPSS client, with "unavailable" degrading to empty fields
+  rather than a false claim. Wired into `analyze`/`recommend` the same
+  best-effort way as CISA KEV/FIRST EPSS/Exploit-DB, gated by the same
+  `DOCKERLS_ENABLE_THREAT_INTEL` switch. Documented in `docs/REFERENCE.md`
+  ("Que dados saem da sua máquina") and `SECURITY.md`.
+
 ## [1.0.6] -- 2026-08-31
 
 ### Added

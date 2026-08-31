@@ -38,6 +38,7 @@ from dockerls.integrations.registry.hardened import (
 from dockerls.integrations.registry.inspector import RegistryInspector
 from dockerls.integrations.registry.private import PRIVATE_REGISTRY, PrivateRegistryRepository
 from dockerls.integrations.threat_intel.client import ThreatIntelClient
+from dockerls.integrations.threat_intel.osv import OSVClient
 from dockerls.utils.auth import load_credentials
 from dockerls.utils.resources import describe_capacity, recommended_workers
 from dockerls.utils.validation import validate_threshold, validate_workers
@@ -196,6 +197,24 @@ def _exploitdb() -> ExploitDBClient | None:
         timeout=s.http_timeout,
         cache=build_cache(),
         guard=build_host_guard(),
+        max_attempts=s.retry_max_attempts,
+        backoff_base=s.retry_backoff_base,
+    )
+
+
+@lru_cache(maxsize=1)
+def _osv() -> OSVClient | None:
+    """OSV.dev advisory enrichment (aliases, affected ranges), atrás da
+    mesma chave que KEV/EPSS/Exploit-DB -- é a mesma decisão de "quanto
+    threat intel esta execução envia para fora", e quem a desliga não quer
+    que esta fonte fique de fora dela.
+    """
+    s = _settings()
+    if not s.enable_threat_intel:
+        return None
+    return OSVClient(
+        timeout=s.http_timeout,
+        cache=build_cache(),
         max_attempts=s.retry_max_attempts,
         backoff_base=s.retry_backoff_base,
     )
@@ -433,6 +452,7 @@ async def build_recommend_use_case(
         workers=workers,
         threat_intel=_threat_intel(),
         exploitdb=_exploitdb(),
+        osv=_osv(),
         observer=observer,
         cross_validator=CrossValidator(
             secondary,
@@ -527,6 +547,7 @@ async def build_analyze_use_case() -> AnalyzeImageUseCase:
         eol_checker=eol,
         threat_intel=_threat_intel(),
         exploitdb=_exploitdb(),
+        osv=_osv(),
         hardening=build_hardening_analyzer(),
         tag_history=TagHistoryStore(cache),
         scan_history=ScanHistoryStore(cache),

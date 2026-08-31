@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from dockerls.domain.interfaces.scanner import ScannerInterface
     from dockerls.integrations.exploitdb.client import ExploitDBClient
     from dockerls.integrations.threat_intel.client import ThreatIntelClient
+    from dockerls.integrations.threat_intel.osv import OSVClient
 
 
 class AnalyzeImageUseCase:
@@ -40,6 +41,7 @@ class AnalyzeImageUseCase:
         threat_intel: ThreatIntelClient | None = None,
         hardening: HardeningAnalyzer | None = None,
         exploitdb: ExploitDBClient | None = None,
+        osv: OSVClient | None = None,
         tag_history: TagHistoryStore | None = None,
         scan_history: ScanHistoryStore | None = None,
     ):
@@ -50,6 +52,7 @@ class AnalyzeImageUseCase:
         self._threat_intel = threat_intel
         self._hardening = hardening
         self._exploitdb = exploitdb
+        self._osv = osv
         self._tag_history = tag_history
         self._scan_history = scan_history
 
@@ -73,7 +76,9 @@ class AnalyzeImageUseCase:
             if len(filtered) != len(scan.vulnerabilities):
                 scan = scan.model_copy(update={"vulnerabilities": filtered})
         if self._threat_intel is not None:
-            scan = await _enrich_with_threat_intel(scan, self._threat_intel, self._exploitdb)
+            scan = await _enrich_with_threat_intel(
+                scan, self._threat_intel, self._exploitdb, self._osv
+            )
 
         product = name.split("/")[-1]
         match = re.match(r"^\d+(?:\.\d+){0,3}", tag)

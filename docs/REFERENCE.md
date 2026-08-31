@@ -3765,11 +3765,13 @@ Ele não:
 | `endoflife.date` | Nome do produto e versão (`node`, `22`) | Checagem de EOL |
 | `cisa.gov` (KEV) | Nada: o feed inteiro é baixado | Enriquecimento de threat intel |
 | `api.first.org` (EPSS) | **Os IDs de CVE encontrados na imagem** | Enriquecimento de threat intel |
+| `api.osv.dev` (OSV) | **Os IDs de CVE encontrados na imagem** | Enriquecimento de threat intel |
 | Trivy / Grype | A referência da imagem, como argumento | Cada scan |
 
-O único item dessa lista que descreve *a sua* imagem é a consulta ao EPSS, que
-envia IDs de CVE de imagens públicas. Desligue com
-`DOCKERLS_ENABLE_THREAT_INTEL=false` se mesmo isso não for aceitável.
+Os itens dessa lista que descrevem *a sua* imagem são as consultas ao EPSS e
+ao OSV.dev, que enviam IDs de CVE encontrados no scan. Desligue com
+`DOCKERLS_ENABLE_THREAT_INTEL=false` se mesmo isso não for aceitável -- a
+flag desativa as quatro fontes (KEV, EPSS, Exploit-DB e OSV) de uma vez.
 
 **Nunca é enviado:** conteúdo de imagem, camadas, SBOMs, seu Dockerfile, o
 código do seu projeto, nomes de host internos ou credenciais de registry
