@@ -36,6 +36,18 @@ jobs:
         with:
           inputs: dist/*.tar.gz dist/*.whl
 
+      - name: Move Sigstore bundles out of dist/
+        # The signing step above writes each *.sigstore.json next to the
+        # wheel/sdist it signs, inside dist/. gh-action-pypi-publish takes
+        # every file in packages-dir as a distribution to upload, so a
+        # signature bundle left in dist/ makes it fail with
+        # "InvalidDistribution: Unknown distribution format" before it ever
+        # gets to the real packages. The bundles still get attached to the
+        # GitHub Release below, just from their own directory.
+        run: |
+          mkdir -p signatures
+          mv dist/*.sigstore.json signatures/
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
@@ -68,3 +80,4 @@ jobs:
           # consumers can verify `cosign verify-blob` / `gh attestation verify`.
           files: |
             dist/*
+            signatures/*
