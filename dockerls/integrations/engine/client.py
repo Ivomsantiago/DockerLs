@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -198,9 +199,21 @@ class EngineClient:
         """
         if process.returncode is not None:
             return
-        try:
-            os.killpg(os.getpgid(process.pid), 15)
-        except (OSError, ProcessLookupError):
+        # `os.killpg`/`os.getpgid` don't exist on Windows -- not "raise
+        # OSError", the attributes are simply absent from the module there,
+        # which is also why mypy's Windows platform stub has no signature
+        # for them. The `sys.platform` guard (not a try/except) is what
+        # both mypy and the runtime need: mypy narrows on this exact
+        # pattern, and on Windows we never even attempt the POSIX call --
+        # we go straight to `process.kill()`, the portable fallback.
+        if sys.platform != "win32":
+            try:
+                os.killpg(os.getpgid(process.pid), 15)
+            except (OSError, ProcessLookupError):
+                with_fallback = getattr(process, "kill", None)
+                if with_fallback is not None:
+                    with_fallback()
+        else:
             with_fallback = getattr(process, "kill", None)
             if with_fallback is not None:
                 with_fallback()

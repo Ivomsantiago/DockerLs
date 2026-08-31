@@ -139,7 +139,7 @@ class NetworkPolicy:
                 if self.allow_link_local
                 else NetworkDecision.BLOCKED_LINK_LOCAL
             )
-        if _in_any(address, _SPECIAL) or address.is_multicast or address.is_reserved:
+        if _in_any(address, _SPECIAL) or address.is_multicast:
             # Shared/benchmark/reserved space and the carrier-grade NAT block
             # where Alibaba Cloud serves instance credentials
             # (100.100.100.200). None of it hosts a registry, all of it is
@@ -147,6 +147,20 @@ class NetworkPolicy:
             # than folded into `allow_private_networks` -- an operator who
             # turns private networks on to reach 10.0.0.0/8 has not thereby
             # asked for a route to a metadata service.
+            #
+            # `is_reserved` used to be part of this condition and was
+            # removed: for an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`),
+            # its answer has changed between CPython patch releases (a
+            # private embedded address such as `::ffff:10.0.0.5` came back
+            # reserved on some 3.11.x builds and not on others), so the
+            # exact same instability the module comment above already
+            # calls out for `is_global` applied here too, just unnoticed.
+            # Every range this project actually intends to block through
+            # `is_reserved` is already named explicitly in `_SPECIAL`
+            # (TEST-NETs, the 240.0.0.0/4 block, NAT64, discard-only,
+            # documentation) or handled by the embedded-address recursion
+            # above -- a security boundary should not move with the
+            # runtime's patch version.
             return NetworkDecision.BLOCKED_SPECIAL
         if address.is_private:
             return (
