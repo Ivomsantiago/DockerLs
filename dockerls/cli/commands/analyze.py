@@ -15,6 +15,7 @@ from dockerls.application.services.remediation import (
     render_dockerfile_patch,
 )
 from dockerls.cli.dependencies import build_analyze_use_case
+from dockerls.cli.progress import scan_status
 from dockerls.cli.scan_failure import describe_scan_failure
 from dockerls.cli.text import safe
 from dockerls.cli.vulnerability_view import (
@@ -126,7 +127,12 @@ async def _analyze(
 ) -> None:
     use_case = await build_analyze_use_case()
     try:
-        result = await use_case.execute(image)
+        status_msg = (
+            f"Scanning {image}... (first run may take a few minutes: the "
+            "vulnerability database is downloaded once)"
+        )
+        with scan_status(status_msg):
+            result = await use_case.execute(image)
     except ValueError as e:
         console.print(f"[red]Scan failed: {e}[/red]")
         raise typer.Exit(EXIT_ERROR) from e

@@ -224,6 +224,12 @@ async def _recommend(
     # The observer builds its own stderr console; `console` (stdout) is left
     # exclusively for results so the two streams cannot interleave.
     with RichScanObserver(enabled=show_progress) as observer:
+        # Shown before anything else: `build_recommend_use_case` resolves
+        # sources and probes the scanner, which can touch the network
+        # before a single tag is even discovered. Without this line the
+        # terminal stayed blank for that whole stretch -- no spinner, no
+        # text -- which read as a hang rather than as setup in progress.
+        observer.phase("Initializing")
         use_case = await build_recommend_use_case(
             max_critical=max_critical,
             max_high=max_high,
