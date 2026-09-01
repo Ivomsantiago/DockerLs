@@ -36,6 +36,20 @@ class TestParseImages:
         assert digest == ""
         assert archs == []
 
+    def test_images_that_is_not_a_list_is_treated_as_empty(self):
+        """`tag_data.get("images", [])` returns whatever the API answered
+        for that key -- `null` included, since the default only applies
+        when the key is absent. `for img in None` used to raise
+        `TypeError`."""
+        size, digest, arch, archs = DockerHubClient._parse_images(None)
+        assert (size, digest, arch, archs) == (0, "", "amd64", [])
+
+    def test_a_non_dict_entry_is_skipped_not_crashed_on(self):
+        images = ["not-a-dict", {"architecture": "amd64", "size": 5, "digest": "sha256:a"}]
+        size, digest, arch, archs = DockerHubClient._parse_images(images)
+        assert arch == "amd64"
+        assert digest == "sha256:a"
+
 
 class TestSearchTagsPartialResults:
     @pytest.mark.asyncio
@@ -80,6 +94,67 @@ class TestSearchTagsPartialResults:
             tags = await client.search_tags("node", limit=100)
 
         assert tags[0].available_architectures == ["amd64", "arm64"]
+
+
+class TestMalformedResponsesDegradeGracefully:
+    """A well-formed but wrongly-shaped 200 body -- a JSON array where an
+    object is expected, or a body that is not JSON at all -- used to raise
+    past `search_tags`, `get_image_metadata` and `authenticate`: only
+    `httpx.HTTPError` was caught around them, never `ValueError`
+    (`json.JSONDecodeError` is a subclass) or the `AttributeError` from
+    `.get(...)` on a non-dict body."""
+
+    @pytest.mark.asyncio
+    async def test_a_json_array_search_body_returns_no_tags(self):
+        client = DockerHubClient()
+        request = httpx.Request("GET", "https://hub.docker.com/v2/x")
+        resp = httpx.Response(200, json=["not", "an", "object"], request=request)
+        with patch.object(DockerHubClient, "_get_json", AsyncMock(return_value=resp)):
+            tags = await client.search_tags("node", limit=100)
+        assert tags == []
+
+    @pytest.mark.asyncio
+    async def test_a_non_dict_results_entry_is_skipped(self):
+        client = DockerHubClient()
+        page = {"results": ["not-a-dict", {"name": "22-alpine", "images": []}], "next": None}
+        with patch.object(
+            DockerHubClient, "_get_json", AsyncMock(return_value=_response(200, page))
+        ):
+            tags = await client.search_tags("node", limit=100)
+        assert [t.tag for t in tags] == ["22-alpine"]
+
+    @pytest.mark.asyncio
+    async def test_a_non_json_search_body_returns_partial_results(self):
+        client = DockerHubClient()
+        request = httpx.Request("GET", "https://hub.docker.com/v2/x")
+        resp = httpx.Response(200, text="<html>proxy error</html>", request=request)
+        with patch.object(DockerHubClient, "_get_json", AsyncMock(return_value=resp)):
+            tags = await client.search_tags("node", limit=100)
+        assert tags == []
+
+    @pytest.mark.asyncio
+    async def test_a_json_array_metadata_body_returns_none(self):
+        client = DockerHubClient()
+        request = httpx.Request("GET", "https://hub.docker.com/v2/x")
+        resp = httpx.Response(200, json=["not", "an", "object"], request=request)
+        with patch.object(DockerHubClient, "_get_json", AsyncMock(return_value=resp)):
+            assert await client.get_image_metadata("node", "22") is None
+
+    @pytest.mark.asyncio
+    async def test_a_non_json_metadata_body_returns_none(self):
+        client = DockerHubClient()
+        request = httpx.Request("GET", "https://hub.docker.com/v2/x")
+        resp = httpx.Response(200, text="<html>proxy error</html>", request=request)
+        with patch.object(DockerHubClient, "_get_json", AsyncMock(return_value=resp)):
+            assert await client.get_image_metadata("node", "22") is None
+
+    @pytest.mark.asyncio
+    async def test_a_json_array_auth_body_fails_authentication(self):
+        client = DockerHubClient(username="user", token="tok")  # nosec B106
+        request = httpx.Request("POST", "https://hub.docker.com/v2/users/login/")
+        resp = httpx.Response(200, json=["not", "an", "object"], request=request)
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=resp)):
+            assert await client.authenticate() is False
 
 
 class TestRetryAfter:
