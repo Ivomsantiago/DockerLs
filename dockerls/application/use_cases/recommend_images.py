@@ -825,7 +825,6 @@ class RecommendImagesUseCase:
             logger.warning(f"Could not evict cache entry {cache_key}: {e}")
 
     async def _set_cached(self, image: DockerImage, analysis: ImageAnalysis) -> None:
-        key = image.full_reference
         """Persist an analysis, treating a storage failure as a cache miss.
 
         The cache is an optimisation, never a source of truth. Letting a
@@ -835,6 +834,7 @@ class RecommendImagesUseCase:
         SQLite file -- ordinary under the concurrency this use case creates
         -- was enough to make a clean image vanish from the results.
         """
+        key = image.full_reference
         if not self._cache:
             return
         try:
