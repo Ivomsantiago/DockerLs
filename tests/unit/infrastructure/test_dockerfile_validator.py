@@ -866,3 +866,43 @@ class TestTemplateOrigin:
         analysis = DockerfileValidator().analyze(tmp_path)
 
         assert analysis.template_origin is None
+
+
+class TestPlatformFlagIsNotPartOfTheBase:
+    """`FROM --platform=... X` names X. Kept verbatim on the stage, the flag
+    text broke the alias chain (`FROM --platform=$TARGETPLATFORM builder`
+    never matched `builder`) and leaked into `final_base_image`, which
+    `build --attribute` then handed to a scanner as an image reference."""
+
+    def test_final_base_image_is_the_reference_without_the_flag(self):
+        info = DockerfileParser().parse("FROM --platform=linux/amd64 node:22\nUSER 1\n")
+
+        assert info.final_base_image == "node:22"
+
+    def test_alias_chain_resolves_through_a_platform_flagged_from(self):
+        info = DockerfileParser().parse(
+            "FROM --platform=$BUILDPLATFORM golang:1.23 AS builder\n"
+            "USER app\n"
+            "FROM --platform=$TARGETPLATFORM builder\n"
+        )
+
+        assert info.final_base_image == "golang:1.23"
+        assert info.has_user_directive is True
+        assert info.user_name == "app"
+
+    def test_a_flagged_stage_reference_is_not_a_moving_tag(self, validate):
+        checks = validate(
+            "FROM golang:1.23 AS builder\nFROM --platform=$TARGETPLATFORM builder\nUSER 10001\n"
+        )
+
+        assert checks["base_image_pinned"] == ValidationStatus.PASS
+
+    def test_a_flagged_untagged_base_is_still_a_moving_tag(self):
+        info = DockerfileParser().parse("FROM --platform=linux/amd64 node\nUSER 1\n")
+
+        assert info.uses_latest_tag is True
+
+    def test_the_declared_from_line_keeps_the_flag_for_display(self):
+        info = DockerfileParser().parse("FROM --platform=linux/amd64 node:22\nUSER 1\n")
+
+        assert info.base_images == ["--platform=linux/amd64 node:22"]

@@ -393,16 +393,22 @@ class DockerfileParser:
                 if flag and flag not in self._info.platform_args:
                     self._info.platform_args.append(flag)
             self._info.base_images.append(image)
-            self._stages.append(_Stage(base=image, alias=alias))
+            # O estágio guarda só a referência: com o texto da flag junto,
+            # `FROM --platform=$TARGETPLATFORM builder` não casava com o
+            # alias `builder`, a cadeia de herança do USER quebrava e a base
+            # final saía como `--platform=... builder` -- que depois virava o
+            # alvo de um `trivy image`.
+            reference = self._from_reference(image)
+            self._stages.append(_Stage(base=reference, alias=alias))
             # `FROM builder` referencia um estágio anterior, não um registry:
             # a ausência de tag ali não é um :latest implícito.
             is_stage_reference = any(
-                s.alias and s.alias.lower() == image.lower() for s in self._stages[:-1]
+                s.alias and s.alias.lower() == reference.lower() for s in self._stages[:-1]
             )
             if (
                 not is_stage_reference
                 and not self._is_scratch(image)
-                and self._is_moving_reference(image)
+                and self._is_moving_reference(reference)
             ):
                 self._info.uses_latest_tag = True
 
@@ -535,6 +541,16 @@ class DockerfileParser:
                 self._info.has_secrets_in_build_args = True
                 if arg_name not in self._info.secret_build_args:
                     self._info.secret_build_args.append(arg_name)
+
+    @staticmethod
+    def _from_reference(image: str) -> str:
+        """A referência de um `FROM`, sem as flags que a precedem.
+
+        `FROM --platform=linux/amd64 node:22` nomeia `node:22`; a flag é
+        instrução para o builder, não parte do nome da imagem.
+        """
+        parts = [p for p in image.split() if not p.startswith("--")]
+        return parts[-1] if parts else image
 
     @staticmethod
     def _is_scratch(image: str) -> bool:
