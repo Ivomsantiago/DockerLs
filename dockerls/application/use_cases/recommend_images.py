@@ -275,15 +275,29 @@ class RecommendImagesUseCase:
 
     async def _execute(self, image_name: str, limit: int = 100) -> AnalysisResult:
         await self._identify_scanner()
-        # Named so a slow first run doesn't look like a hang: the database
-        # download this triggers can take a few minutes and has no
-        # sub-progress to report, so the spinner alone would sit still.
-        self._observer.phase("Preparing vulnerability database (first run may take a few minutes)")
         setup_errors: list[str] = []
         refresh_db = getattr(self._scanner, "refresh_db", None)
-        db_ready = True
-        if callable(refresh_db):
-            db_ready = await self._refresh_db_with_progress(refresh_db)
+
+        # The DB download and the tag search touch nothing in common -- one
+        # talks to the scanner's vulnerability feed, the other to the image
+        # registry -- so there is no reason the first minutes-long download
+        # should hold the second off the network. Run them together instead
+        # of one after the other. The phase text is set once, before
+        # either starts: `_refresh_db_with_progress` overwrites it with its
+        # own "attempt N/3" during a retry, which is fine -- that is more
+        # specific than this line, not a contradiction of it.
+        self._observer.phase(
+            f"Preparing vulnerability database and fetching tags for {image_name} "
+            "(first run may take a few minutes)"
+        )
+        db_task = (
+            asyncio.ensure_future(self._refresh_db_with_progress(refresh_db))
+            if callable(refresh_db)
+            else None
+        )
+        tags = await self._repository.search_tags(image_name, limit=limit)
+        db_ready = await db_task if db_task is not None else True
+
         if not db_ready:
             # O retorno era descartado. Sem a DB pronta, cada worker sai
             # baixando a própria cópia em paralelo e o run inteiro reprova com
@@ -295,8 +309,6 @@ class RecommendImagesUseCase:
                 "most likely a consequence of this, not of the images themselves"
             )
 
-        self._observer.phase(f"Fetching tags for {image_name}")
-        tags = await self._repository.search_tags(image_name, limit=limit)
         if not tags:
             return AnalysisResult(
                 query=image_name,

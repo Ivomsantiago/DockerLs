@@ -5,6 +5,29 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.14] -- 2026-09-01
+
+### Changed
+- `RecommendImagesUseCase._execute` no longer waits for the vulnerability
+  database download to finish before searching the registry for tags --
+  the two touch nothing in common (one talks to the scanner's
+  vulnerability feed, the other to the image registry), so they now run
+  concurrently instead of one after the other. On a warm-cache run this
+  overlaps a ~1-2s registry call with an already-fast DB freshness check;
+  on a first run it overlaps the same call with a multi-minute download,
+  which is where the win is largest.
+
+### Reviewed, unchanged
+- Full audit pass: `ruff check`/`ruff format --check`, `mypy --strict`,
+  `bandit`, `pip-audit`, and the full test suite (3956 tests) -- all clean.
+  No new findings; the only bandit findings are the same 3 pre-existing,
+  already-justified low-severity ones (`# noqa` with rationale in
+  `gate.py`/`locator.py`). No dependency vulnerabilities in DockerLs' own
+  declared dependencies (pip-audit's other findings are all in the host
+  environment's system/dev-tooling packages, not project dependencies).
+  No `eval`/`exec`/`shell=True`/unsafe `yaml.load`/bare `except:` anywhere
+  in the codebase.
+
 ## [1.0.13] -- 2026-09-01
 
 ### Changed

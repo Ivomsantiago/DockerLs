@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -515,6 +516,61 @@ class TestRefreshDbProgress:
 
         assert scanner.refresh_calls == 1
         assert result.baseline_met is True
+
+
+class _SlowRefreshScanner(MockScanner):
+    """A scanner whose `refresh_db` takes measurable time, so it can be
+    observed overlapping (or not) with the tag search."""
+
+    def __init__(self, delay: float, log: list[str]):
+        super().__init__()
+        self._delay = delay
+        self._log = log
+
+    async def refresh_db(self, on_attempt=None):
+        self._log.append("db-start")
+        await asyncio.sleep(self._delay)
+        self._log.append("db-end")
+        return True
+
+
+class _SlowRepo(ImageRepositoryInterface):
+    """A repository whose `search_tags` takes measurable time."""
+
+    def __init__(self, tags, delay: float, log: list[str]):
+        self._tags = tags
+        self._delay = delay
+        self._log = log
+
+    async def search_tags(self, image_name, limit=100):
+        self._log.append("tags-start")
+        await asyncio.sleep(self._delay)
+        self._log.append("tags-end")
+        return self._tags[:limit]
+
+    async def get_image_metadata(self, image_name, tag):
+        return None
+
+
+class TestDbRefreshOverlapsTagSearch:
+    """The vulnerability-database download and the tag search touch
+    nothing in common, so they run concurrently instead of one blocking
+    the other -- see `_execute` in `RecommendImagesUseCase`."""
+
+    @pytest.mark.asyncio
+    async def test_both_operations_overlap(self, tags):
+        log: list[str] = []
+        uc = RecommendImagesUseCase(
+            repository=_SlowRepo(tags, delay=0.05, log=log),
+            scanner=_SlowRefreshScanner(delay=0.05, log=log),
+            eol_checker=MockEOL(),
+        )
+        await uc.execute("node")
+
+        # Sequential would read db-start, db-end, tags-start, tags-end (or
+        # the reverse). Overlapping, the second operation starts before
+        # the first ends.
+        assert log.index("tags-start") < log.index("db-end")
 
 
 class TestCompareImages:
