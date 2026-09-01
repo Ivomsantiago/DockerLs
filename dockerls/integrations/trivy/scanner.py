@@ -31,6 +31,12 @@ if TYPE_CHECKING:
     from dockerls.infrastructure.network.host_guard import HostGuard
 
 
+def _safe_list(value: Any) -> list[Any]:
+    """`value` as a list, or `[]` for anything else -- missing key, explicit
+    `null`, or a scalar where Trivy's schema promises an array."""
+    return value if isinstance(value, list) else []
+
+
 class TrivyScanner(ScannerInterface):
     def __init__(
         self,
@@ -367,14 +373,30 @@ class TrivyScanner(ScannerInterface):
                 )
 
     def _parse_results(self, image_ref: str, data: dict[str, Any]) -> ScanResult:
+        """Convert Trivy's JSON into vulnerabilities, without trusting any
+        single field to be present, of the right type, or non-null.
+
+        Trivy's own schema marks most of these fields optional, and a scan
+        that completed cleanly can still report `"Title": null` or omit
+        `Vulnerabilities` on a result with none. A `.get(key, default)` only
+        supplies the default when the key is *missing* -- an explicit
+        `null` sails straight through and breaks on the next `.upper()` or
+        slice, turning a completed scan into an ERROR result. Every read
+        below tolerates a missing key, an explicit null, and (for the two
+        lists) a member that is not the dict shape expected.
+        """
         vulns: list[Vulnerability] = []
-        for result in data.get("Results", []):
+        for result in _safe_list(data.get("Results")):
+            if not isinstance(result, dict):
+                continue
             # `Type` distingue pacote de SO ("alpine", "debian") de pacote de
             # linguagem ("node-pkg", "python-pkg"); `Target` diz onde ele mora.
             pkg_type = str(result.get("Class") or "") or str(result.get("Type") or "")
             target = str(result.get("Target") or "")
-            for v in result.get("Vulnerabilities", []):
-                sev_str = v.get("Severity", "UNKNOWN").upper()
+            for v in _safe_list(result.get("Vulnerabilities")):
+                if not isinstance(v, dict):
+                    continue
+                sev_str = str(v.get("Severity") or "UNKNOWN").upper()
                 try:
                     severity = Severity(sev_str)
                 except ValueError:
@@ -383,15 +405,15 @@ class TrivyScanner(ScannerInterface):
                 score, source = self._extract_cvss(v)
                 vulns.append(
                     Vulnerability(
-                        cve_id=v.get("VulnerabilityID", ""),
+                        cve_id=str(v.get("VulnerabilityID") or ""),
                         severity=severity,
                         cvss_score=score,
                         cvss_source=source,
-                        package_name=v.get("PkgName", ""),
-                        installed_version=v.get("InstalledVersion", ""),
-                        fixed_version=v.get("FixedVersion", ""),
-                        description=v.get("Title", "")[:200],
-                        published_date=v.get("PublishedDate", ""),
+                        package_name=str(v.get("PkgName") or ""),
+                        installed_version=str(v.get("InstalledVersion") or ""),
+                        fixed_version=str(v.get("FixedVersion") or ""),
+                        description=str(v.get("Title") or "")[:200],
+                        published_date=str(v.get("PublishedDate") or ""),
                         package_type=pkg_type,
                         target=target,
                     )
