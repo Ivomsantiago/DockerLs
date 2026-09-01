@@ -18,7 +18,7 @@ from dockerls.application.use_cases.build_image import (
     BuildImageUseCase,
     BuildReport,
 )
-from dockerls.cli.dependencies import enable_console_logging
+from dockerls.cli.dependencies import build_host_guard, enable_console_logging
 from dockerls.cli.progress import scan_status
 from dockerls.cli.publish_prompt import resolve_destination, resolve_identity
 from dockerls.cli.rendering import render_validation_report
@@ -284,7 +284,10 @@ def build(
     # `--fail-on high` não deve sair para a rede consultar KEV, e um build
     # sem portão de exploração não deve consultar nada.
     use_case = BuildImageUseCase(
-        validator, template_provider, threat_intel=_threat_intel_for(fail_on, declared_policy)
+        validator,
+        template_provider,
+        threat_intel=_threat_intel_for(fail_on, declared_policy),
+        guard=build_host_guard(),
     )
 
     # Criar request
