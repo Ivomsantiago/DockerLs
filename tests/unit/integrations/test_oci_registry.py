@@ -249,6 +249,38 @@ class TestListTags:
         with _use_handler(handler):
             assert await OCIRegistryClient("cgr.dev").list_tags("chainguard/node") is None
 
+    @pytest.mark.asyncio
+    async def test_a_json_array_body_returns_none_instead_of_raising(self):
+        """Valid JSON, wrong shape: `.get("tags")` on a list raises
+        `AttributeError`, which the surrounding `except (httpx.HTTPError,
+        ValueError, CircuitOpenError)` does not catch."""
+
+        def handler(request):
+            return httpx.Response(200, json=["not", "an", "object"])
+
+        with _use_handler(handler):
+            assert await OCIRegistryClient("cgr.dev").list_tags("chainguard/node") is None
+
+    @pytest.mark.asyncio
+    async def test_a_json_array_token_body_is_treated_as_no_token(self):
+        """The token endpoint answering with the wrong shape must degrade
+        to "no anonymous token available", not raise `AttributeError` out
+        of `data.get("token")`."""
+
+        def handler(request):
+            if request.url.path == "/token":
+                return httpx.Response(200, json=["not", "an", "object"])
+            if "Authorization" not in request.headers:
+                return httpx.Response(
+                    401, headers={"WWW-Authenticate": 'Bearer realm="https://cgr.dev/token"'}
+                )
+            return httpx.Response(200, json={"tags": ["latest"]})
+
+        with _use_handler(handler):
+            payload = await OCIRegistryClient("cgr.dev").list_tags("chainguard/node")
+
+        assert payload is None
+
 
 class TestPagination:
     """GHCR, Harbor e Artifactory paginam `/tags/list` via `Link: rel="next"`."""

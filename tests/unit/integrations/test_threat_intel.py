@@ -36,6 +36,20 @@ class TestThreatIntelClient:
         assert result == set()
 
     @pytest.mark.asyncio
+    async def test_a_json_array_kev_body_degrades_gracefully(self):
+        """A well-formed JSON array is not the KEV catalogue's object shape.
+        `.get("vulnerabilities", [])` on a list raises `AttributeError`,
+        which the surrounding `except (httpx.HTTPError, ValueError)` did
+        not catch -- turning a malformed but 200-OK response into an
+        unhandled crash instead of an UNKNOWN exploitation status."""
+        client = ThreatIntelClient(max_attempts=1)
+        request = httpx.Request("GET", "https://x")
+        resp = httpx.Response(200, json=["not", "an", "object"], request=request)
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=resp)):
+            result = await client.known_exploited(["CVE-2024-0001"])
+        assert result == set()
+
+    @pytest.mark.asyncio
     async def test_epss_scores_parsed(self):
         client = ThreatIntelClient()
         payload = {"data": [{"cve": "CVE-2024-0001", "epss": "0.87"}]}

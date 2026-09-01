@@ -254,6 +254,13 @@ class OCIRegistryClient:
         resp = await client.get(realm, params=params, auth=auth)
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            # A well-formed but wrongly-shaped body (an array, a bare
+            # string) is as unusable as no body: `.get` on it would raise
+            # `AttributeError`, which the callers' `except (httpx.HTTPError,
+            # ValueError, CircuitOpenError)` does not catch.
+            logger.warning(f"Token endpoint for {self._host} returned a non-object body")
+            return ""
         # Registries disagree on the field name; GCR/ECR use access_token.
         token: str = data.get("token") or data.get("access_token") or ""
         return token
@@ -426,7 +433,15 @@ class OCIRegistryClient:
                 logger.info(f"Repository not found: {self._host}/{repository}")
                 return None, True
             resp.raise_for_status()
-            payload: dict[str, Any] = resp.json()
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                # Same non-dict-body defense as the per-page check below --
+                # `.get` on a list or a bare string raises `AttributeError`,
+                # which is not among the exceptions caught around this call.
+                logger.warning(
+                    f"Tag listing for {self._host}/{repository} returned a non-object body"
+                )
+                return None, True
             all_tags = list(payload.get("tags") or [])
 
             pages = 1

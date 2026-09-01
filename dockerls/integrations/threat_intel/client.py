@@ -176,6 +176,8 @@ class ThreatIntelClient:
                 policy = retry_policy(self._max_attempts, self._backoff_base)
                 resp: httpx.Response = await policy(self._get_raising, client, self.KEV_URL)
                 data = resp.json()
+                if not isinstance(data, dict):
+                    raise ValueError(f"KEV payload was {type(data).__name__}, not an object")
                 entries = data.get("vulnerabilities", [])
                 if not isinstance(entries, list):
                     raise ValueError(f"KEV payload 'vulnerabilities' was {type(entries).__name__}")
