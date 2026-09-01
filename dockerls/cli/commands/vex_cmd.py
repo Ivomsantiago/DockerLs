@@ -82,7 +82,11 @@ def vex(
 
     rendered = document.to_json()
     if output:
-        Path(output).write_text(rendered + "\n", encoding="utf-8")
+        try:
+            Path(output).write_text(rendered + "\n", encoding="utf-8")
+        except OSError as e:
+            console.print(f"[red]Error:[/red] could not write {safe(output)}: {e}")
+            raise typer.Exit(EXIT_ERROR) from e
         diagnostics.print(f"[green]Wrote {len(rules)} statement(s) to {safe(output)}[/green]")
     else:
         console.print(rendered, soft_wrap=True)
