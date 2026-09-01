@@ -9,7 +9,9 @@ derrubar o comando não vale o ganho.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import stat
 from typing import TYPE_CHECKING
 
@@ -149,6 +151,37 @@ class TestAnAnswerThatCannotBeTrusted:
         monkeypatch.setattr("dockerls.integrations.engine.client._ENGINE_OVERHEAD_SECONDS", 0.5)
         client = client_for(tmp_path, "sleep 30\n", timeout_seconds=0.01)
         assert await client.scan_batch(TARGETS, workers=1, cache_dirs=[]) is None
+
+    @pytest.mark.asyncio
+    async def test_cancelling_the_caller_kills_the_engine_instead_of_orphaning_it(self, tmp_path):
+        """`CancelledError` unwinds `asyncio.wait_for` without going through
+        the timeout or OSError branches. Before, that left the engine --
+        started in its own session precisely so a Ctrl-C reaches it --
+        running headless, still holding whatever cache locks it opened."""
+        pid_file = tmp_path / "pid"
+        client = client_for(tmp_path, f"echo $$ > {pid_file}\nsleep 30\n", timeout_seconds=5.0)
+
+        task = asyncio.ensure_future(client.scan_batch(TARGETS, workers=1, cache_dirs=[]))
+        for _ in range(100):
+            if pid_file.exists() and pid_file.read_text().strip():
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("the fake engine never started")
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        pid = int(pid_file.read_text().strip())
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("the engine process was still alive after cancellation")
 
 
 class TestFieldsThatArriveMalformed:

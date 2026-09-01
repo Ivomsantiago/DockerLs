@@ -170,6 +170,16 @@ class EngineClient:
             logger.warning(f"The Go engine failed: {e}")
             await self._kill(process)
             return None
+        except asyncio.CancelledError:
+            # A Ctrl-C or an outer task cancellation (the caller giving up,
+            # a sibling coroutine failing) unwinds this `await` without
+            # going through either except above. Without killing here, the
+            # engine -- started in its own session precisely so a Ctrl-C
+            # reaches it -- keeps running headless, still holding the
+            # per-worker cache locks the pool exists to serialize.
+            logger.warning("Cancelled while waiting for the Go engine; killing it")
+            await self._kill(process)
+            raise
 
         if process.returncode != 0:
             detail = stderr.decode(errors="replace")[:500]
