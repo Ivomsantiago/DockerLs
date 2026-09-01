@@ -55,3 +55,24 @@ def blocked_scan_result(reference: str, scanner: str, reason: str) -> ScanResult
         error_message=reason,
         error_kind=ScanErrorKind.BLOCKED_BY_POLICY,
     )
+
+
+def invalid_reference_scan_result(reference: str, scanner: str, reason: str) -> ScanResult:
+    """The result an unparseable target produces: an error naming *this*
+    reference, not an exception that aborts every other target in the same
+    batch.
+
+    A single malformed entry -- a stray CLI-option lookalike, a name over
+    the length limit -- reaching `sanitize_image_name` inside a batch loop
+    used to raise `ValueError` past the loop entirely, turning one bad tag
+    into a hard failure for every other tag queued alongside it.
+    """
+    logger.warning(f"Refusing to scan {reference!r} with {scanner}: {reason}")
+    return ScanResult(
+        image_reference=reference,
+        scanner=scanner,
+        scan_timestamp=datetime.now(tz=UTC).isoformat(),
+        status=ScanStatus.ERROR,
+        error_message=reason,
+        error_kind=ScanErrorKind.UNKNOWN,
+    )

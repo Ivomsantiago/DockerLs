@@ -143,6 +143,62 @@ class TestThePolicyIsEnforcedBeforeTheBatchIsBuilt:
         ]
 
 
+class TestAnInvalidReferenceDoesNotAbortTheWholeBatch:
+    """`sanitize_image_name` raises `ValueError` on a malformed reference.
+    Unhandled inside the batch loop, that used to abort every other, valid
+    target queued in the same call -- one bad tag failing the whole run."""
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_reference_never_reaches_the_engine(self, tmp_path, monkeypatch):
+        received = tmp_path / "request.json"
+        install_fake_engine(tmp_path, monkeypatch, record_to=received)
+        scanner = TrivyScanner(cache_dir=tmp_path / "cache", workers=2)
+
+        outcome = await scanner.batch.scan_batch(
+            [("node:22-alpine", "sha256:aaa"), ("--offline-scan", "sha256:bbb")]
+        )
+
+        assert outcome is not None
+        request = json.loads(received.read_text(encoding="utf-8"))
+        references = [t["reference"] for t in request["targets"]]
+        assert references == ["node:22-alpine"]
+
+    @pytest.mark.asyncio
+    async def test_the_other_valid_targets_still_get_measured(self, tmp_path, monkeypatch):
+        install_fake_engine(tmp_path, monkeypatch)
+        scanner = TrivyScanner(cache_dir=tmp_path / "cache", workers=2)
+
+        outcome = await scanner.batch.scan_batch(
+            [
+                ("node:22", "sha256:a"),
+                ("--offline-scan", "sha256:b"),
+                ("alpine:3.21", "sha256:c"),
+            ]
+        )
+
+        assert outcome is not None
+        assert [r.image_reference for r in outcome.results] == [
+            "node:22",
+            "--offline-scan",
+            "alpine:3.21",
+        ]
+        assert [r.status is ScanStatus.OK for r in outcome.results] == [True, False, True]
+
+    @pytest.mark.asyncio
+    async def test_the_invalid_target_comes_back_as_an_error_not_an_exception(
+        self, tmp_path, monkeypatch
+    ):
+        install_fake_engine(tmp_path, monkeypatch)
+        scanner = TrivyScanner(cache_dir=tmp_path / "cache", workers=2)
+
+        outcome = await scanner.batch.scan_batch([("--offline-scan", "sha256:bbb")])
+
+        assert outcome is not None
+        result = outcome.results[0]
+        assert result.status is ScanStatus.ERROR
+        assert result.is_verified is False
+
+
 class TestFallingBackToThePythonPipeline:
     @pytest.mark.asyncio
     async def test_no_engine_means_no_batch(self, tmp_path, monkeypatch):
