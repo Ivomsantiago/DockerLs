@@ -124,7 +124,7 @@ def pipeline(scanner_stubs, tmp_path, monkeypatch):
 
     with patch(
         "dockerls.integrations.registry.oci.OCIRegistryClient.list_tags",
-        AsyncMock(side_effect=lambda repository: _registry_payload(repository)),
+        AsyncMock(side_effect=lambda repository, **kwargs: _registry_payload(repository)),
     ):
         yield build, hub, tmp_path
 
