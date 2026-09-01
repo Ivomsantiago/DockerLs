@@ -1718,3 +1718,56 @@ class TestTheGateSeesExploitability:
         assert "Gate failed (kev)" in summary
         assert "Gate failed (epss)" in summary
         assert "[--fail-on critical,kev,epss>=0.5]" in summary
+
+
+class TestDeclaredBases:
+    """`_declared_bases` used to be its own `stripped.split()[1]` parser,
+    which read a `--platform=` flag as the image itself, raised `IndexError`
+    on a bare `FROM`, and never resolved an `ARG`-pinned digest. It now
+    delegates to `parse_bases`, the same parser `dockerls base` uses."""
+
+    def test_a_platform_flag_is_not_read_as_the_image(self, tmp_path):
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text("FROM --platform=linux/amd64 node:22\n")
+
+        bases = BuildImageUseCase._declared_bases(dockerfile)
+
+        assert bases == {"node:22": ""}
+
+    def test_an_inline_digest_is_recorded_as_pinned(self, tmp_path):
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text("FROM node@sha256:" + "a" * 64 + "\n")
+
+        bases = BuildImageUseCase._declared_bases(dockerfile)
+
+        assert bases == {"node": "sha256:" + "a" * 64}
+
+    def test_an_arg_pinned_digest_is_resolved(self, tmp_path):
+        """The old split-based parser only understood an inline `@sha256:`;
+        an `ARG`-pinned digest -- exactly what `dockerls base` writes --
+        always came back unpinned."""
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text("ARG NODE_DIGEST=sha256:" + "b" * 64 + "\nFROM node@${NODE_DIGEST}\n")
+
+        bases = BuildImageUseCase._declared_bases(dockerfile)
+
+        assert bases == {"node": "sha256:" + "b" * 64}
+
+    def test_a_bare_from_with_no_argument_does_not_raise(self, tmp_path):
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text("FROM\nRUN echo hi\n")
+
+        bases = BuildImageUseCase._declared_bases(dockerfile)
+
+        assert bases == {}
+
+    def test_a_moving_tag_is_recorded_with_an_empty_digest(self, tmp_path):
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text("FROM node:22-alpine\n")
+
+        bases = BuildImageUseCase._declared_bases(dockerfile)
+
+        assert bases == {"node:22-alpine": ""}
+
+    def test_an_unreadable_dockerfile_returns_an_empty_dict(self, tmp_path):
+        assert BuildImageUseCase._declared_bases(tmp_path / "missing") == {}

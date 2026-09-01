@@ -1524,19 +1524,22 @@ class BuildImageUseCase:
         Uma base sem digest é uma tag móvel, e registrar isso vale mais do
         que omitir: é exatamente a diferença entre um build reproduzível e um
         que depende do dia.
+
+        Delegado a `parse_bases` -- o mesmo parser que `dockerls base` usa --
+        em vez de um `stripped.split()[1]` ingênuo, que lia
+        `--platform=linux/amd64` como se fosse a própria imagem em
+        `FROM --platform=linux/amd64 node:22`, levantava `IndexError` num
+        `FROM` sem argumento, e nunca resolvia um digest fixado via `ARG`
+        (`FROM base@${DIGEST}`) -- só o inline `@sha256:...`.
         """
-        bases: dict[str, str] = {}
         try:
             content = dockerfile.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            return bases
-        for line in content.splitlines():
-            stripped = line.strip()
-            if not stripped.upper().startswith("FROM "):
-                continue
-            reference = stripped.split()[1]
-            _, separator, digest = reference.partition("@")
-            bases[reference] = digest if separator else ""
+            return {}
+        bases: dict[str, str] = {}
+        for base in parse_bases(content):
+            key = f"{base.name}:{base.tag}" if base.tag else base.name
+            bases[key] = base.digest
         return bases
 
     @staticmethod
