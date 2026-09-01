@@ -153,6 +153,50 @@ def _listing(payload):
     )
 
 
+class TestSearchTagsStopsPaginatingEarly:
+    """`search_tags` asks `OCIRegistryClient.list_tags` to stop paginating
+    once it has found enough runnable candidates, rather than always
+    fetching a full listing -- see `_gathered_enough_runnable_tags`."""
+
+    @pytest.mark.asyncio
+    async def test_a_stop_when_predicate_is_passed_to_list_tags(self):
+        mock = AsyncMock(return_value=CGR_PAYLOAD)
+        with patch("dockerls.integrations.registry.oci.OCIRegistryClient.list_tags", mock):
+            await ChainguardRepository().search_tags("node", limit=3)
+
+        assert mock.await_args is not None
+        stop_when = mock.await_args.kwargs.get("stop_when")
+        assert stop_when is not None, "search_tags must pass stop_when to list_tags"
+
+    @pytest.mark.asyncio
+    async def test_the_predicate_is_satisfied_once_enough_runnable_tags_are_seen(self):
+        from dockerls.integrations.registry.hardened import _gathered_enough_runnable_tags
+
+        predicate = _gathered_enough_runnable_tags(1)
+        junk = ["sha256-aaa.sig"] * 100
+        # Below the threshold even though many raw tags were scanned: none
+        # of them is runnable.
+        assert predicate(junk) is False
+        # A single real tag reaches the (buffered) threshold once enough
+        # runnable ones accumulate.
+        assert predicate(junk + ["latest"] * 20) is True
+
+    @pytest.mark.asyncio
+    async def test_the_predicate_gives_up_after_a_bounded_number_of_raw_tags(self):
+        """A catalogue whose real tags never reach the buffered threshold
+        (Chainguard's free tier: a handful of moving tags, nothing else
+        runnable) must not paginate to `MAX_TAG_PAGES` looking for more."""
+        from dockerls.integrations.registry.hardened import (
+            _STOP_EARLY_MAX_RAW_TAGS,
+            _gathered_enough_runnable_tags,
+        )
+
+        predicate = _gathered_enough_runnable_tags(1000)  # unreachable via runnable tags alone
+        junk = ["sha256-aaa.sig"] * (_STOP_EARLY_MAX_RAW_TAGS - 1)
+        assert predicate(junk) is False
+        assert predicate([*junk, "sha256-bbb.sig"]) is True
+
+
 class TestChainguardRepository:
     @pytest.mark.asyncio
     async def test_returns_only_runnable_tags_tagged_with_its_source(self):

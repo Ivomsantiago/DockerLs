@@ -5,6 +5,37 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.12] -- 2026-09-01
+
+### Changed
+- Fixed `recommend`/`alternatives` taking 10+ seconds even when nothing
+  could be measured. Two independent causes, found by profiling a real run
+  with no scanner installed:
+  - `TrivyScanner.refresh_db` retried 3 times with exponential backoff (6s
+    of pure sleep) even when the failure was `trivy` not being installed at
+    all -- a failure retrying can never fix. It now bails out immediately
+    for a missing binary and keeps the retry/backoff only for failures that
+    can plausibly be transient (network, 5xx, timeout).
+  - `OCIRegistryClient`'s `Link: rel="next"` pagination (added for private
+    registries with many tags) fetched every page of a hardened catalogue's
+    full tag listing before filtering it down to a handful of runnable
+    images. Chainguard's free tier in particular publishes a cosign
+    signature/attestation tag alongside every real one, so `cgr.dev` alone
+    took 6-10s to list `node` -- dozens of pages, almost all of them junk.
+    `list_tags` now accepts a `stop_when(tags)` predicate that ends
+    pagination once enough runnable tags have been seen (with a bounded
+    worst case, so a catalogue whose real tags never reach that count still
+    exits promptly instead of paginating to the cap); `HardenedRepository`
+    uses it. A bounded fetch is still cached, so verifying a candidate
+    `search_tags` just returned costs no extra request, but it never stands
+    in for the complete listing `tag_exists`/`get_image_metadata` need.
+  - Net effect measured against `cgr.dev`: `recommend node` with no scanner
+    installed dropped from 13.6s to 3.3s; `ChainguardRepository().search_tags`
+    alone dropped from 6.7s to 2.2s for the same result.
+  - Also raises the initial page size requested (`?n=1000`) so most
+    repositories -- everywhere but Chainguard's junk-heavy ones -- resolve
+    in a single request regardless.
+
 ## [1.0.11] -- 2026-08-31
 
 ### Changed
