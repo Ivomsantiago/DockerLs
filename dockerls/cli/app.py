@@ -57,6 +57,11 @@ class _Lazy:
     #: `True` quando o objeto é um `typer.Typer` (um subgrupo) em vez de
     #: uma função de comando.
     is_group: bool = False
+    #: Painel em que o `--help` do grupo lista este comando. Com todos os
+    #: comandos numa lista só, achar qual dos 22 usar exigia ler a
+    #: descrição de cada um -- agrupados por o que a pessoa está tentando
+    #: fazer, `--help` já responde "por onde eu começo" sem precisar disso.
+    category: str = ""
 
     def load(self, *, rich_markup_mode: Any) -> _click.Command:
         """Importa o módulo e monta o comando click de verdade."""
@@ -74,6 +79,15 @@ class _Lazy:
         return command
 
 
+#: Painéis do `--help`, na ordem em que uma pessoa nova provavelmente
+#: precisa deles: primeiro descobrir/medir uma imagem, depois construir uma
+#: mais segura, depois provar a cadeia de suprimentos, por último o que só
+#: se usa de vez em quando.
+_FIND = "Find & recommend images"
+_BUILD = "Build & harden Dockerfiles"
+_SUPPLY_CHAIN = "Supply chain"
+_SETUP = "Setup & account"
+
 #: Os subcomandos, na ordem em que aparecem no `--help`.
 COMMANDS: tuple[_Lazy, ...] = (
     _Lazy(
@@ -81,101 +95,158 @@ COMMANDS: tuple[_Lazy, ...] = (
         "search",
         "search",
         "Search for available tags of an image, on Docker Hub or any configured source.",
+        category=_FIND,
     ),
-    _Lazy("recommend", "recommend", "recommend", "Recommend the most secure Docker image tags."),
+    _Lazy(
+        "recommend",
+        "recommend",
+        "recommend",
+        "Recommend the most secure Docker image tags.",
+        category=_FIND,
+    ),
     _Lazy(
         "advisor",
         "advisor",
         "advisor",
         "Security advisor: analyze and provide actionable remediation plan.",
+        category=_FIND,
     ),
     _Lazy(
         "alternatives",
         "alternatives",
         "alternatives",
         "Find safer alternatives to an image you already run, with trade-offs.",
+        category=_FIND,
     ),
-    _Lazy("analyze", "analyze", "analyze", "Deep-analyze a specific Docker image tag."),
+    _Lazy(
+        "analyze",
+        "analyze",
+        "analyze",
+        "Deep-analyze a specific Docker image tag.",
+        category=_FIND,
+    ),
+    _Lazy(
+        "compare",
+        "compare",
+        "compare",
+        "Compare security posture of multiple Docker images.",
+        category=_FIND,
+    ),
+    _Lazy(
+        "export",
+        "export",
+        "export",
+        "Export analysis results in various formats.",
+        category=_FIND,
+    ),
     _Lazy(
         "analyze-dockerfile",
         "analyze_dockerfile",
         "analyze",
         "Analyze a Dockerfile for security problems.",
+        category=_BUILD,
     ),
     _Lazy(
         "base",
         "base_cmd",
         "base",
         "Check the Dockerfile bases against the registry and refresh their digests.",
+        category=_BUILD,
     ),
     _Lazy(
         "base-image",
         "base_image",
         "base_image",
         "Generate the Dockerfile for a base image from a menu of choices.",
+        category=_BUILD,
     ),
     _Lazy(
         "build",
         "build",
         "build",
         "Build secure Docker images with validation, scanning and auto-remediation.",
+        category=_BUILD,
     ),
-    _Lazy("compare", "compare", "compare", "Compare security posture of multiple Docker images."),
     _Lazy(
         "controls",
         "controls",
         "controls",
         "Show the security controls each Dockerfile rule implements.",
+        category=_BUILD,
     ),
     _Lazy(
         "fleet",
         "fleet",
         "fleet",
         "Scan a tree of repositories and summarise the state of its Dockerfiles.",
+        category=_BUILD,
     ),
     _Lazy(
         "policy",
         "policy_cmd",
         "policy",
         "Show and validate the policy declared in `.dockerls-policy.yaml`.",
+        category=_BUILD,
     ),
     _Lazy(
         "provenance",
         "provenance_cmd",
         "provenance",
         "Check a provenance document and prepare the attestation.",
+        category=_SUPPLY_CHAIN,
     ),
     _Lazy(
         "registry-audit",
         "registry_audit_cmd",
         "registry_audit",
         "Establish, through the registry, what is known about a published image.",
+        category=_SUPPLY_CHAIN,
     ),
-    _Lazy("verify", "verify", "verify", "Check an image signature with cosign."),
-    _Lazy("export", "export", "export", "Export analysis results in various formats."),
     _Lazy(
-        "login",
-        "login",
-        "login",
-        "Authenticate with Docker Hub. Credentials are stored in your system keyring.",
+        "verify",
+        "verify",
+        "verify",
+        "Check an image signature with cosign.",
+        category=_SUPPLY_CHAIN,
     ),
-    _Lazy("logout", "login", "logout", "Remove stored Docker Hub credentials."),
-    _Lazy("version", "version", "version", "Show DockerLs version."),
-    _Lazy("doctor", "doctor", "doctor", "Check system dependencies and configuration."),
-    _Lazy("health", "health", "health", "Check connectivity to external services."),
     _Lazy(
         "sbom",
         "sbom",
         "sbom",
         "Generate a Software Bill of Materials (SBOM) for an image via Trivy.",
+        category=_SUPPLY_CHAIN,
+    ),
+    _Lazy(
+        "login",
+        "login",
+        "login",
+        "Authenticate with Docker Hub. Credentials are stored in your system keyring.",
+        category=_SETUP,
+    ),
+    _Lazy("logout", "login", "logout", "Remove stored Docker Hub credentials.", category=_SETUP),
+    _Lazy("version", "version", "version", "Show DockerLs version.", category=_SETUP),
+    _Lazy(
+        "doctor",
+        "doctor",
+        "doctor",
+        "Check system dependencies and configuration.",
+        category=_SETUP,
+    ),
+    _Lazy(
+        "health",
+        "health",
+        "health",
+        "Check connectivity to external services.",
+        category=_SETUP,
     ),
     _Lazy(
         "vex",
         "vex_cmd",
         "vex",
         "Emit this repository's exemptions as an OpenVEX document.",
+        category=_SUPPLY_CHAIN,
     ),
-    _Lazy("cache", "cache_cmd", "cache_app", "Manage scan cache", is_group=True),
+    _Lazy("cache", "cache_cmd", "cache_app", "Manage scan cache", is_group=True, category=_SETUP),
 )
 
 _BY_NAME: dict[str, _Lazy] = {spec.name: spec for spec in COMMANDS}
@@ -191,7 +262,11 @@ class _Stub(TyperCommand):
     """
 
     def __init__(self, spec: _Lazy, rich_markup_mode: Any) -> None:
-        super().__init__(name=spec.name, short_help=spec.summary)
+        super().__init__(
+            name=spec.name,
+            short_help=spec.summary,
+            rich_help_panel=spec.category or None,
+        )
         self._spec = spec
         self._rich_markup_mode = rich_markup_mode
 
@@ -244,7 +319,13 @@ app = typer.Typer(
     name="dockerls",
     cls=_LazyGroup,
     help="DockerLs -- Enterprise Docker Image Security Advisor. "
-    "Discover the most secure Docker images available on Docker Hub.",
+    "Discover the most secure Docker images available on Docker Hub.\n\n"
+    "[bold]Quick start[/bold]\n\n"
+    "  dockerls recommend node        find the safest node image to use\n"
+    "  dockerls analyze node:22       scan one image you already run\n"
+    "  dockerls doctor                check Trivy/Grype are installed\n\n"
+    "Commands below are grouped by what you're trying to do; "
+    "'dockerls COMMAND --help' explains any one of them.",
     no_args_is_help=True,
     pretty_exceptions_enable=False,
 )

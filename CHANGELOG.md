@@ -5,6 +5,21 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.13] -- 2026-09-01
+
+### Changed
+- `dockerls --help` grouped its 22 top-level commands into four panels
+  (Find & recommend images, Build & harden Dockerfiles, Supply chain,
+  Setup & account) and gained a three-line "Quick start" pointing a new
+  user at `recommend`, `analyze` and `doctor`. Previously every command sat
+  in one flat, alphabetically-unordered list with only a one-line summary
+  each -- telling `recommend`, `advisor`, `alternatives`, `analyze` and
+  `compare` apart meant reading all five summaries, and nothing told a
+  first-time user which command to run at all. The lazy command table
+  (`dockerls/cli/app.py`) gained a `category` field per command; grouping
+  is rendered by Typer/rich from that, with no import cost added to
+  `--help`.
+
 ## [1.0.12] -- 2026-09-01
 
 ### Changed
