@@ -78,3 +78,39 @@ class TestNoDebugLeakToTheTerminal:
         captured = capsys.readouterr()
         assert "regression: this must not leak to the terminal" not in captured.err
         assert "regression: this must not leak to the terminal" not in captured.out
+
+
+class TestBootstrapErrorHandling:
+    """A `DOCKERLS_*` value invalid enough to break `Settings()` or the
+    logging sink -- a non-integer `DOCKERLS_MAX_TAGS`, a `DOCKERLS_LOG_LEVEL`
+    loguru does not recognise -- used to reach the user as a raw pydantic or
+    loguru traceback, on every command, before a single line of application
+    code ran."""
+
+    def test_an_invalid_max_tags_value_is_reported_cleanly(self, monkeypatch):
+        monkeypatch.setenv("DOCKERLS_MAX_TAGS", "not-a-number")
+
+        result = runner.invoke(app, ["version"])
+
+        assert result.exit_code == 1
+        # A clean `typer.Exit` becomes `SystemExit(1)` here, not a raw
+        # pydantic/loguru traceback -- that distinction is the fix.
+        assert isinstance(result.exception, SystemExit)
+        assert "Error" in result.output
+        assert "DOCKERLS_MAX_TAGS" in result.output
+
+    def test_an_invalid_log_level_is_reported_cleanly(self, monkeypatch):
+        monkeypatch.setenv("DOCKERLS_LOG_LEVEL", "NOPE")
+
+        result = runner.invoke(app, ["version"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "Error" in result.output
+
+    def test_valid_configuration_is_unaffected(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("DOCKERLS_LOG_DIR", str(tmp_path))
+
+        result = runner.invoke(app, ["version"])
+
+        assert result.exit_code == 0
