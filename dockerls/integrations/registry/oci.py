@@ -16,6 +16,8 @@ from dockerls.utils.retry import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from dockerls.infrastructure.network.host_guard import HostGuard
 
 #: Requests per second this client paces itself to, per registry host. A
@@ -59,6 +61,17 @@ MAX_BLOB_BYTES = 8 * 1024 * 1024
 #: be followed forever; real catalogues, even large ones, finish in a
 #: handful of pages long before this.
 MAX_TAG_PAGES = 50
+
+#: Requested page size for the *first* tag listing request. The Distribution
+#: v2 spec's `?n=<count>` is the registry's own paging control, and without
+#: it a repository falls back to whatever the registry's default page is --
+#: as few as a few dozen tags per page for some hosts. `cgr.dev` in
+#: particular publishes hundreds of tags per repository, which turned a
+#: single-page request into a dozen-plus sequential round trips once
+#: pagination started being followed. Asking for a large page up front
+#: collapses that back to one request for the overwhelming majority of
+#: repositories; `MAX_TAG_PAGES` still guards the rest.
+INITIAL_PAGE_SIZE = 1000
 
 
 def is_runnable_tag(tag: str) -> bool:
@@ -154,6 +167,14 @@ class OCIRegistryClient:
         self._client_lock = asyncio.Lock()
         self._listings: dict[str, dict[str, Any] | None] = {}
         self._listing_locks: dict[str, asyncio.Lock] = {}
+        # Repositories whose cached listing is known-complete (fetched
+        # without a `stop_when`, or one whose last page had no `next`
+        # link). A repository *absent* from this set but present in
+        # `_listings` was cached from a `stop_when`-bounded fetch that
+        # stopped before the end -- reusable for a later call whose own
+        # `stop_when` is already satisfied by it, but not authoritative for
+        # a call that wants the full listing.
+        self._complete: set[str] = set()
         # One limiter/breaker per client, i.e. per registry host: a burst of
         # concurrent candidate lookups against the same registry is paced
         # rather than fired all at once, and a registry that is down stops
@@ -237,25 +258,68 @@ class OCIRegistryClient:
         token: str = data.get("token") or data.get("access_token") or ""
         return token
 
-    async def list_tags(self, repository: str) -> dict[str, Any] | None:
+    async def list_tags(
+        self,
+        repository: str,
+        *,
+        stop_when: Callable[[Sequence[str]], bool] | None = None,
+    ) -> dict[str, Any] | None:
         """Return the raw `/v2/<repository>/tags/list` payload, or None when
         the repository does not exist or cannot be reached.
 
         Memoised per repository for the lifetime of this client, including
         the `None` outcome: a repository that does not exist should be asked
         about once, not once per candidate.
+
+        `stop_when(tags)` is checked after every page and, when it returns
+        True, pagination stops there instead of continuing to
+        `MAX_TAG_PAGES`. Some catalogues (Chainguard's in particular) list
+        cosign signature/attestation tags alongside real ones, so a
+        repository with a handful of runnable images can still take dozens
+        of pages to list in full -- and a caller that only needs a handful
+        of tags has no reason to pay for the rest.
+
+        A `stop_when`-bounded fetch is cached too -- so `tag_exists` on a
+        tag `search_tags` just returned still costs nothing extra -- but
+        only as *sufficient for a predicate already satisfied by it*: it is
+        not a complete listing, and a later caller that wants the full one
+        (`stop_when=None`, or a predicate this cache does not already
+        satisfy) triggers a fresh fetch rather than silently answering from
+        a truncated cache.
         """
-        if repository in self._listings:
-            return self._listings[repository]
+        cached, has_cached = self._cached_if_usable(repository, stop_when)
+        if has_cached:
+            return cached
 
         lock = self._listing_locks.setdefault(repository, asyncio.Lock())
         async with lock:
             # A concurrent caller may have filled it while we waited.
-            if repository in self._listings:
-                return self._listings[repository]
-            payload = await self._fetch_tags(repository)
+            cached, has_cached = self._cached_if_usable(repository, stop_when)
+            if has_cached:
+                return cached
+            payload, complete = await self._fetch_tags(repository, stop_when=stop_when)
             self._listings[repository] = payload
+            if complete:
+                self._complete.add(repository)
+            else:
+                self._complete.discard(repository)
             return payload
+
+    def _cached_if_usable(
+        self, repository: str, stop_when: Callable[[Sequence[str]], bool] | None
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """The cached listing for `repository` if it answers this call, and
+        whether one was found at all (`None` is itself a valid cached
+        answer -- "confirmed missing" -- so it cannot double as "no
+        entry")."""
+        if repository not in self._listings:
+            return None, False
+        cached = self._listings[repository]
+        if repository in self._complete or cached is None:
+            return cached, True
+        if stop_when is not None and stop_when(cached.get("tags") or []):
+            return cached, True
+        return None, False
 
     async def get(
         self,
@@ -319,7 +383,12 @@ class OCIRegistryClient:
             return None
         return str(httpx.URL(base_url).join(target))
 
-    async def _fetch_tags(self, repository: str) -> dict[str, Any] | None:
+    async def _fetch_tags(
+        self,
+        repository: str,
+        *,
+        stop_when: Callable[[Sequence[str]], bool] | None = None,
+    ) -> tuple[dict[str, Any] | None, bool]:
         """Fetch every page of `/v2/<repository>/tags/list`, merging `tags`.
 
         GHCR, Harbor and Artifactory paginate a large tag listing via the
@@ -329,8 +398,18 @@ class OCIRegistryClient:
         pagination bug) must not hang this process forever; whatever was
         gathered up to the cap is returned rather than discarded, with a
         warning that the listing may be incomplete.
+
+        `stop_when`, when given, is also checked after every page and ends
+        the fetch early -- see `list_tags` for why a caller would want that.
+
+        Returns `(payload, complete)`. `complete` is True when `stop_when`
+        was never given (the caller wanted everything, so whatever came
+        back is treated as authoritative, same as before `stop_when`
+        existed) or when the last page's `Link` header had no `next` --
+        i.e. this genuinely was the end of the listing, regardless of why
+        the loop stopped checking for more.
         """
-        url = f"https://{self._host}/v2/{repository}/tags/list"
+        url = f"https://{self._host}/v2/{repository}/tags/list?n={INITIAL_PAGE_SIZE}"
         headers: dict[str, str] = {}
         try:
             client = await self._get_client()
@@ -339,13 +418,13 @@ class OCIRegistryClient:
                 token = await self._token(client, resp.headers.get("WWW-Authenticate", ""))
                 if not token:
                     logger.warning(f"No anonymous token available for {self._host}")
-                    return None
+                    return None, True
                 headers = {"Authorization": f"Bearer {token}"}
                 resp = await self._request(client, "GET", url, headers)
 
             if resp.status_code == 404:
                 logger.info(f"Repository not found: {self._host}/{repository}")
-                return None
+                return None, True
             resp.raise_for_status()
             payload: dict[str, Any] = resp.json()
             all_tags = list(payload.get("tags") or [])
@@ -353,7 +432,7 @@ class OCIRegistryClient:
             pages = 1
             page_url = url
             next_url = self._next_page_url(resp, page_url)
-            while next_url is not None:
+            while next_url is not None and not (stop_when is not None and stop_when(all_tags)):
                 if pages >= MAX_TAG_PAGES:
                     logger.warning(
                         f"Tag listing for {self._host}/{repository} exceeded "
@@ -378,7 +457,8 @@ class OCIRegistryClient:
                 next_url = self._next_page_url(page_resp, page_url)
 
             payload["tags"] = all_tags
-            return payload
+            complete = stop_when is None or next_url is None
+            return payload, complete
         except (httpx.HTTPError, ValueError, CircuitOpenError) as e:
             logger.warning(f"Tag listing failed for {self._host}/{repository}: {e}")
-            return None
+            return None, True

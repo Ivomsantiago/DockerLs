@@ -187,9 +187,17 @@ class TrivyScanner(ScannerInterface):
         for attempt in range(1, self.DB_DOWNLOAD_ATTEMPTS + 1):
             if on_attempt is not None:
                 on_attempt(attempt, self.DB_DOWNLOAD_ATTEMPTS)
-            ok, detail = await self._download_db(base)
+            ok, detail, retryable = await self._download_db(base)
             if ok:
                 break
+            if not retryable:
+                # A missing binary is not a transient GHCR hiccup: it will
+                # not exist on the next attempt either, so three attempts
+                # with exponential backoff bought nothing but six seconds of
+                # sleep on every single run without a scanner installed --
+                # exactly the case `dockerls doctor` exists to catch fast.
+                logger.warning(f"Trivy DB refresh failed: {detail}")
+                return False
             if attempt == self.DB_DOWNLOAD_ATTEMPTS:
                 logger.warning(
                     f"Trivy DB refresh failed after {attempt} attempts: {detail}. "
@@ -211,8 +219,13 @@ class TrivyScanner(ScannerInterface):
         )
         return True
 
-    async def _download_db(self, base: Path) -> tuple[bool, str]:
-        """One `--download-db-only` attempt. Returns (ok, detail)."""
+    async def _download_db(self, base: Path) -> tuple[bool, str, bool]:
+        """One `--download-db-only` attempt. Returns (ok, detail, retryable).
+
+        `retryable` is False only for a missing binary: that failure is the
+        same on every attempt, so the caller can skip the backoff entirely
+        instead of sleeping through it for nothing.
+        """
         try:
             returncode, _, stderr = await run_capture(
                 [
@@ -226,12 +239,12 @@ class TrivyScanner(ScannerInterface):
             )
         except ExecutableNotFoundError as e:
             # Binário ausente não melhora com repetição.
-            return False, str(e)
+            return False, str(e), False
         except (TimeoutError, OSError) as e:
-            return False, str(e)
+            return False, str(e), True
         if returncode != 0:
-            return False, stderr.decode(errors="replace")[:200]
-        return True, ""
+            return False, stderr.decode(errors="replace")[:200], True
+        return True, "", True
 
     async def close(self) -> None:
         await self._cache_pool.cleanup()

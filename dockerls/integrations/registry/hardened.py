@@ -7,10 +7,12 @@ from loguru import logger
 
 from dockerls.domain.entities.image import DockerImage
 from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
-from dockerls.integrations.registry.oci import OCIRegistryClient, is_runnable_tag
+from dockerls.integrations.registry.oci import INITIAL_PAGE_SIZE, OCIRegistryClient, is_runnable_tag
 from dockerls.utils.retry import DEFAULT_BACKOFF_BASE, DEFAULT_MAX_ATTEMPTS
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from dockerls.infrastructure.network.host_guard import HostGuard
 
 CHAINGUARD = "Chainguard"
@@ -126,7 +128,9 @@ class HardenedRepository(ImageRepositoryInterface):
         """
         images: list[DockerImage] = []
         for repository in self.repositories_for(image_name):
-            payload = await self._client.list_tags(repository)
+            payload = await self._client.list_tags(
+                repository, stop_when=_gathered_enough_runnable_tags(limit - len(images))
+            )
             if payload is None:
                 continue
             # Build first, then rank: a source that dates its tags (GCR) must
@@ -291,3 +295,49 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+#: Multiplier applied to the requested `limit` before an OCI tag listing is
+#: allowed to stop paginating early on runnable-tag count alone. Cosign
+#: publishes a signature/attestation tag alongside every real one, so a
+#: repository with a handful of runnable images can still need several
+#: times `limit` raw tags scanned before that many turn out runnable. A
+#: generous buffer keeps the ranking sort in `search_tags` choosing among a
+#: real pool of candidates instead of whichever `limit` happened to come
+#: back first in server order.
+_STOP_EARLY_BUFFER = 5
+_STOP_EARLY_MINIMUM = 20
+
+#: Hard cap on raw tags scanned before giving up on finding more, regardless
+#: of the buffer above. Chainguard's free catalogue publishes a handful of
+#: moving tags (`latest`, `next`, ...) per image and nothing else runnable
+#: -- the buffer threshold above can never be reached, and without this cap
+#: `search_tags` paginated all the way to `MAX_TAG_PAGES` (dozens of
+#: requests, several seconds) every single time for a catalogue this small.
+#: Chainguard happens to list its real tags first, so in practice this cap
+#: is rarely even reached; where a registry orders differently, it trades
+#: a possibly-incomplete candidate list for a bounded, predictable cost --
+#: the same trade `MAX_TAG_PAGES` already makes for the uncapped case.
+_STOP_EARLY_MAX_RAW_TAGS = 5 * INITIAL_PAGE_SIZE
+
+
+def _gathered_enough_runnable_tags(needed: int) -> Callable[[Sequence[str]], bool]:
+    """A `stop_when` predicate for `OCIRegistryClient.list_tags`: stop once
+    enough of the tags seen so far would survive `is_runnable_tag`, or once
+    `_STOP_EARLY_MAX_RAW_TAGS` have been scanned without finding that many.
+
+    `needed <= 0` (the caller already has `limit` images from an earlier
+    repository) stops after the very first page rather than fetching a
+    listing that will be entirely discarded.
+    """
+    threshold = max(needed * _STOP_EARLY_BUFFER, _STOP_EARLY_MINIMUM) if needed > 0 else 0
+
+    def predicate(tags: Sequence[str]) -> bool:
+        if threshold <= 0:
+            return True
+        if len(tags) >= _STOP_EARLY_MAX_RAW_TAGS:
+            return True
+        runnable = sum(1 for t in tags if is_runnable_tag(t))
+        return runnable >= threshold
+
+    return predicate

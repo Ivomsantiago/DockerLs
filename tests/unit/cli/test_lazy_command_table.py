@@ -82,6 +82,29 @@ class TestTheTableCoversEveryCommand:
         assert len(names) == len(set(names))
 
 
+class TestHelpIsGroupedAndHasAQuickStart:
+    """22 commands in one flat list made `--help` a wall of text a newcomer
+    had to read end to end to find where to start. Every command's
+    category must be a real panel Typer renders, and the quick-start
+    examples must survive."""
+
+    def test_every_command_declares_a_known_category(self):
+        from dockerls.cli.app import _BUILD, _FIND, _SETUP, _SUPPLY_CHAIN
+
+        known = {_FIND, _BUILD, _SUPPLY_CHAIN, _SETUP}
+        for spec in COMMANDS:
+            assert spec.category in known, f"'{spec.name}' has no recognised category"
+
+    def test_the_help_output_shows_every_panel_and_a_quick_start(self):
+        result = runner.invoke(app, ["--help"])
+
+        assert result.exit_code == 0
+        assert "Quick start" in result.output
+        assert "dockerls recommend" in result.output
+        for spec in COMMANDS:
+            assert spec.category in result.output
+
+
 class TestListingDoesNotImportCommands:
     def test_the_group_help_leaves_the_heavy_modules_alone(self, tmp_path):
         """O ponto inteiro da tabela: listar os comandos não pode importar

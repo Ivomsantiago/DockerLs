@@ -222,7 +222,7 @@ class TestTokenRealm:
             assert await client.list_tags("library/alpine") is None
         finally:
             await client.close()
-        assert seen == ["https://registry.example/v2/library/alpine/tags/list"]
+        assert seen == ["https://registry.example/v2/library/alpine/tags/list?n=1000"]
 
     async def test_a_realm_pointing_at_the_metadata_service_is_blocked_by_the_guard(self):
         guard = _FixedResolutionGuard(
