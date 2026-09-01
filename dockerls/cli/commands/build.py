@@ -631,14 +631,27 @@ def _print_policy_violations(violations: list[PolicyViolation]) -> None:
 
 
 def _parse_json_option(raw: str | None, flag: str) -> dict[str, str] | None:
-    """Parseia um argumento JSON de linha de comando, ou aborta com exit 1."""
+    """Parseia um argumento JSON de linha de comando, ou aborta com exit 1.
+
+    `json.loads` aceita qualquer documento JSON válido -- uma lista, um
+    número, uma string solta --, não só um objeto. Sem a checagem de forma,
+    `--labels '[1,2,3]'` passava direto daqui e só quebrava mais adiante, num
+    `**labels_dict` que não sabe desempacotar uma lista: um `TypeError` sem
+    relação nenhuma, aos olhos de quem o lê, com a flag que causou.
+    """
     if not raw:
         return None
     try:
-        parsed: dict[str, str] = json.loads(raw)
+        parsed = json.loads(raw)
     except json.JSONDecodeError as e:
         console.print(f"[red]Error parsing {flag}:[/red] {e}")
         raise typer.Exit(EXIT_ERROR) from e
+    if not isinstance(parsed, dict):
+        console.print(
+            f"[red]Error parsing {flag}:[/red] expected a JSON object "
+            f'(e.g. {{"KEY": "value"}}), got {type(parsed).__name__}'
+        )
+        raise typer.Exit(EXIT_ERROR)
     return parsed
 
 

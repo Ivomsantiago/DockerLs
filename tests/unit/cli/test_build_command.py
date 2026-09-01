@@ -188,6 +188,30 @@ class TestArgumentErrors:
         assert result.exit_code == EXIT_ERROR
         assert "--labels" in result.stdout
 
+    def test_a_json_array_for_build_args_is_rejected_not_crashed_on(self, clean_context):
+        """`--build-args '[1,2,3]'` is valid JSON but not the object shape
+        the flag needs. Unchecked, it used to sail past parsing and break
+        later on `.items()`, as a `AttributeError` with no mention of the
+        flag that caused it."""
+        result = runner.invoke(
+            app, ["build", "-t", "x:1", "--build-args", "[1,2,3]", str(clean_context)]
+        )
+
+        assert result.exit_code == EXIT_ERROR
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "--build-args" in result.stdout
+
+    def test_a_json_array_for_labels_is_rejected_not_crashed_on(self, clean_context):
+        """Same shape check for `--labels`: a JSON array reaching
+        `{**labels_dict}` used to raise a `TypeError` unpacking a list."""
+        result = runner.invoke(
+            app, ["build", "-t", "x:1", "--labels", "[1,2,3]", str(clean_context)]
+        )
+
+        assert result.exit_code == EXIT_ERROR
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "--labels" in result.stdout
+
 
 class TestReportFile:
     def test_json_report_is_written_for_a_validation_run(self, bad_context, tmp_path):
