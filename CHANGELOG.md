@@ -5,6 +5,91 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.15] -- 2026-09-01
+
+Full end-to-end quality audit: functional correctness, architecture,
+security, performance, error handling, tests, docs, UX, and dependencies.
+Nothing here changes correct, tested behavior on purpose -- every item
+below is a real bug, a genuine gap in error handling, a security control
+that another code path lacked, or dead/misleading code, each with its own
+regression test.
+
+### Security
+- `build --attribute`/`--production` scanned the Dockerfile's declared base
+  image (`trivy image <base>` / `grype <base>`) via a subprocess that opens
+  its own connection, outside the SSRF guard every other scan path already
+  goes through. A base like `FROM 169.254.169.254/latest:v1` reached the
+  cloud metadata endpoint. `BuildImageUseCase` now takes an optional
+  `HostGuard` (wired from both CLI call sites) and refuses a blocked
+  reference the same way `trivy`/`grype`/the batch engine already do.
+
+### Fixed
+- Trivy and Grype's JSON parsers crashed (`AttributeError`/`TypeError`) on
+  an explicit `null` in a field their own schemas mark optional (`Title`,
+  `Severity`, `Vulnerabilities`, `fix`, `locations`, ...), turning a
+  completed scan into an ERROR result instead of a finding with an empty
+  field. Both parsers are now null-safe end to end.
+- The Dockerfile parser kept `--platform=...` flag text as part of a
+  stage's base image, which broke the `USER`-inheritance alias chain for a
+  flagged `FROM ... AS builder` and leaked the flag text into
+  `final_base_image` -- the exact reference `build --attribute` hands to a
+  scanner.
+- `RecommendImagesUseCase` ran the vulnerability-database download
+  concurrently with the tag search but never cancelled it if the search
+  failed or the run was cancelled, leaving it running against a scanner
+  `execute()`'s `finally` had already closed.
+- The Go engine client killed its subprocess on a timeout or an OS error,
+  but not on `asyncio.CancelledError` (an outer cancellation or Ctrl-C),
+  leaving the engine -- started in its own session precisely so a Ctrl-C
+  would reach it -- running headless.
+- `EngineBatchScanner.scan_batch` let one malformed reference's
+  `ValueError` abort the whole batch instead of failing only that target.
+- An invalid `DOCKERLS_*` environment variable (a non-integer
+  `DOCKERLS_MAX_TAGS`, an unrecognised `DOCKERLS_LOG_LEVEL`) reached the
+  user as a raw pydantic/loguru traceback on every single command,
+  `dockerls version` included, before any application code ran. Now
+  reported as a one-line, actionable error at exit code 1.
+- `build`'s `_declared_bases` was its own hand-rolled `FROM` parser,
+  duplicating (with three extra bugs -- a `--platform` flag read as the
+  image, an `IndexError` on a bare `FROM`, an `ARG`-pinned digest never
+  recognised as pinned) the domain's own `parse_bases`, which it now
+  delegates to.
+- `--build-args`/`--labels` accepted any valid JSON, not only an object;
+  an array or bare value sailed through `_parse_json_option` and only
+  broke later with an error naming neither the flag nor the real cause.
+- The OCI registry, Docker Hub, CISA KEV, and endoflife.date HTTP clients
+  all trusted `resp.json()` to return the shape a type annotation implied.
+  A well-formed response with the wrong top-level shape, or a non-JSON 200
+  body, raised past the `except` clauses guarding each call. All four now
+  validate the shape before indexing into it and degrade the same way an
+  HTTP failure already does.
+- `analyze-dockerfile --format` compared a plain string against `"json"`
+  directly, so a typo silently fell through to the table renderer instead
+  of erroring -- unlike every sibling command with a `--format` flag.
+- `vex --output` had no exception handling around its file write; an
+  unwritable destination raised an uncaught `OSError`.
+
+### Removed
+- Two dead, unused duplicate copies of `_FILE_FORMAT`/`_CONSOLE_FORMAT` in
+  `redaction.py` (the real ones live in `logging/setup.py`), a two-line
+  comment fragment in `logging/setup.py` describing code that has since
+  moved elsewhere, a misplaced docstring in
+  `RecommendImagesUseCase._set_cached` (it followed the function's first
+  statement instead of preceding it, so it was an inert expression rather
+  than an actual docstring), and an identical `export()` override
+  duplicated across all five `ExporterInterface` subclasses.
+
+### Changed
+- Six remaining Portuguese strings in user-facing output (a push error, a
+  `--no-policy` notice, provenance report labels, an unknown-rule message,
+  a recipe-diff cost label, a destination line) translated to English.
+  While tracing why the existing PT-language guard test hadn't caught
+  these, found the test itself had a real gap: an f-string argument to a
+  `logger.*()` call was never correctly recognised as a log message in any
+  scanned directory, because of how it walked f-string AST nodes. Fixed,
+  and the guard now covers the whole `dockerls/` package instead of only
+  `cli/` and `domain/`.
+
 ## [1.0.14] -- 2026-09-01
 
 ### Changed
