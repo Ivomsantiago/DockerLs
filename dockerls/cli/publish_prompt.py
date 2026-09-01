@@ -75,7 +75,7 @@ def resolve_destination(
     target = RegistryTarget.parse(answer, tag)
     target.validate()
     console.print(
-        f"[dim]Destino: {target.reference}  ({target.provider})\n"
+        f"[dim]Destination: {target.reference}  ({target.provider})\n"
         f"Authentication: {target.login_hint}[/dim]"
     )
     return target

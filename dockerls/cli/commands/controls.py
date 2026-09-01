@@ -83,12 +83,12 @@ def _as_dict(mapping: RuleMapping) -> dict[str, object]:
 
 def _report_unknown(rule: str, output_format: OutputFormat) -> None:
     known = ", ".join(mapping.rule_id for mapping in RULE_MAPPINGS)
-    message = f"regra desconhecida: {rule}"
+    message = f"unknown rule: {rule}"
     if output_format == OutputFormat.JSON:
         console.print(json.dumps({"error": message, "known_rules": known.split(", ")}))
         return
     console.print(f"[red]Error:[/red] {safe(message)}")
-    console.print(f"[dim]Regras catalogadas: {known}[/dim]")
+    console.print(f"[dim]Known rules: {known}[/dim]")
 
 
 def _render(mappings: tuple[RuleMapping, ...], *, detailed: bool) -> None:

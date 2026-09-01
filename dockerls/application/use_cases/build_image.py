@@ -949,7 +949,7 @@ class BuildImageUseCase:
                 return retag_error
 
         logger.debug(f"Publishing image: {target}")
-        return self._run_docker(["push", target], timeout=1800, action=f"Push de {target}")
+        return self._run_docker(["push", target], timeout=1800, action=f"Push of {target}")
 
     @staticmethod
     def _run_docker(args: list[str], *, timeout: int, action: str) -> str | None:
@@ -963,10 +963,10 @@ class BuildImageUseCase:
                 check=False,
             )
         except (ExecutableNotFoundError, OSError, subprocess.SubprocessError) as e:
-            return f"{action} falhou: {e}"
+            return f"{action} failed: {e}"
 
         if result.returncode != 0:
-            return f"{action} falhou: {result.stderr.strip()[:500]}"
+            return f"{action} failed: {result.stderr.strip()[:500]}"
         return None
 
     def _get_image_info(self, tag: str) -> dict[str, Any]:

@@ -595,7 +595,7 @@ def _load_policy(context: str, explicit: str | None, *, no_policy: bool) -> Buil
     if no_policy:
         console.print(
             "[yellow]--no-policy: the context .dockerls-policy.yaml will not be "
-            "conferido neste build.[/yellow]"
+            "checked for this build.[/yellow]"
         )
         return None
 
@@ -1301,7 +1301,7 @@ def _print_provenance(provenance: BuildProvenance) -> None:
     console.print("[bold]INPUT[/bold] [dim](measured before the build)[/dim]")
     console.print(f"  Dockerfile  {safe(source.dockerfile) or '[dim]not digested[/dim]'}")
     console.print(
-        f"  Contexto    {safe(source.context) or '[dim]not digested[/dim]'}"
+        f"  Context     {safe(source.context) or '[dim]not digested[/dim]'}"
         f"  [dim]({source.context_files} files)[/dim]"
     )
     if source.git_revision:
@@ -1315,7 +1315,7 @@ def _print_provenance(provenance: BuildProvenance) -> None:
     console.print("\n[bold]OUTPUT[/bold] [dim](measured after the build)[/dim]")
     console.print(f"  Image       {safe(artifact.image_id) or '[dim]unknown[/dim]'}")
     if artifact.repo_digest:
-        console.print(f"  Manifesto   {safe(artifact.repo_digest)}")
+        console.print(f"  Digest      {safe(artifact.repo_digest)}")
     if artifact.published_reference:
-        console.print(f"  Publicada   {safe(artifact.published_reference)}")
+        console.print(f"  Published   {safe(artifact.published_reference)}")
     console.print()
