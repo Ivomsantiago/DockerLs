@@ -16,6 +16,7 @@ a outra ferramenta, só dobra a espera pela mesma resposta.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -76,10 +77,18 @@ class FallbackScanner(ScannerInterface):
         return fallback
 
     async def refresh_db(self) -> bool:
-        """Prepara os dois bancos. O secundário só é útil se estiver pronto
-        antes de a primeira falha acontecer."""
-        primary_ok = await _refresh(self._primary)
-        await _refresh(self._secondary)
+        """Prepara os dois bancos, em paralelo.
+
+        Eram sequenciais -- o secundário só começava a baixar depois que o
+        primário terminasse -- e as duas baixas não competem por nada que
+        torne isso necessário: bancos diferentes, ferramentas diferentes.
+        Rodando juntas, o tempo de preparo passa a ser o maior dos dois, não
+        a soma, o que soma minutos num run que nunca chega a precisar do
+        secundário. O secundário só é útil se estiver pronto antes de a
+        primeira falha acontecer, então o paralelismo é o que garante isso
+        sem alongar o caminho comum.
+        """
+        primary_ok, _ = await asyncio.gather(_refresh(self._primary), _refresh(self._secondary))
         return primary_ok
 
     async def close(self) -> None:
