@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: engine/go.mod
           # Sem dependência externa alguma, então não há `go.sum`: o
@@ -86,7 +86,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       # A engine é compilada aqui também: os testes de integração pulam
       # sem o binário, e um `skip` silencioso não é uma passagem.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: engine/go.mod
           # Sem dependência externa alguma, então não há `go.sum`: o
