@@ -108,7 +108,11 @@ class DockerHubClient(ImageRepositoryInterface):
                     json={"username": self._username, "password": self._token},
                 )
                 if resp.status_code == 200:
-                    self._auth_token = resp.json().get("token", "")
+                    body = resp.json()
+                    if not isinstance(body, dict):
+                        logger.warning("Docker Hub auth returned a non-object body")
+                        return False
+                    self._auth_token = body.get("token", "")
                     return bool(self._auth_token)
         except (httpx.HTTPError, ValueError) as e:
             # ValueError covers a 200 whose body is not JSON -- a captive
@@ -141,14 +145,23 @@ class DockerHubClient(ImageRepositoryInterface):
         return resp
 
     @staticmethod
-    def _parse_images(images: list[dict[str, Any]]) -> tuple[int, str, str, list[str]]:
-        """Return (size, digest, primary_architecture, all_architectures)."""
-        archs = [img.get("architecture", "unknown") for img in images]
-        for img in images:
+    def _parse_images(images: Any) -> tuple[int, str, str, list[str]]:
+        """Return (size, digest, primary_architecture, all_architectures).
+
+        `images` comes straight from `tag_data.get("images", [])`, so it is
+        whatever the API answered for that key -- not necessarily a list,
+        and not necessarily a list of dicts. A non-dict entry used to raise
+        `AttributeError` on the first `.get()` below.
+        """
+        entries = (
+            [img for img in images if isinstance(img, dict)] if isinstance(images, list) else []
+        )
+        archs = [img.get("architecture", "unknown") for img in entries]
+        for img in entries:
             if img.get("architecture") == "amd64":
                 return img.get("size", 0), img.get("digest", ""), "amd64", archs
-        if images:
-            first = images[0]
+        if entries:
+            first = entries[0]
             return (
                 first.get("size", 0),
                 first.get("digest", ""),
@@ -178,8 +191,19 @@ class DockerHubClient(ImageRepositoryInterface):
                     return []
                 resp.raise_for_status()
                 data = resp.json()
+                if not isinstance(data, dict):
+                    # A well-formed but wrongly-shaped body (an array, a
+                    # bare string) is as unusable as an HTTP error --
+                    # `.get("results", ...)` on it would raise
+                    # `AttributeError`, which was not among the exceptions
+                    # this loop caught.
+                    logger.error("Docker Hub API returned a non-object body; stopping pagination")
+                    break
 
-                for tag_data in data.get("results", []):
+                results = data.get("results", [])
+                for tag_data in results if isinstance(results, list) else []:
+                    if not isinstance(tag_data, dict):
+                        continue
                     tag_name = tag_data.get("name", "")
                     if not tag_name:
                         continue
@@ -206,9 +230,11 @@ class DockerHubClient(ImageRepositoryInterface):
                     )
 
                 url = data.get("next")
-            except httpx.HTTPError as e:
-                # Network blips or non-429 API errors degrade to a
-                # partial result (whatever pages already fetched)
+            except (httpx.HTTPError, ValueError) as e:
+                # Network blips, non-429 API errors, and a 200 whose body
+                # is not JSON (ValueError -- json.JSONDecodeError is a
+                # subclass, and was not caught here before) all degrade to
+                # a partial result (whatever pages already fetched)
                 # instead of crashing the whole search.
                 logger.error(f"Docker Hub API error, returning partial results: {e}")
                 break
@@ -294,6 +320,9 @@ class DockerHubClient(ImageRepositoryInterface):
                 return None
             resp.raise_for_status()
             data = resp.json()
+            if not isinstance(data, dict):
+                logger.error(f"Docker Hub returned a non-object body for {safe_name}:{tag}")
+                return None
 
             last_updated = None
             lu_str = data.get("last_updated")
@@ -313,6 +342,8 @@ class DockerHubClient(ImageRepositoryInterface):
                 last_updated=last_updated,
                 is_official=namespace == "library",
             )
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, ValueError) as e:
+            # ValueError covers resp.json() on a non-JSON body
+            # (json.JSONDecodeError is a subclass), not caught here before.
             logger.error(f"Failed to get metadata for {safe_name}:{tag}: {e}")
             return None

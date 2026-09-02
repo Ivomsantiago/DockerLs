@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 import httpx
 from loguru import logger
@@ -122,7 +122,19 @@ class EndOfLifeChecker(EOLCheckerInterface):
             try:
                 resp = await client.get(f"{self.BASE_URL}/{slug}.json")
                 if resp.status_code == 200:
-                    data = cast("list[dict[str, Any]]", resp.json())
+                    parsed = resp.json()
+                    # A well-formed but wrongly-shaped body -- an object
+                    # instead of the documented array, a cycle entry that
+                    # is a bare string -- is as unusable as no body: every
+                    # reader below calls `.get(...)` on each element. The
+                    # `cast` this replaced was a type-checker annotation
+                    # only, with no runtime effect on what actually came
+                    # back over the wire.
+                    if not isinstance(parsed, list):
+                        logger.debug(f"EOL check for {slug} returned a non-array body")
+                        self._cache[slug] = []
+                        return []
+                    data = [cycle for cycle in parsed if isinstance(cycle, dict)]
                     self._cache[slug] = data
                     return data
                 if resp.status_code == 404:
@@ -138,7 +150,11 @@ class EndOfLifeChecker(EOLCheckerInterface):
                     return []
                 logger.debug(f"EOL check for {slug} returned HTTP {resp.status_code}")
                 return []
-            except httpx.HTTPError as e:
+            except (httpx.HTTPError, ValueError) as e:
+                # `ValueError` covers `resp.json()` on a non-JSON body
+                # (`json.JSONDecodeError` is a `ValueError` subclass) --
+                # previously uncaught here, so a proxy error page served
+                # as a 200 crashed the check instead of degrading it.
                 logger.debug(f"EOL check failed for {slug}: {e}")
                 return []
 

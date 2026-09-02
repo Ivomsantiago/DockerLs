@@ -573,6 +573,44 @@ class TestDbRefreshOverlapsTagSearch:
         assert log.index("tags-start") < log.index("db-end")
 
 
+class _FailingRepo(ImageRepositoryInterface):
+    """A repository whose `search_tags` always raises, after yielding once
+    so the concurrently-started DB download actually gets to run -- an
+    immediate, synchronous raise would never give the event loop a chance
+    to schedule it in the first place."""
+
+    async def search_tags(self, image_name, limit=100):
+        await asyncio.sleep(0.01)
+        raise RuntimeError("registry unreachable")
+
+    async def get_image_metadata(self, image_name, tag):
+        return None
+
+
+class TestDbTaskIsNotOrphanedOnSearchFailure:
+    """The DB-download task races the tag search (`TestDbRefreshOverlapsTagSearch`
+    above). When the search fails, `execute()`'s `finally` closes the scanner
+    right after -- a download still running against a closed scanner is an
+    orphaned task, not a slow one. The failure must cancel it, not abandon
+    it, and must still propagate."""
+
+    @pytest.mark.asyncio
+    async def test_the_db_task_is_cancelled_when_search_tags_raises(self):
+        log: list[str] = []
+        scanner = _SlowRefreshScanner(delay=10, log=log)
+        uc = RecommendImagesUseCase(
+            repository=_FailingRepo(),
+            scanner=scanner,
+            eol_checker=MockEOL(),
+        )
+
+        with pytest.raises(RuntimeError, match="registry unreachable"):
+            await uc.execute("node")
+
+        assert "db-start" in log
+        assert "db-end" not in log
+
+
 class TestCompareImages:
     @pytest.mark.asyncio
     async def test_compare(self, tags):

@@ -146,6 +146,31 @@ class TestFileHandling:
         assert result.exit_code == 0
         assert json.loads(destination.read_text(encoding="utf-8"))["statements"]
 
+    def test_an_unwritable_output_path_is_an_error_not_a_traceback(self, tmp_path):
+        """`Path(output).write_text(...)` used to run with no exception
+        handling at all: a destination that can't be written (here, a
+        directory where the command expects to create a file) raised an
+        uncaught `OSError` straight out of the command."""
+        destination = tmp_path / "not-a-file"
+        destination.mkdir()
+        result = runner.invoke(
+            app,
+            [
+                "vex",
+                "app:1",
+                "--author",
+                "Security",
+                "--ignore-file",
+                str(_project(tmp_path)),
+                "--output",
+                str(destination),
+            ],
+        )
+
+        assert result.exit_code == EXIT_ERROR
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Error" in result.output
+
     def test_an_ignore_file_that_does_not_exist_is_an_error(self, tmp_path):
         """Cair no silêncio de "nenhuma regra" produziria um documento vazio
         que parece uma resposta."""

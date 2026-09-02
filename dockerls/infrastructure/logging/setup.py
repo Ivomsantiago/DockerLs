@@ -13,8 +13,6 @@ if TYPE_CHECKING:
     from loguru import Record
 
 
-# Key names that introduce a credential, in any casing or word shape
-# ("apiKey", "api_key", "API-KEY", "dockerhub_token", "senha"). Named for
 _FILE_FORMAT = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
 _CONSOLE_FORMAT = (
     "<level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - {message}"

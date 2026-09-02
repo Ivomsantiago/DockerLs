@@ -272,7 +272,7 @@ def _render_diff(diff: RecipeDiff) -> None:
 
     for delta in diff.added:
         console.print(f"  [green]+ {safe(delta.key)}[/green]  [dim]{safe(delta.purpose)}[/dim]")
-        console.print(f"      [dim]custo: {safe(delta.cost)}[/dim]")
+        console.print(f"      [dim]cost: {safe(delta.cost)}[/dim]")
     for delta in diff.removed:
         console.print(f"  [red]- {safe(delta.key)}[/red]  [dim]{safe(delta.purpose)}[/dim]")
 
@@ -326,7 +326,9 @@ def _build_now(
         description=recipe.description,
     )
     templates = HardeningTemplates()
-    use_case = BuildImageUseCase(DockerfileValidator(templates), templates)
+    use_case = BuildImageUseCase(
+        DockerfileValidator(templates), templates, guard=build_host_guard()
+    )
     response = use_case.execute(
         BuildImageRequest(
             context_path=str(destination.parent),

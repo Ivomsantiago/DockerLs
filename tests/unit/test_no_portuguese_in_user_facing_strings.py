@@ -1,11 +1,14 @@
 """Nada em português deve vazar para o que o usuário vê: help do Typer,
-mensagens impressas no console, ou texto que vai parar num Dockerfile gerado.
+mensagens impressas no console, texto que vai parar num Dockerfile gerado,
+ou uma mensagem de erro levantada como exceção.
 
 Duas rodadas seguidas de revisão manual encontraram a mesma classe de bug --
 uma palavra portuguesa perdida no meio de uma frase em inglês (`"Java com
 Maven"`, `"Exemplos"` num `console.print`) -- porque revisão visual não
 escala e o mesmo erro se repete. Isto vira teste: varre os literais de string
-em `dockerls/cli/` e `dockerls/domain/`, ignora docstrings e chamadas de
+do pacote inteiro (`dockerls/`, não só `cli/` e `domain/` -- um "Push de
+{target}" em `application/build_image.py` não era menos visível ao usuário
+por morar fora dessas duas pastas), ignora docstrings e chamadas de
 `logger.*()` (que são deliberadamente em português, documentação para quem
 mexe no código), e falha se sobrar uma palavra-função portuguesa inconfundível.
 
@@ -28,7 +31,13 @@ import re
 import pytest
 
 PACKAGE = pathlib.Path(__file__).resolve().parents[2] / "dockerls"
-_SCAN_ROOTS = (PACKAGE / "cli", PACKAGE / "domain")
+#: The whole package. Originally just `cli/` and `domain/`; a leak found in
+#: `application/` (a push error, an f-string in `logger.debug` that a bug in
+#: this scanner's own `JoinedStr` handling was quietly exempting from every
+#: directory, not only the scanned ones) showed the boundary was arbitrary --
+#: nothing about `infrastructure/`, `integrations/` or the rest makes a stray
+#: Portuguese word in a raised message or a console string less user-facing.
+_SCAN_ROOTS = (PACKAGE,)
 
 #: Palavras e conectivas portuguesas sem par ambíguo em inglês. Espaços ao
 #: redor das conectivas curtas evitam pegar substrings de palavras inglesas
@@ -92,6 +101,17 @@ def _string_literals(path: pathlib.Path) -> list[tuple[int, str]]:
             for arg in (*node.args, *[kw.value for kw in node.keywords]):
                 if isinstance(arg, ast.Constant):
                     parent_call_of[id(arg)] = node
+                elif isinstance(arg, ast.JoinedStr):
+                    # An f-string argument (`logger.warning(f"... {e}")`) is
+                    # a `JoinedStr`, not a `Constant` -- its literal segments
+                    # are `Constant` children nested inside it, one level
+                    # below where the loop above looks. Without this, every
+                    # such segment was invisible to the exemption below and
+                    # an f-string log message became indistinguishable from
+                    # a genuine user-facing string.
+                    for part in ast.walk(arg):
+                        if isinstance(part, ast.Constant):
+                            parent_call_of[id(part)] = node
 
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
@@ -130,3 +150,33 @@ class TestUserFacingStringsAreEnglish:
             f"user-facing string literal (help text, console output, or "
             f"generated Dockerfile content): {offenders}"
         )
+
+
+class TestLoggerExemptionCoversFStrings:
+    """A plain string arg (`logger.debug("...")`) is an `ast.Constant`
+    directly under the `Call`, and was correctly exempted. An f-string
+    (`logger.debug(f"... {e}")`) is an `ast.JoinedStr` whose literal
+    segments are `Constant` nodes nested *inside* it -- one level below
+    where the original exemption looked -- so every f-string logger message
+    was invisible to it and indistinguishable from a genuine user-facing
+    string. Confirmed against `dockerls/integrations/signing/cosign.py`,
+    whose `logger.debug(f"Falha ao executar cosign: {e}")` this scanner
+    flagged as a violation before the `JoinedStr` handling was added.
+    """
+
+    def test_an_fstring_logger_call_is_exempt(self, tmp_path: pathlib.Path) -> None:
+        path = tmp_path / "sample.py"
+        path.write_text(
+            'from loguru import logger\n\ne = ValueError()\nlogger.debug(f"Falha: {e}")\n'
+        )
+
+        assert _string_literals(path) == []
+
+    def test_an_fstring_outside_a_logger_call_is_still_reported(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        path = tmp_path / "sample.py"
+        path.write_text('target = "x"\nconsole.print(f"Falha: {target}")\n')
+
+        offenders = _string_literals(path)
+        assert any("Falha" in text for _, text in offenders)

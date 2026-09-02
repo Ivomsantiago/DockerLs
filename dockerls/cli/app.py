@@ -29,6 +29,8 @@ from typer.core import TyperCommand, TyperGroup
 from typer.main import get_command_from_info, get_group
 from typer.models import CommandInfo
 
+from dockerls.exit_codes import EXIT_ERROR
+
 if TYPE_CHECKING:
     from collections.abc import MutableMapping
 
@@ -349,7 +351,37 @@ def configure_logging() -> None:
 def _bootstrap() -> None:
     """Runs before every subcommand, so no command can start with loguru's
     default DEBUG-to-stderr sink still attached."""
-    configure_logging()
+    from pydantic import ValidationError
+
+    try:
+        configure_logging()
+    except (ValidationError, ValueError) as e:
+        _report_bootstrap_error(e)
+        raise typer.Exit(code=EXIT_ERROR) from None
+
+
+def _report_bootstrap_error(error: Exception) -> None:
+    """An unusable `DOCKERLS_*` value -- a non-integer `DOCKERLS_MAX_TAGS`,
+    a `DOCKERLS_LOG_LEVEL` loguru does not recognise -- used to reach the
+    user as a raw pydantic or loguru traceback on *every* command,
+    `dockerls version` included, before a single line of application code
+    ran. Exit code 1: nothing was measured, so this is an execution error,
+    never a policy one.
+    """
+    from pydantic import ValidationError
+    from rich.console import Console
+
+    console = Console(stderr=True)
+    console.print("[red]Error:[/red] invalid configuration")
+    if isinstance(error, ValidationError):
+        for detail in error.errors():
+            field = ".".join(str(p) for p in detail["loc"])
+            console.print(f"  DOCKERLS_{field.upper()}: {detail['msg']}")
+    else:
+        console.print(f"  {error}")
+    console.print(
+        "[dim]Check the environment variables above, or ~/.config/dockerls/config.toml[/dim]"
+    )
 
 
 def main() -> None:

@@ -46,6 +46,81 @@ class TestTrivyParser:
         assert result.total_count == 0
 
 
+class TestTrivyParserIsNullSafe:
+    """Trivy's own schema marks these fields optional; an explicit `null`
+    sails past a bare `.get(key, default)` and used to break the parse of an
+    otherwise completed scan, turning it into an ERROR result rather than a
+    finding with an empty field."""
+
+    def test_null_title_does_not_raise(self):
+        scanner = TrivyScanner()
+        data = {
+            "Results": [
+                {
+                    "Vulnerabilities": [
+                        {"VulnerabilityID": "CVE-2024-0001", "Severity": "HIGH", "Title": None}
+                    ]
+                }
+            ]
+        }
+        result = scanner._parse_results("node:22-alpine", data)
+        assert result.vulnerabilities[0].description == ""
+
+    def test_null_severity_does_not_raise(self):
+        scanner = TrivyScanner()
+        data = {
+            "Results": [
+                {"Vulnerabilities": [{"VulnerabilityID": "CVE-2024-0001", "Severity": None}]}
+            ]
+        }
+        result = scanner._parse_results("node:22-alpine", data)
+        assert result.vulnerabilities[0].severity.value == "UNKNOWN"
+
+    def test_null_vulnerability_id_does_not_raise(self):
+        scanner = TrivyScanner()
+        data = {"Results": [{"Vulnerabilities": [{"VulnerabilityID": None, "Severity": "LOW"}]}]}
+        result = scanner._parse_results("node:22-alpine", data)
+        assert result.vulnerabilities[0].cve_id == ""
+
+    def test_null_pkg_name_does_not_raise(self):
+        scanner = TrivyScanner()
+        data = {
+            "Results": [
+                {"Vulnerabilities": [{"VulnerabilityID": "CVE-2024-0001", "PkgName": None}]}
+            ]
+        }
+        result = scanner._parse_results("node:22-alpine", data)
+        assert result.vulnerabilities[0].package_name == ""
+
+    def test_null_vulnerabilities_list_does_not_raise(self):
+        scanner = TrivyScanner()
+        data = {"Results": [{"Vulnerabilities": None}]}
+        result = scanner._parse_results("node:22-alpine", data)
+        assert result.total_count == 0
+
+    def test_null_results_list_does_not_raise(self):
+        scanner = TrivyScanner()
+        result = scanner._parse_results("node:22-alpine", {"Results": None})
+        assert result.total_count == 0
+
+    def test_missing_results_key_does_not_raise(self):
+        scanner = TrivyScanner()
+        result = scanner._parse_results("node:22-alpine", {})
+        assert result.total_count == 0
+
+    def test_a_result_entry_that_is_not_a_dict_is_skipped(self):
+        scanner = TrivyScanner()
+        data = {"Results": ["not-a-dict", {"Vulnerabilities": [{"VulnerabilityID": "CVE-1"}]}]}
+        result = scanner._parse_results("node:22-alpine", data)
+        assert result.total_count == 1
+
+    def test_a_vulnerability_entry_that_is_not_a_dict_is_skipped(self):
+        scanner = TrivyScanner()
+        data = {"Results": [{"Vulnerabilities": ["not-a-dict", {"VulnerabilityID": "CVE-1"}]}]}
+        result = scanner._parse_results("node:22-alpine", data)
+        assert result.total_count == 1
+
+
 class _FakeProc:
     """Stand-in for an `asyncio` subprocess.
 

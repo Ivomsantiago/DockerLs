@@ -14,6 +14,7 @@ from dockerls.application.use_cases.analyze_dockerfile import (
     AnalyzeDockerfileUseCase,
 )
 from dockerls.cli.dependencies import enable_console_logging
+from dockerls.cli.options import OutputFormat, parse_output_format
 from dockerls.cli.rendering import render_validation_report
 from dockerls.cli.text import safe
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_POLICY
@@ -31,7 +32,7 @@ def analyze(
         True, "--suggestions/--no-suggestions", help="Show hardening suggestions"
     ),
     output_format: str = typer.Option(
-        "table", "--format", "-f", help="Output format: table or json"
+        OutputFormat.TABLE.value, "--format", "-f", help="Output format: table or json"
     ),
     output: str | None = typer.Option(
         None,
@@ -46,6 +47,7 @@ def analyze(
     """Analyze a Dockerfile for security problems."""
     if verbose:
         enable_console_logging()
+    fmt = parse_output_format(output_format)
 
     template_provider = HardeningTemplates()
     validator = DockerfileValidator(template_provider)
@@ -69,10 +71,10 @@ def analyze(
         except OSError as e:
             console.print(f"[red]Error:[/red] could not write {safe(output)}: {e}")
             raise typer.Exit(EXIT_ERROR) from e
-        if output_format != "json":
+        if fmt != OutputFormat.JSON:
             console.print(f"[dim]Report written to {safe(output)}.[/dim]\n")
 
-    if output_format == "json":
+    if fmt == OutputFormat.JSON:
         # Via `typer.echo`, não pelo console do Rich: o consumidor é um
         # parser. O Rich quebra a linha na largura do terminal, e uma quebra
         # no meio de uma string do JSON produz um documento inválido -- num

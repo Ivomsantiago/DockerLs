@@ -18,7 +18,7 @@ from dockerls.application.use_cases.build_image import (
     BuildImageUseCase,
     BuildReport,
 )
-from dockerls.cli.dependencies import enable_console_logging
+from dockerls.cli.dependencies import build_host_guard, enable_console_logging
 from dockerls.cli.progress import scan_status
 from dockerls.cli.publish_prompt import resolve_destination, resolve_identity
 from dockerls.cli.rendering import render_validation_report
@@ -284,7 +284,10 @@ def build(
     # `--fail-on high` não deve sair para a rede consultar KEV, e um build
     # sem portão de exploração não deve consultar nada.
     use_case = BuildImageUseCase(
-        validator, template_provider, threat_intel=_threat_intel_for(fail_on, declared_policy)
+        validator,
+        template_provider,
+        threat_intel=_threat_intel_for(fail_on, declared_policy),
+        guard=build_host_guard(),
     )
 
     # Criar request
@@ -592,7 +595,7 @@ def _load_policy(context: str, explicit: str | None, *, no_policy: bool) -> Buil
     if no_policy:
         console.print(
             "[yellow]--no-policy: the context .dockerls-policy.yaml will not be "
-            "conferido neste build.[/yellow]"
+            "checked for this build.[/yellow]"
         )
         return None
 
@@ -628,14 +631,27 @@ def _print_policy_violations(violations: list[PolicyViolation]) -> None:
 
 
 def _parse_json_option(raw: str | None, flag: str) -> dict[str, str] | None:
-    """Parseia um argumento JSON de linha de comando, ou aborta com exit 1."""
+    """Parseia um argumento JSON de linha de comando, ou aborta com exit 1.
+
+    `json.loads` aceita qualquer documento JSON válido -- uma lista, um
+    número, uma string solta --, não só um objeto. Sem a checagem de forma,
+    `--labels '[1,2,3]'` passava direto daqui e só quebrava mais adiante, num
+    `**labels_dict` que não sabe desempacotar uma lista: um `TypeError` sem
+    relação nenhuma, aos olhos de quem o lê, com a flag que causou.
+    """
     if not raw:
         return None
     try:
-        parsed: dict[str, str] = json.loads(raw)
+        parsed = json.loads(raw)
     except json.JSONDecodeError as e:
         console.print(f"[red]Error parsing {flag}:[/red] {e}")
         raise typer.Exit(EXIT_ERROR) from e
+    if not isinstance(parsed, dict):
+        console.print(
+            f"[red]Error parsing {flag}:[/red] expected a JSON object "
+            f'(e.g. {{"KEY": "value"}}), got {type(parsed).__name__}'
+        )
+        raise typer.Exit(EXIT_ERROR)
     return parsed
 
 
@@ -1285,7 +1301,7 @@ def _print_provenance(provenance: BuildProvenance) -> None:
     console.print("[bold]INPUT[/bold] [dim](measured before the build)[/dim]")
     console.print(f"  Dockerfile  {safe(source.dockerfile) or '[dim]not digested[/dim]'}")
     console.print(
-        f"  Contexto    {safe(source.context) or '[dim]not digested[/dim]'}"
+        f"  Context     {safe(source.context) or '[dim]not digested[/dim]'}"
         f"  [dim]({source.context_files} files)[/dim]"
     )
     if source.git_revision:
@@ -1299,7 +1315,7 @@ def _print_provenance(provenance: BuildProvenance) -> None:
     console.print("\n[bold]OUTPUT[/bold] [dim](measured after the build)[/dim]")
     console.print(f"  Image       {safe(artifact.image_id) or '[dim]unknown[/dim]'}")
     if artifact.repo_digest:
-        console.print(f"  Manifesto   {safe(artifact.repo_digest)}")
+        console.print(f"  Digest      {safe(artifact.repo_digest)}")
     if artifact.published_reference:
-        console.print(f"  Publicada   {safe(artifact.published_reference)}")
+        console.print(f"  Published   {safe(artifact.published_reference)}")
     console.print()

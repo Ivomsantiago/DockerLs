@@ -175,3 +175,47 @@ class TestUnknownProductIsCachedOnce:
         assert calls["n"] == 1, f"endoflife.date queried {calls['n']} times for one product"
         # E todas as respostas concordam entre si -- o ponto todo do memo.
         assert all(results)
+
+
+class TestMalformedResponsesDegradeGracefully:
+    """A 200 body that is valid JSON but the wrong shape -- an object
+    instead of the documented array, an array of non-object entries -- or a
+    body that is not JSON at all used to raise past every reader, since the
+    old `cast(...)` was a type-checker annotation only, and only
+    `httpx.HTTPError` was caught around `resp.json()`."""
+
+    @pytest.mark.asyncio
+    async def test_a_json_object_body_is_treated_as_empty(self):
+        checker = EndOfLifeChecker()
+
+        async def fake_get(self, url, **kwargs):
+            return httpx.Response(200, json={"not": "an array"}, request=httpx.Request("GET", url))
+
+        with patch.object(httpx.AsyncClient, "get", fake_get):
+            assert await checker.is_eol("node", "22") is False
+
+    @pytest.mark.asyncio
+    async def test_non_object_entries_are_dropped_not_crashed_on(self):
+        checker = EndOfLifeChecker()
+
+        async def fake_get(self, url, **kwargs):
+            return httpx.Response(
+                200,
+                json=["not-a-cycle-object", {"cycle": "22", "eol": "2000-01-01"}],
+                request=httpx.Request("GET", url),
+            )
+
+        with patch.object(httpx.AsyncClient, "get", fake_get):
+            assert await checker.is_eol("node", "22") is True
+
+    @pytest.mark.asyncio
+    async def test_a_non_json_body_degrades_gracefully(self):
+        checker = EndOfLifeChecker(max_attempts=1)
+
+        async def fake_get(self, url, **kwargs):
+            return httpx.Response(
+                200, text="<html>proxy error</html>", request=httpx.Request("GET", url)
+            )
+
+        with patch.object(httpx.AsyncClient, "get", fake_get):
+            assert await checker.is_eol("node", "22") is False

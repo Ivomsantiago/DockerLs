@@ -30,7 +30,11 @@ from loguru import logger
 
 from dockerls.integrations.engine.client import EngineClient, EngineTarget
 from dockerls.integrations.engine.locator import find_engine, probe
-from dockerls.integrations.scan_target import blocked_scan_result, blocked_target_reason
+from dockerls.integrations.scan_target import (
+    blocked_scan_result,
+    blocked_target_reason,
+    invalid_reference_scan_result,
+)
 from dockerls.utils.executables import ExecutableNotFoundError, resolve_executable
 from dockerls.utils.validation import sanitize_image_name
 
@@ -137,7 +141,14 @@ class EngineBatchScanner:
         blocked: dict[int, ScanResult] = {}
         allowed: list[tuple[int, EngineTarget]] = []
         for index, (reference, dedup_key) in enumerate(targets):
-            safe_ref = sanitize_image_name(reference)
+            # One malformed reference is that reference's problem, not the
+            # whole batch's: an unhandled `ValueError` here used to abort
+            # every other, perfectly valid target queued alongside it.
+            try:
+                safe_ref = sanitize_image_name(reference)
+            except ValueError as e:
+                blocked[index] = invalid_reference_scan_result(reference, self._scanner, str(e))
+                continue
             reason = blocked_target_reason(safe_ref, self._guard)
             if reason:
                 blocked[index] = blocked_scan_result(safe_ref, self._scanner, reason)

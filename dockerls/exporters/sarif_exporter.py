@@ -10,8 +10,6 @@ from dockerls.domain.entities.vulnerability import Severity
 from dockerls.exporters.base import ExporterInterface
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from dockerls.application.dto.analysis import AnalysisResult, ImageAnalysis
 
 _SEVERITY_TO_LEVEL = {
@@ -72,9 +70,6 @@ _CVSS_MAX = 10.0
 class SARIFExporter(ExporterInterface):
     """Exports scan findings as SARIF 2.1.0 for consumption by GitHub code
     scanning and other SARIF-aware tooling."""
-
-    def export(self, result: AnalysisResult, output_path: Path) -> None:
-        output_path.write_bytes(self.export_string(result).encode("utf-8"))
 
     def export_string(self, result: AnalysisResult) -> str:
         images: list[ImageAnalysis] = [*result.recommendations, *result.alternatives]

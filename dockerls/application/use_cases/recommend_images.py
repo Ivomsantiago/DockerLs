@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import re
 from datetime import UTC, datetime
@@ -295,7 +296,20 @@ class RecommendImagesUseCase:
             if callable(refresh_db)
             else None
         )
-        tags = await self._repository.search_tags(image_name, limit=limit)
+        try:
+            tags = await self._repository.search_tags(image_name, limit=limit)
+        except BaseException:
+            # A failed or cancelled tag search must not leave the DB
+            # download running unattended: `execute()`'s `finally` closes
+            # the scanner right after this propagates, and a still-running
+            # task racing that shutdown is exactly the orphan this guards
+            # against -- not a slow leak, a task with nothing left to
+            # finish into.
+            if db_task is not None:
+                db_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await db_task
+            raise
         db_ready = await db_task if db_task is not None else True
 
         if not db_ready:
@@ -811,7 +825,6 @@ class RecommendImagesUseCase:
             logger.warning(f"Could not evict cache entry {cache_key}: {e}")
 
     async def _set_cached(self, image: DockerImage, analysis: ImageAnalysis) -> None:
-        key = image.full_reference
         """Persist an analysis, treating a storage failure as a cache miss.
 
         The cache is an optimisation, never a source of truth. Letting a
@@ -821,6 +834,7 @@ class RecommendImagesUseCase:
         SQLite file -- ordinary under the concurrency this use case creates
         -- was enough to make a clean image vanish from the results.
         """
+        key = image.full_reference
         if not self._cache:
             return
         try:

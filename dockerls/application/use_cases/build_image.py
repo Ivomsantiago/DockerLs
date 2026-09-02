@@ -52,7 +52,9 @@ from dockerls.domain.value_objects.provenance import (
 from dockerls.domain.value_objects.tristate import Tristate
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_POLICY
 from dockerls.infrastructure.hashing import ContextTooLargeError, hash_context, hash_file
+from dockerls.integrations.scan_target import blocked_target_reason
 from dockerls.utils.executables import ExecutableNotFoundError, resolve_executable
+from dockerls.utils.validation import sanitize_image_name
 
 if TYPE_CHECKING:
     from dockerls.application.use_cases.analyze_dockerfile import AnalyzeDockerfileResponse
@@ -60,6 +62,7 @@ if TYPE_CHECKING:
         DockerfileValidatorInterface,
         HardeningTemplateProvider,
     )
+    from dockerls.infrastructure.network.host_guard import HostGuard
     from dockerls.integrations.threat_intel.client import ThreatIntelClient
 
 
@@ -208,12 +211,18 @@ class BuildImageUseCase:
         validator: DockerfileValidatorInterface,
         template_provider: HardeningTemplateProvider,
         threat_intel: ThreatIntelClient | None = None,
+        guard: HostGuard | None = None,
     ):
         self.validator = validator
         self.template_provider = template_provider
         # Opcional: sem ele os portões `kev` e `epss` não têm o que
         # consultar, e dizem isso em vez de aprovar por omissão.
         self.threat_intel = threat_intel
+        # `trivy image X` / `grype X` abrem seus próprios sockets -- sem
+        # guarda aqui, `--attribute`/`--production` mandavam o scanner
+        # buscar a base declarada no `FROM` sem passar pela mesma política
+        # de rede que protege todo outro pull. Ver `scan_target.py`.
+        self._guard = guard
 
     def execute(self, request: BuildImageRequest) -> BuildImageResponse:
         """Executa o build seguro da imagem."""
@@ -940,7 +949,7 @@ class BuildImageUseCase:
                 return retag_error
 
         logger.debug(f"Publishing image: {target}")
-        return self._run_docker(["push", target], timeout=1800, action=f"Push de {target}")
+        return self._run_docker(["push", target], timeout=1800, action=f"Push of {target}")
 
     @staticmethod
     def _run_docker(args: list[str], *, timeout: int, action: str) -> str | None:
@@ -954,10 +963,10 @@ class BuildImageUseCase:
                 check=False,
             )
         except (ExecutableNotFoundError, OSError, subprocess.SubprocessError) as e:
-            return f"{action} falhou: {e}"
+            return f"{action} failed: {e}"
 
         if result.returncode != 0:
-            return f"{action} falhou: {result.stderr.strip()[:500]}"
+            return f"{action} failed: {result.stderr.strip()[:500]}"
         return None
 
     def _get_image_info(self, tag: str) -> dict[str, Any]:
@@ -984,7 +993,17 @@ class BuildImageUseCase:
 
     def _scan_image(self, image_tag: str) -> ScanResult | None:
         """Executa scan de segurança na imagem."""
-        logger.info(f"Starting the image scan: {image_tag}")
+        try:
+            safe_tag = sanitize_image_name(image_tag)
+        except ValueError as e:
+            logger.warning(f"Refusing to scan {image_tag!r}: {e}")
+            return None
+        blocked = blocked_target_reason(safe_tag, self._guard)
+        if blocked:
+            logger.warning(f"Refusing to scan {safe_tag} with trivy/grype: {blocked}")
+            return None
+
+        logger.info(f"Starting the image scan: {safe_tag}")
         start_time = datetime.now()
 
         try:
@@ -997,7 +1016,7 @@ class BuildImageUseCase:
                     "json",
                     "--severity",
                     "CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN",
-                    image_tag,
+                    safe_tag,
                 ],
                 capture_output=True,
                 text=True,
@@ -1021,7 +1040,7 @@ class BuildImageUseCase:
             result = subprocess.run(  # nosec B603  # noqa: S603
                 [
                     resolve_executable("grype"),
-                    image_tag,
+                    safe_tag,
                     "-o",
                     "json",
                 ],
@@ -1505,19 +1524,22 @@ class BuildImageUseCase:
         Uma base sem digest é uma tag móvel, e registrar isso vale mais do
         que omitir: é exatamente a diferença entre um build reproduzível e um
         que depende do dia.
+
+        Delegado a `parse_bases` -- o mesmo parser que `dockerls base` usa --
+        em vez de um `stripped.split()[1]` ingênuo, que lia
+        `--platform=linux/amd64` como se fosse a própria imagem em
+        `FROM --platform=linux/amd64 node:22`, levantava `IndexError` num
+        `FROM` sem argumento, e nunca resolvia um digest fixado via `ARG`
+        (`FROM base@${DIGEST}`) -- só o inline `@sha256:...`.
         """
-        bases: dict[str, str] = {}
         try:
             content = dockerfile.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            return bases
-        for line in content.splitlines():
-            stripped = line.strip()
-            if not stripped.upper().startswith("FROM "):
-                continue
-            reference = stripped.split()[1]
-            _, separator, digest = reference.partition("@")
-            bases[reference] = digest if separator else ""
+            return {}
+        bases: dict[str, str] = {}
+        for base in parse_bases(content):
+            key = f"{base.name}:{base.tag}" if base.tag else base.name
+            bases[key] = base.digest
         return bases
 
     @staticmethod

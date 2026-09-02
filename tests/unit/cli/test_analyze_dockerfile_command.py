@@ -84,6 +84,17 @@ class TestAnalyzeDockerfile:
         assert payload["validation"]["errors"] > 0
         assert payload["suggestions"]
 
+    def test_an_unrecognised_format_is_rejected_not_silently_tabled(self, clean_context):
+        """`--format` accepted only `table`/`json` in its help text, but a
+        plain `str` compared with `== "json"` let any other value -- a typo
+        like `jsonn`, or `yaml` -- fall through to the table renderer
+        without a word of complaint."""
+        result = runner.invoke(app, ["analyze-dockerfile", str(clean_context), "--format", "yaml"])
+
+        assert result.exit_code == EXIT_ERROR
+        assert "yaml" in result.stdout
+        assert "Validation Checks" not in result.stdout
+
     def test_validate_only_skips_suggestions(self, bad_context):
         result = runner.invoke(app, ["analyze-dockerfile", str(bad_context), "--validate-only"])
 

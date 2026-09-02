@@ -103,11 +103,6 @@ _MULTIPART = re.compile(
     re.IGNORECASE,
 )
 
-_FILE_FORMAT = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
-_CONSOLE_FORMAT = (
-    "<level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - {message}"
-)
-
 
 def redact(message: str) -> str:
     """Redact credentials from a log line in every shape they arrive in.

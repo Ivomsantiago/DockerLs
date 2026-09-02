@@ -47,6 +47,127 @@ class TestGrypeParser:
         assert result.total_count == 0
 
 
+class TestGrypeParserIsNullSafe:
+    """Grype emits explicit nulls for several fields on a normal, completed
+    scan (no description, no fix, no locations). Each used to sail past a
+    bare `.get(key, default)` and break the parse, turning a completed scan
+    into an ERROR result instead of a finding with an empty field."""
+
+    def test_null_description_does_not_raise(self):
+        scanner = GrypeScanner()
+        data = {
+            "matches": [
+                {
+                    "vulnerability": {"id": "CVE-1", "severity": "High", "description": None},
+                    "artifact": {"name": "libz", "version": "1.0"},
+                }
+            ]
+        }
+        result = scanner._parse_results("node:22", data)
+        assert result.vulnerabilities[0].description == ""
+
+    def test_null_severity_does_not_raise(self):
+        scanner = GrypeScanner()
+        data = {
+            "matches": [
+                {
+                    "vulnerability": {"id": "CVE-1", "severity": None},
+                    "artifact": {"name": "libz", "version": "1.0"},
+                }
+            ]
+        }
+        result = scanner._parse_results("node:22", data)
+        assert result.vulnerabilities[0].severity.value == "UNKNOWN"
+
+    def test_null_fix_block_does_not_raise(self):
+        scanner = GrypeScanner()
+        data = {
+            "matches": [
+                {
+                    "vulnerability": {"id": "CVE-1", "severity": "High", "fix": None},
+                    "artifact": {"name": "libz", "version": "1.0"},
+                }
+            ]
+        }
+        result = scanner._parse_results("node:22", data)
+        assert result.vulnerabilities[0].fixed_version == ""
+
+    def test_null_artifact_does_not_raise(self):
+        scanner = GrypeScanner()
+        data = {
+            "matches": [{"vulnerability": {"id": "CVE-1", "severity": "High"}, "artifact": None}]
+        }
+        result = scanner._parse_results("node:22", data)
+        assert result.vulnerabilities[0].package_name == ""
+
+    def test_a_non_dict_location_entry_does_not_raise(self):
+        scanner = GrypeScanner()
+        data = {
+            "matches": [
+                {
+                    "vulnerability": {"id": "CVE-1", "severity": "High"},
+                    "artifact": {"name": "libz", "version": "1.0", "locations": [None]},
+                }
+            ]
+        }
+        result = scanner._parse_results("node:22", data)
+        assert result.vulnerabilities[0].target == ""
+
+    def test_null_locations_does_not_raise(self):
+        scanner = GrypeScanner()
+        data = {
+            "matches": [
+                {
+                    "vulnerability": {"id": "CVE-1", "severity": "High"},
+                    "artifact": {"name": "libz", "version": "1.0", "locations": None},
+                }
+            ]
+        }
+        result = scanner._parse_results("node:22", data)
+        assert result.vulnerabilities[0].target == ""
+
+    def test_null_matches_list_does_not_raise(self):
+        scanner = GrypeScanner()
+        result = scanner._parse_results("node:22", {"matches": None})
+        assert result.total_count == 0
+
+    def test_missing_matches_key_does_not_raise(self):
+        scanner = GrypeScanner()
+        result = scanner._parse_results("node:22", {})
+        assert result.total_count == 0
+
+    def test_a_match_entry_that_is_not_a_dict_is_skipped(self):
+        scanner = GrypeScanner()
+        data = {
+            "matches": [
+                "not-a-dict",
+                {
+                    "vulnerability": {"id": "CVE-1", "severity": "High"},
+                    "artifact": {"name": "libz", "version": "1.0"},
+                },
+            ]
+        }
+        result = scanner._parse_results("node:22", data)
+        assert result.total_count == 1
+
+    def test_a_non_dict_cvss_entry_does_not_raise(self):
+        scanner = GrypeScanner()
+        data = {
+            "matches": [
+                {
+                    "vulnerability": {
+                        "id": "CVE-1",
+                        "severity": "High",
+                        "cvss": ["not-a-dict"],
+                    },
+                    "artifact": {"name": "libz", "version": "1.0"},
+                }
+            ]
+        }
+        result = scanner._parse_results("node:22", data)
+        assert result.vulnerabilities[0].cvss_score == 0.0
+
+
 class _FakeProc:
     """Stand-in for an `asyncio` subprocess.
 

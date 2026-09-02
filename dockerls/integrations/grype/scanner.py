@@ -27,6 +27,12 @@ if TYPE_CHECKING:
     from dockerls.infrastructure.network.host_guard import HostGuard
 
 
+def _safe_list(value: Any) -> list[Any]:
+    """`value` as a list, or `[]` for anything else -- missing key, explicit
+    `null`, or a scalar where Grype's schema promises an array."""
+    return value if isinstance(value, list) else []
+
+
 class GrypeScanner(ScannerInterface):
     def __init__(
         self,
@@ -250,10 +256,23 @@ class GrypeScanner(ScannerInterface):
             )
 
     def _parse_results(self, image_ref: str, data: dict[str, Any]) -> ScanResult:
+        """Convert Grype's JSON into vulnerabilities, without trusting any
+        single field to be present, of the right type, or non-null.
+
+        `.get(key, default)` only supplies the default for a *missing* key;
+        Grype emits explicit nulls for several of these (an advisory with no
+        description, no fix, no CVSS), and each null used to sail past its
+        default and break on the next `.upper()`, slice, or nested `.get()`
+        -- turning a completed scan into an ERROR result instead of a
+        finding with an empty field.
+        """
         vulns: list[Vulnerability] = []
-        for match in data.get("matches", []):
-            vd = match.get("vulnerability", {})
-            sev_str = vd.get("severity", "Unknown").upper()
+        for match in _safe_list(data.get("matches")):
+            if not isinstance(match, dict):
+                continue
+            vd = match.get("vulnerability")
+            vd = vd if isinstance(vd, dict) else {}
+            sev_str = str(vd.get("severity") or "Unknown").upper()
             if sev_str == "NEGLIGIBLE":
                 sev_str = "LOW"
             try:
@@ -261,26 +280,27 @@ class GrypeScanner(ScannerInterface):
             except ValueError:
                 severity = Severity.UNKNOWN
 
-            artifact = match.get("artifact", {})
-            fixed_versions = vd.get("fix", {}).get("versions", [])
+            artifact = match.get("artifact")
+            artifact = artifact if isinstance(artifact, dict) else {}
+            fix = vd.get("fix")
+            fixed_versions = fix.get("versions") if isinstance(fix, dict) else None
+            fixed_versions = fixed_versions if isinstance(fixed_versions, list) else []
             fixed_version = fixed_versions[0] if fixed_versions else ""
 
-            cvss_score, cvss_source = self._extract_cvss(vd.get("cvss", []))
+            cvss_score, cvss_source = self._extract_cvss(_safe_list(vd.get("cvss")))
 
             vulns.append(
                 Vulnerability(
-                    cve_id=vd.get("id", ""),
+                    cve_id=str(vd.get("id") or ""),
                     severity=severity,
                     cvss_score=cvss_score,
                     cvss_source=cvss_source,
-                    package_name=artifact.get("name", ""),
-                    installed_version=artifact.get("version", ""),
-                    fixed_version=fixed_version,
-                    description=vd.get("description", "")[:200],
+                    package_name=str(artifact.get("name") or ""),
+                    installed_version=str(artifact.get("version") or ""),
+                    fixed_version=str(fixed_version or ""),
+                    description=str(vd.get("description") or "")[:200],
                     package_type=str(artifact.get("type") or ""),
-                    target=str(artifact.get("locations", [{}])[0].get("path", ""))
-                    if artifact.get("locations")
-                    else "",
+                    target=self._first_location_path(artifact.get("locations")),
                 )
             )
 
@@ -293,6 +313,17 @@ class GrypeScanner(ScannerInterface):
             os_family=family,
             os_version=version,
         )
+
+    @staticmethod
+    def _first_location_path(locations: Any) -> str:
+        """The path of the first location entry, or "" for anything that
+        isn't a non-empty list of dicts -- `null`, `[]`, or a list holding a
+        bare string/`None` instead of the expected `{"path": ...}` shape."""
+        for entry in _safe_list(locations):
+            if isinstance(entry, dict):
+                return str(entry.get("path") or "")
+            break
+        return ""
 
     @staticmethod
     def _parse_distro(data: dict[str, Any]) -> tuple[str, str]:
@@ -313,7 +344,11 @@ class GrypeScanner(ScannerInterface):
         source > first available, instead of an arbitrary max() across
         differently-scored advisories. Returns (score, source) so the report
         can say which base produced the number."""
-        if not entries:
+        # A non-dict member (a bare string, a null slipped into the array)
+        # is as unusable as an absent list -- skip it rather than let
+        # `.get("source", ...)` raise on something that isn't a mapping.
+        dict_entries = [e for e in entries if isinstance(e, dict)]
+        if not dict_entries:
             return 0.0, ""
 
         def base_score(entry: dict[str, Any]) -> float:
@@ -328,9 +363,9 @@ class GrypeScanner(ScannerInterface):
             except (TypeError, ValueError):
                 return 0.0
 
-        for entry in entries:
+        for entry in dict_entries:
             source = str(entry.get("source", ""))
             if "nvd" in source.lower():
                 return base_score(entry), source or "nvd"
 
-        return base_score(entries[0]), str(entries[0].get("source", ""))
+        return base_score(dict_entries[0]), str(dict_entries[0].get("source", ""))
