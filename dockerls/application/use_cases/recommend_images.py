@@ -232,16 +232,11 @@ class RecommendImagesUseCase:
         """
         if not image.digest_known:
             return None
-        try:
-            identity = ImageIdentity.from_image(image)
-        except ValueError as error:
-            # Registry/catalogue metadata is external input. A malformed
-            # digest must make the cache ineligible, not abort an otherwise
-            # valid scanner run. The scanner still receives the validated
-            # image reference and its result still passes the normal gate.
-            logger.warning(
-                f"Ignoring non-canonical cache identity for {image.full_reference}: {error}"
-            )
+        # Registry/catalogue metadata is external input. A malformed digest
+        # makes only the cache ineligible; it must not abort the real scan.
+        identity = ImageIdentity.try_from_image(image)
+        if identity is None:
+            logger.warning(f"Ignoring non-canonical cache identity for {image.full_reference}")
             return None
         return f"analysis:{self._analysis_fingerprint}:{identity.cache_material}"
 
@@ -831,10 +826,9 @@ class RecommendImagesUseCase:
         # Treat the payload as untrusted even after a key lookup. A manually
         # edited/corrupt database must not return evidence for another digest
         # or platform merely because it was stored under this key.
-        try:
-            cached_identity = ImageIdentity.from_image(analysis.image)
-            requested_identity = ImageIdentity.from_image(image)
-        except ValueError:
+        cached_identity = ImageIdentity.try_from_image(analysis.image)
+        requested_identity = ImageIdentity.try_from_image(image)
+        if cached_identity is None or requested_identity is None:
             await self._discard(cache_key)
             return None
         if cached_identity != requested_identity:

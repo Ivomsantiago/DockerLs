@@ -37,3 +37,10 @@ def test_identity_rejects_absent_or_noncanonical_digest(digest):
 
     with pytest.raises(ValueError, match="canonical sha256"):
         ImageIdentity.from_image(image)
+
+
+@pytest.mark.parametrize("digest", ["", "sha256:1234", "md5:" + "a" * 32])
+def test_cache_safe_factory_returns_none_for_untrusted_digest(digest):
+    image = DockerImage(name="nginx", tag="latest", digest=digest)
+
+    assert ImageIdentity.try_from_image(image) is None

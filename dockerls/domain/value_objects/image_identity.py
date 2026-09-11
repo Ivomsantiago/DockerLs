@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from dockerls.domain.value_objects.image_reference import is_registry_host
+
+if TYPE_CHECKING:
+    from dockerls.domain.entities.image import DockerImage
 
 _DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
 _PLATFORM_PART = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
@@ -36,9 +40,9 @@ class ImageIdentity:
             raise ValueError("platform must be os/architecture[/variant]")
 
     @classmethod
-    def from_image(cls, image: object) -> ImageIdentity:
-        """Build from a DockerImage-like object without importing entities."""
-        name = str(getattr(image, "name", "")).lower()
+    def from_image(cls, image: DockerImage) -> ImageIdentity:
+        """Build a strict identity, raising when external metadata is invalid."""
+        name = image.name.lower()
         parts = name.split("/")
         if len(parts) > 1 and is_registry_host(parts[0]):
             registry = parts.pop(0)
@@ -49,13 +53,27 @@ class ImageIdentity:
             registry = DOCKER_HUB_REGISTRY
         if registry == DOCKER_HUB_REGISTRY and "/" not in repository:
             repository = f"library/{repository}"
-        platform = f"{getattr(image, 'os', '')}/{getattr(image, 'architecture', '')}".lower()
+        platform = f"{image.os}/{image.architecture}".lower()
         return cls(
             registry=registry,
             repository=repository,
-            digest=str(getattr(image, "digest", "")).lower(),
+            digest=image.digest.lower(),
             platform=platform,
         )
+
+    @classmethod
+    def try_from_image(cls, image: DockerImage) -> ImageIdentity | None:
+        """Return no identity when untrusted image metadata is not canonical.
+
+        Registry and catalogue responses are untrusted. Callers that use an
+        identity only as an optimisation (for example, a cache) must not turn
+        malformed metadata into an analysis failure; they skip that
+        optimisation and keep the real scan path instead.
+        """
+        try:
+            return cls.from_image(image)
+        except ValueError:
+            return None
 
     @property
     def cache_material(self) -> str:
