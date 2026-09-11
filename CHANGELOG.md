@@ -17,10 +17,14 @@ e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0
 - Cached payloads are revalidated against the requested digest and platform;
   transplanted, corrupt, or mismatched entries are evicted rather than treated
   as valid security evidence.
+- Malformed digest metadata received from a registry or catalogue now disables
+  cache reuse without aborting the scan. External metadata remains untrusted,
+  while the scanner result continues through the normal verification gate.
 
 ### Tests
 - Added regression coverage for tag mutation, platform isolation, Docker Hub
-  identity normalization, malformed digests, and cache-payload substitution.
+  identity normalization, malformed digests, cache-payload substitution, and
+  the malformed-metadata fallback to a real scan.
 
 ### Documentation
 - Added a current-state Security Decision Engine audit covering the existing

@@ -210,6 +210,11 @@ class TestCanonicalCacheIdentity:
         image = DockerImage(name="nginx", tag="latest")
         assert self._use_case()._cache_key(image) is None
 
+    def test_malformed_external_digest_is_a_cache_miss_not_an_exception(self):
+        image = DockerImage(name="nginx", tag="latest", digest="sha256:not-a-digest")
+
+        assert self._use_case()._cache_key(image) is None
+
     def test_tag_mutation_changes_the_cache_key(self):
         first = DockerImage(name="nginx", tag="latest", digest="sha256:" + "1" * 64)
         moved = DockerImage(name="nginx", tag="latest", digest="sha256:" + "2" * 64)
@@ -246,6 +251,29 @@ class TestCanonicalCacheIdentity:
 
         assert await use_case._get_cached(requested) is None
         assert key in cache.deleted
+
+    @pytest.mark.asyncio
+    async def test_malformed_digest_still_gets_a_real_scan(self):
+        image = DockerImage(name="node", tag="22", digest="sha256:invalid")
+
+        class _MalformedDigestRepo(_Repo):
+            async def search_tags(self, image_name, limit=100):
+                return [image]
+
+        scanner = _CountingScanner()
+        cache = _Cache(None, "unused")
+        use_case = RecommendImagesUseCase(
+            repository=_MalformedDigestRepo(),
+            scanner=scanner,
+            eol_checker=_EOL(),
+            cache=cache,
+        )
+
+        result = await use_case.execute("node")
+
+        assert scanner.scans == 1
+        assert result.recommendations
+        assert cache.store == {}
 
 
 class TestCacheKeyIsSchemaVersioned:

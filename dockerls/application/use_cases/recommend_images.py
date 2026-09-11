@@ -232,7 +232,17 @@ class RecommendImagesUseCase:
         """
         if not image.digest_known:
             return None
-        identity = ImageIdentity.from_image(image)
+        try:
+            identity = ImageIdentity.from_image(image)
+        except ValueError as error:
+            # Registry/catalogue metadata is external input. A malformed
+            # digest must make the cache ineligible, not abort an otherwise
+            # valid scanner run. The scanner still receives the validated
+            # image reference and its result still passes the normal gate.
+            logger.warning(
+                f"Ignoring non-canonical cache identity for {image.full_reference}: {error}"
+            )
+            return None
         return f"analysis:{self._analysis_fingerprint}:{identity.cache_material}"
 
     async def execute(self, image_name: str, limit: int = 100) -> AnalysisResult:
