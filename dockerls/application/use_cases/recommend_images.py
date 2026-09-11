@@ -31,6 +31,7 @@ from dockerls.domain.entities.recommendation import (
     Recommendation,
     RemediationStep,
 )
+from dockerls.domain.value_objects.image_identity import ImageIdentity
 from dockerls.domain.value_objects.remediation_score import RemediationScore
 from dockerls.domain.value_objects.scan_plan import DEFAULT_SCAN_BUDGET, plan_scans
 from dockerls.domain.value_objects.security_score import SecurityScore
@@ -215,7 +216,7 @@ class RecommendImagesUseCase:
             result = await refresh_db()
         return bool(result)
 
-    def _cache_key(self, image: DockerImage) -> str:
+    def _cache_key(self, image: DockerImage) -> str | None:
         """Chaveia a análise pelo **digest** do manifesto, não pela tag.
 
         Tags são mutáveis: `node:22-alpine` de hoje não é a mesma imagem de
@@ -225,11 +226,19 @@ class RecommendImagesUseCase:
         digest identifica bytes, então uma entrada só casa com a imagem que
         de fato produziu aquele scan.
 
-        Sem digest (registries que listam só nomes de tag) a referência
-        continua sendo a chave, que é o melhor disponível.
+        Sem digest não existe identidade de segurança estável. Nesse caso o
+        cache é deliberadamente ignorado: reutilizar a referência seria
+        transformar uma tag mutável em prova sobre bytes que podem ter mudado.
         """
-        identity = image.digest or image.full_reference
-        return f"analysis:{self._analysis_fingerprint}:{identity}"
+        if not image.digest_known:
+            return None
+        # Registry/catalogue metadata is external input. A malformed digest
+        # makes only the cache ineligible; it must not abort the real scan.
+        identity = ImageIdentity.try_from_image(image)
+        if identity is None:
+            logger.warning(f"Ignoring non-canonical cache identity for {image.full_reference}")
+            return None
+        return f"analysis:{self._analysis_fingerprint}:{identity.cache_material}"
 
     async def execute(self, image_name: str, limit: int = 100) -> AnalysisResult:
         try:
@@ -792,6 +801,8 @@ class RecommendImagesUseCase:
         if not self._cache:
             return None
         cache_key = self._cache_key(image)
+        if cache_key is None:
+            return None
         try:
             data = await self._cache.get(cache_key)
         except Exception as e:
@@ -810,6 +821,18 @@ class RecommendImagesUseCase:
         # an older build could carry a failed scan. Re-apply the gate.
         if not analysis.scan.is_verified:
             logger.warning(f"Discarding cache entry for {key}: cached scan is not verified")
+            await self._discard(cache_key)
+            return None
+        # Treat the payload as untrusted even after a key lookup. A manually
+        # edited/corrupt database must not return evidence for another digest
+        # or platform merely because it was stored under this key.
+        cached_identity = ImageIdentity.try_from_image(analysis.image)
+        requested_identity = ImageIdentity.try_from_image(image)
+        if cached_identity is None or requested_identity is None:
+            await self._discard(cache_key)
+            return None
+        if cached_identity != requested_identity:
+            logger.warning(f"Discarding mismatched cache entry for {key}")
             await self._discard(cache_key)
             return None
         return analysis
@@ -837,9 +860,12 @@ class RecommendImagesUseCase:
         key = image.full_reference
         if not self._cache:
             return
+        cache_key = self._cache_key(image)
+        if cache_key is None:
+            return
         try:
             await self._cache.set(
-                self._cache_key(image),
+                cache_key,
                 analysis.model_dump(),
                 ttl_seconds=self._cache_ttl_seconds,
             )
