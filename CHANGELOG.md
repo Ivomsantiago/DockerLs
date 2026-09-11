@@ -5,6 +5,28 @@ Todas as mudanças relevantes do DockerLs são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.16] -- 2026-09-10
+
+### Security
+- Added a canonical, immutable image identity composed of normalized registry,
+  repository, OCI SHA-256 digest, and platform. Tags remain display/discovery
+  metadata and are not part of the final trust identity.
+- Analysis cache reads and writes now require a canonical digest. If digest
+  resolution is unavailable, DockerLs performs a real scan and deliberately
+  skips cache reuse instead of trusting a mutable `name:tag` key.
+- Cached payloads are revalidated against the requested digest and platform;
+  transplanted, corrupt, or mismatched entries are evicted rather than treated
+  as valid security evidence.
+
+### Tests
+- Added regression coverage for tag mutation, platform isolation, Docker Hub
+  identity normalization, malformed digests, and cache-payload substitution.
+
+### Documentation
+- Added a current-state Security Decision Engine audit covering the existing
+  architecture and classifying all requested phases as implemented, partial,
+  missing, or requiring refactoring.
+
 ## [1.0.15] -- 2026-09-01
 
 Full end-to-end quality audit: functional correctness, architecture,
