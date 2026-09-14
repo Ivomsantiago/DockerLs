@@ -122,11 +122,20 @@ class TestCacheValidationMiss:
             eol_checker=NullEOL(),
             cache=cache,
         )
-        # write a payload that no longer matches the ImageAnalysis schema
-        key = uc._cache_key(DockerImage(name="node", tag="latest"))
+        # Analysis cache entries require an immutable identity. Use a
+        # canonical digest here so this test reaches SQLite and exercises
+        # corrupt-payload eviction rather than the intentional tag-only
+        # cache-miss path.
+        image = DockerImage(
+            name="node",
+            tag="latest",
+            digest="sha256:" + "a" * 64,
+        )
+        key = uc._cache_key(image)
+        assert key is not None
         await cache.set(key, {"totally": "wrong-shape"})
 
-        result = await uc._get_cached(DockerImage(name="node", tag="latest"))
+        result = await uc._get_cached(image)
         assert result is None
         assert await cache.get(key) is None
 

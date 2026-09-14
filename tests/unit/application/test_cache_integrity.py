@@ -21,7 +21,12 @@ from dockerls.domain.interfaces.eol_checker import EOLCheckerInterface
 from dockerls.domain.interfaces.image_repository import ImageRepositoryInterface
 from dockerls.domain.interfaces.scanner import ScannerInterface
 
-TAG = DockerImage(name="node", tag="22-alpine", is_official=True)
+TAG = DockerImage(
+    name="node",
+    tag="22-alpine",
+    digest="sha256:" + "a" * 64,
+    is_official=True,
+)
 
 
 def _key_for(use_case) -> str:
@@ -31,7 +36,9 @@ def _key_for(use_case) -> str:
     ignore ativas, threat intel ligado ou não); um teste que reconstrói a
     string à mão passa a testar o formato, não o comportamento.
     """
-    return use_case._cache_key(TAG)
+    key = use_case._cache_key(TAG)
+    assert key is not None
+    return key
 
 
 class _Repo(ImageRepositoryInterface):
@@ -193,6 +200,82 @@ class TestValidCacheEntriesAreStillUsed:
         assert result.recommendations[0].security_score == 98.0
 
 
+class TestCanonicalCacheIdentity:
+    def _use_case(self) -> RecommendImagesUseCase:
+        return RecommendImagesUseCase(
+            repository=_Repo(), scanner=_CountingScanner(), eol_checker=_EOL()
+        )
+
+    def test_unresolved_tag_is_never_a_security_cache_key(self):
+        image = DockerImage(name="nginx", tag="latest")
+        assert self._use_case()._cache_key(image) is None
+
+    def test_malformed_external_digest_is_a_cache_miss_not_an_exception(self):
+        image = DockerImage(name="nginx", tag="latest", digest="sha256:not-a-digest")
+
+        assert self._use_case()._cache_key(image) is None
+
+    def test_tag_mutation_changes_the_cache_key(self):
+        first = DockerImage(name="nginx", tag="latest", digest="sha256:" + "1" * 64)
+        moved = DockerImage(name="nginx", tag="latest", digest="sha256:" + "2" * 64)
+        use_case = self._use_case()
+
+        assert use_case._cache_key(first) != use_case._cache_key(moved)
+
+    def test_platform_changes_the_cache_key(self):
+        digest = "sha256:" + "3" * 64
+        amd64 = DockerImage(name="nginx", tag="latest", digest=digest, architecture="amd64")
+        arm64 = DockerImage(name="nginx", tag="latest", digest=digest, architecture="arm64")
+        use_case = self._use_case()
+
+        assert use_case._cache_key(amd64) != use_case._cache_key(arm64)
+
+    @pytest.mark.asyncio
+    async def test_payload_for_another_digest_is_evicted(self):
+        requested = TAG.model_copy(update={"digest": "sha256:" + "b" * 64})
+        poisoned = ImageAnalysis(
+            image=TAG,
+            scan=ScanResult(
+                image_reference=TAG.full_reference,
+                scan_timestamp="2026-01-01T00:00:00Z",
+            ),
+            security_score=100,
+            tier="A",
+            remediation_score=100,
+        ).model_dump()
+        use_case = self._use_case()
+        key = use_case._cache_key(requested)
+        assert key is not None
+        cache = _Cache(poisoned, key)
+        use_case._cache = cache
+
+        assert await use_case._get_cached(requested) is None
+        assert key in cache.deleted
+
+    @pytest.mark.asyncio
+    async def test_malformed_digest_still_gets_a_real_scan(self):
+        image = DockerImage(name="node", tag="22", digest="sha256:invalid")
+
+        class _MalformedDigestRepo(_Repo):
+            async def search_tags(self, image_name, limit=100):
+                return [image]
+
+        scanner = _CountingScanner()
+        cache = _Cache(None, "unused")
+        use_case = RecommendImagesUseCase(
+            repository=_MalformedDigestRepo(),
+            scanner=scanner,
+            eol_checker=_EOL(),
+            cache=cache,
+        )
+
+        result = await use_case.execute("node")
+
+        assert scanner.scans == 1
+        assert result.recommendations
+        assert cache.store == {}
+
+
 class TestCacheKeyIsSchemaVersioned:
     def test_entries_from_an_older_schema_cannot_be_read(self, tmp_path):
         """Bumping CACHE_SCHEMA_VERSION must orphan old rows rather than
@@ -323,8 +406,8 @@ class TestCacheIsKeyedByDigestNotTag:
 
     def test_same_tag_different_digest_is_a_different_entry(self):
         uc = self._use_case()
-        before = DockerImage(name="node", tag="22-alpine", digest="sha256:aaa")
-        after = DockerImage(name="node", tag="22-alpine", digest="sha256:bbb")
+        before = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "a" * 64)
+        after = DockerImage(name="node", tag="22-alpine", digest="sha256:" + "b" * 64)
 
         assert uc._cache_key(before) != uc._cache_key(after), (
             "a rebuilt tag reused the previous image's cached verdict"
@@ -333,25 +416,26 @@ class TestCacheIsKeyedByDigestNotTag:
     def test_same_digest_under_different_tags_shares_the_entry(self):
         """São os mesmos bytes -- escaneá-los duas vezes é desperdício."""
         uc = self._use_case()
-        a = DockerImage(name="node", tag="22-alpine", digest="sha256:aaa")
-        b = DockerImage(name="node", tag="22", digest="sha256:aaa")
+        digest = "sha256:" + "a" * 64
+        a = DockerImage(name="node", tag="22-alpine", digest=digest)
+        b = DockerImage(name="node", tag="22", digest=digest)
 
         assert uc._cache_key(a) == uc._cache_key(b)
 
-    def test_it_falls_back_to_the_reference_without_a_digest(self):
-        """Registries que listam só nomes de tag não dão digest; a
-        referência é o melhor identificador disponível."""
+    def test_it_refuses_cache_identity_without_a_digest(self):
+        """A mutable reference is metadata, never a security identity."""
         uc = self._use_case()
         image = DockerImage(name="cgr.dev/chainguard/node", tag="latest")
 
-        assert image.full_reference in uc._cache_key(image)
+        assert uc._cache_key(image) is None
 
-    def test_different_untagged_images_still_differ(self):
+    def test_all_untagged_images_are_ineligible_for_security_cache(self):
         uc = self._use_case()
         a = DockerImage(name="node", tag="22-alpine")
         b = DockerImage(name="node", tag="20-alpine")
 
-        assert uc._cache_key(a) != uc._cache_key(b)
+        assert uc._cache_key(a) is None
+        assert uc._cache_key(b) is None
 
 
 class TestFingerprintCoversTheToolItself:
