@@ -20,6 +20,10 @@ e este projeto segue o [Versionamento Semântico](https://semver.org/spec/v2.0.0
 - Malformed digest metadata received from a registry or catalogue now disables
   cache reuse without aborting the scan. External metadata remains untrusted,
   while the scanner result continues through the normal verification gate.
+- `dockerls build` no longer writes the full Docker argv to debug logs, where
+  build-argument and label values could expose credentials. Docker/BuildKit
+  output is centrally redacted and bounded before it enters reports, warnings,
+  push failures, or returned error messages.
 
 ### Tests
 - Added regression coverage for tag mutation, platform isolation, Docker Hub

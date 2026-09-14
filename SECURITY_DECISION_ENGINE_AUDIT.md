@@ -87,3 +87,30 @@ irrelevante diante de I/O de SQLite/registry/scanner: ela compra validação de
 digest e plataforma. Não foi alegado ganho de throughput; o ganho desta fase é
 correção e invalidação determinística. Uma otimização futura pode memoizar a
 identidade imutável, mas só depois de benchmark do pipeline completo.
+
+## Revisão adicional do pipeline `dockerls build` — 2026-09-14
+
+| Controle | Estado | Observação |
+|---|---|---|
+| Validação antes do build | **EXISTE** | Dockerfile e policy preflight rodam antes do Docker; publicação sem scan é recusada. |
+| Identidade/proveniência | **EXISTE** | Contexto e Dockerfile são digeridos antes/depois; mudança durante o build bloqueia push. |
+| Gate pós-scan | **EXISTE** | Severidade, KEV e EPSS podem bloquear; falha/ausência de scanner não vira aprovação. |
+| Isolamento do subprocesso | **EXISTE PARCIALMENTE** | Usa argv, executável absoluto e timeout; `subprocess.run(capture_output=True)` ainda acumula a saída completa antes do limite aplicado ao relatório. Migrar para coleta streaming limitada é P1. |
+| Sigilo de build args/logs | **PRECISA SER REFATORADO** | O argv inteiro, incluindo valores de `--build-arg` e labels, era enviado ao debug log; stdout/stderr bruto entrava em report/error. Corrigido neste grupo. |
+| BuildKit secrets/SSH | **EXISTE PARCIALMENTE** | O modelo possui campos, mas a CLI/orquestração ainda não oferece um fluxo completo e auditado; não converter build args secretos automaticamente. |
+| Multi-platform/buildx | **NÃO EXISTE** | `docker build --platform` existe internamente, mas não está exposto como contrato completo nem produz/persiste manifesto multi-arch. |
+| Cancelamento e processo órfão | **PRECISA SER REFATORADO** | O caminho síncrono depende do timeout do `subprocess.run`; cancelamento cooperativo e terminate/kill com grace period exigem runner dedicado. |
+| Reprodutibilidade | **EXISTE PARCIALMENTE** | Há `--pull`, digest de entrada e provenance; faltam metadata BuildKit, modo hermético explícito e verificação reproduzível entre dois builds. |
+
+### Implementado agora
+
+- O comando completo deixou de ser registrado: apenas contagens e presença de
+  opções são emitidas, de forma que valores arbitrários de build args e labels
+  não chegam ao log.
+- stdout/stderr de Docker/BuildKit passam pelo redator central antes de entrar
+  em `BuildResult`, warnings ou mensagens de erro, e cada stream persistido é
+  limitado a 1 MiB. O mesmo tratamento é aplicado ao detalhe de falha de push.
+- Risco residual explícito: `capture_output=True` ainda pode alocar a saída
+  completa durante a execução. A próxima fase deve trocar somente essa borda
+  por streaming limitado, preservando timeout, argv e coleta simultânea dos
+  dois streams.
