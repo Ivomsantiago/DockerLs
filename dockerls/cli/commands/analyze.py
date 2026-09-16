@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.measure import Measurement
 from rich.table import Table
 
-from dockerls.application.dto.analysis import AnalysisResult
+from dockerls.application.dto.analysis import AnalysisResult, UnverifiedImage
 from dockerls.application.services.remediation import (
     build_remediation_plan,
     render_dockerfile_patch,
@@ -162,15 +162,18 @@ async def _analyze(
         # inexistente ocupa várias linhas e menciona o socket do Docker,
         # que este modo de scan nem usa. O texto completo continua no
         # arquivo de log e em `--format json`.
-        console.print(
-            f"[red]Scan did not complete for {safe(result.image.full_reference)}:[/red] "
-            f"{safe(describe_scan_failure(result.scan.error_kind, result.scan.error_message))}"
-        )
+        if ci_mode or output_format in ("json", "sarif"):
+            _emit_machine_readable(result, output_format, output)
+        else:
+            console.print(
+                f"[red]Scan did not complete for {safe(result.image.full_reference)}:[/red] "
+                f"{safe(describe_scan_failure(result.scan.error_kind, result.scan.error_message))}"
+            )
         raise typer.Exit(EXIT_ERROR)
 
     if output_format in ("json", "sarif"):
         _emit_machine_readable(result, output_format, output)
-        raise typer.Exit(_fail_on_exit_code(result, fail_on))
+        raise typer.Exit(_fail_on_exit_code(result, fail_on, machine_readable=True))
 
     if fix:
         _emit_fix(result, output)
@@ -210,7 +213,9 @@ def _fix_summary(plan: RemediationPlan) -> str:
     return " | ".join(parts) + "[/dim]"
 
 
-def _fail_on_exit_code(result: ImageAnalysis, fail_on: str | None) -> int:
+def _fail_on_exit_code(
+    result: ImageAnalysis, fail_on: str | None, *, machine_readable: bool = False
+) -> int:
     """Honours the tool-wide exit contract: 2 means "measured, and it fails".
 
     Deliberadamente igual a `build --fail-on`: `1` continua sendo "não
@@ -237,17 +242,25 @@ def _fail_on_exit_code(result: ImageAnalysis, fail_on: str | None) -> int:
         for v in sort_by_severity(result.scan.vulnerabilities)
         if v.severity.value.lower() in triggering
     ]
-    console.print(
-        f"\n[bold red]Gate failed (--fail-on {fail_on}):[/bold red] "
+    lines = [
+        f"Gate failed (--fail-on {fail_on}): "
         f"{len(offenders)} finding(s) at or above {fail_on.upper()}"
+    ]
+    lines.extend(
+        f"  {v.cve_id}  {v.severity.value}  {v.package_name} {v.installed_version}"
+        + (f" -> {v.fixed_version}" if v.fixed_version else " (no fix)")
+        for v in offenders[:10]
     )
-    for v in offenders[:10]:
-        console.print(
-            f"  {v.cve_id}  {v.severity.value}  {v.package_name} {v.installed_version}"
-            + (f" -> {v.fixed_version}" if v.fixed_version else " (no fix)")
-        )
     if len(offenders) > 10:
-        console.print(f"  ... and {len(offenders) - 10} more")
+        lines.append(f"  ... and {len(offenders) - 10} more")
+    if machine_readable:
+        # stdout is the report contract. Diagnostics belong on stderr so a
+        # rejected gate still leaves one parseable JSON/SARIF document.
+        sys.stderr.write("\n".join(lines) + "\n")
+    else:
+        console.print(f"\n[bold red]{lines[0]}[/bold red]")
+        for line in lines[1:]:
+            console.print(line)
     return EXIT_POLICY
 
 
@@ -255,13 +268,31 @@ def _emit_machine_readable(result: ImageAnalysis, fmt: str, output: str) -> None
     """Reuse the existing exporters by wrapping the single analysis in the
     same `AnalysisResult` they already consume -- one report shape for the
     whole tool rather than a second one that can drift."""
-    wrapped = AnalysisResult(
-        query=result.image.full_reference,
-        total_tags_scanned=1,
-        total_tags_analyzed=1,
-        baseline_met=result.production_ready,
-        recommendations=[result],
-    )
+    if result.scan.is_verified:
+        wrapped = AnalysisResult(
+            query=result.image.full_reference,
+            total_tags_scanned=1,
+            total_tags_analyzed=1,
+            baseline_met=result.production_ready,
+            recommendations=[result],
+        )
+    else:
+        reason = describe_scan_failure(result.scan.error_kind, result.scan.error_message)
+        wrapped = AnalysisResult(
+            query=result.image.full_reference,
+            total_tags_scanned=1,
+            total_tags_analyzed=0,
+            baseline_met=False,
+            errors=[reason],
+            unverified=[
+                UnverifiedImage(
+                    image_reference=result.image.full_reference,
+                    status=result.scan.status.value,
+                    reason=reason,
+                    kind=result.scan.error_kind.value,
+                )
+            ],
+        )
     payload = ExporterFactory.create(fmt).export_string(wrapped)
 
     if not output:

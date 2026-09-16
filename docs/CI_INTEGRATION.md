@@ -25,3 +25,9 @@ Machine-readable JSON and SARIF are written directly to stdout rather than
 through Rich, avoiding wrapping, markup, colors, and terminal escape sequences.
 Provider logging commands redact credentials and escape provider control
 syntax before emission.
+
+The stdout contract remains valid on negative outcomes. A policy rejection
+writes its human diagnostic to stderr while stdout remains one report document.
+A scanner/database failure emits the same JSON result shape with an empty
+`recommendations` list and a populated `unverified` entry, then exits nonzero.
+Absence of evidence is therefore machine-readable, but never reported as safe.
