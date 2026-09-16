@@ -1,0 +1,11 @@
+parameters:
+  image: ''
+
+steps:
+  - script: |
+      set -eu
+      dockerls analyze "${{ parameters.image }}" --ci --fail-on critical > dockerls-result.json
+    displayName: DockerLs security gate
+  - publish: dockerls-result.json
+    artifact: dockerls-security
+    condition: always()
