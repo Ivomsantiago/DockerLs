@@ -244,10 +244,15 @@ class TestStaleCacheIsRevalidated:
     async def test_cached_failed_scan_is_discarded(self):
         from dockerls.domain.interfaces.cache_store import CacheStoreInterface
 
+        # Analysis cache entries are intentionally ineligible without a
+        # canonical digest. Exercise stale-entry eviction with an identity
+        # that can actually reach L2 rather than the mutable-tag cache miss
+        # path tested elsewhere.
+        cached_image = TAGS[0].model_copy(update={"digest": "sha256:" + "a" * 64})
         poisoned = ImageAnalysis(
-            image=TAGS[0],
+            image=cached_image,
             scan=ScanResult(
-                image_reference=TAGS[0].full_reference,
+                image_reference=cached_image.full_reference,
                 status=ScanStatus.ERROR,
                 error_message="exit 1",
                 scan_timestamp="2026-01-01T00:00:00Z",
@@ -277,8 +282,9 @@ class TestStaleCacheIsRevalidated:
 
         # A chave carrega um fingerprint das regras de ignore e do threat
         # intel; perguntá-la ao caso de uso evita testar o formato dela.
-        use_case = _use_case(_CleanScanner())
-        key = use_case._cache_key(TAGS[0])
+        use_case = _use_case(_CleanScanner(), repository=_Repo(tags=[cached_image]))
+        key = use_case._cache_key(cached_image)
+        assert key is not None
         cache = _Cache(key)
         use_case._cache = cache
         result = await use_case.execute("node")

@@ -52,6 +52,7 @@ from dockerls.domain.value_objects.provenance import (
 from dockerls.domain.value_objects.tristate import Tristate
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_POLICY
 from dockerls.infrastructure.hashing import ContextTooLargeError, hash_context, hash_file
+from dockerls.infrastructure.redaction import redact
 from dockerls.integrations.scan_target import blocked_target_reason
 from dockerls.utils.executables import ExecutableNotFoundError, resolve_executable
 from dockerls.utils.validation import sanitize_image_name
@@ -64,6 +65,22 @@ if TYPE_CHECKING:
     )
     from dockerls.infrastructure.network.host_guard import HostGuard
     from dockerls.integrations.threat_intel.client import ThreatIntelClient
+
+
+# Build output is untrusted: Docker, BuildKit and Dockerfile RUN instructions
+# can emit arbitrary data. Reports and errors need useful diagnostics, but must
+# not grow without bound or persist credentials echoed by a tool.
+MAX_BUILD_OUTPUT_CHARS = 1024 * 1024
+
+
+def _safe_process_output(value: object, *, limit: int = MAX_BUILD_OUTPUT_CHARS) -> str:
+    """Redact and bound subprocess text before it enters a report or error."""
+    text = value if isinstance(value, str) else ""
+    cleaned = redact(text)
+    if len(cleaned) <= limit:
+        return cleaned
+    omitted = len(cleaned) - limit
+    return f"{cleaned[:limit]}\n...[truncated {omitted} characters]"
 
 
 @dataclass
@@ -868,7 +885,16 @@ class BuildImageUseCase:
             # Adicionar contexto
             cmd.append(context_path)
 
-            logger.debug(f"Executando comando: {' '.join(cmd)}")
+            # Never log argv: build-arg and label values can contain secrets.
+            # Counts retain enough diagnostics without copying user input to
+            # the log sink (where redaction cannot identify every bare value).
+            logger.debug(
+                "Executing docker build "
+                f"(build_args={len(options.build_args or {})}, "
+                f"labels={len(options.labels or {})}, "
+                f"platform={'set' if options.platform else 'default'}, "
+                f"target={'set' if options.target else 'default'})"
+            )
 
             # Executar build
             env = {}
@@ -884,15 +910,18 @@ class BuildImageUseCase:
                 check=False,
             )
 
-            logs.append(result.stdout)
-            if result.stderr:
-                logs.append(result.stderr)
-                warnings.append(result.stderr)
+            stdout = _safe_process_output(result.stdout)
+            stderr = _safe_process_output(result.stderr)
+            if stdout:
+                logs.append(stdout)
+            if stderr:
+                logs.append(stderr)
+                warnings.append(stderr)
 
             if result.returncode != 0:
                 return BuildResult(
                     success=False,
-                    error_message=f"Build failed: {result.stderr}",
+                    error_message=f"Build failed: {stderr or 'docker returned a non-zero status'}",
                     logs=logs,
                     warnings=warnings,
                 )
@@ -966,7 +995,8 @@ class BuildImageUseCase:
             return f"{action} failed: {e}"
 
         if result.returncode != 0:
-            return f"{action} failed: {result.stderr.strip()[:500]}"
+            detail = _safe_process_output(result.stderr, limit=500).strip()
+            return f"{action} failed: {detail or 'docker returned a non-zero status'}"
         return None
 
     def _get_image_info(self, tag: str) -> dict[str, Any]:

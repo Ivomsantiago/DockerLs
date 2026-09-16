@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -64,13 +66,20 @@ def analyze(
         help="Exit with the policy code when findings at/above this severity exist",
     ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable colored output"),
+    ci_mode: bool = typer.Option(
+        False,
+        "--ci",
+        help="Stable JSON on stdout, no spinner or terminal escape sequences",
+    ),
     wide: bool = typer.Option(
         False, "--wide", help="Render the table without truncating any column"
     ),
 ) -> None:
     """Deep-analyze a specific Docker image tag."""
-    if no_color:
+    if no_color or ci_mode:
         console.no_color = True
+    if ci_mode and output_format == "table":
+        output_format = "json"
     if output_format not in _FORMATS:
         console.print(
             f"[red]Error:[/red] unsupported --format {output_format!r}. "
@@ -102,6 +111,7 @@ def analyze(
             output=output,
             fail_on=fail_on,
             fix=fix,
+            ci_mode=ci_mode,
         )
     )
 
@@ -124,6 +134,7 @@ async def _analyze(
     output: str = "",
     fail_on: str | None = None,
     fix: bool = False,
+    ci_mode: bool = False,
 ) -> None:
     use_case = await build_analyze_use_case()
     try:
@@ -131,7 +142,8 @@ async def _analyze(
             f"Scanning {image}... (first run may take a few minutes: the "
             "vulnerability database is downloaded once)"
         )
-        with scan_status(status_msg):
+        progress = contextlib.nullcontext() if ci_mode else scan_status(status_msg)
+        with progress:
             result = await use_case.execute(image)
     except ValueError as e:
         console.print(f"[red]Scan failed: {e}[/red]")
@@ -253,9 +265,11 @@ def _emit_machine_readable(result: ImageAnalysis, fmt: str, output: str) -> None
     payload = ExporterFactory.create(fmt).export_string(wrapped)
 
     if not output:
-        # soft_wrap: o Rich quebraria a linha na largura do terminal, e uma
-        # quebra no meio de uma string do JSON produz documento inválido.
-        console.print(payload, soft_wrap=True)
+        # Structured stdout must contain only the document. Rich rendering
+        # may wrap/highlight and add terminal sequences, which breaks parsers.
+        sys.stdout.write(payload)
+        if not payload.endswith("\n"):
+            sys.stdout.write("\n")
         return
 
     path = Path(output)
