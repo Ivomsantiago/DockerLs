@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -32,6 +33,7 @@ from dockerls.cli.vulnerability_view import (
 from dockerls.domain.entities.vulnerability import PackageOrigin, Vulnerability
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_POLICY
 from dockerls.exporters.factory import ExporterFactory
+from dockerls.integrations.ci import detect_connector
 
 if TYPE_CHECKING:
     from dockerls.application.dto.analysis import ImageAnalysis
@@ -164,6 +166,9 @@ async def _analyze(
         # arquivo de log e em `--format json`.
         if ci_mode or output_format in ("json", "sarif"):
             _emit_machine_readable(result, output_format, output)
+            if ci_mode:
+                reason = describe_scan_failure(result.scan.error_kind, result.scan.error_message)
+                sys.stderr.write(_ci_issue("error", f"Scan did not complete: {reason}") + "\n")
         else:
             console.print(
                 f"[red]Scan did not complete for {safe(result.image.full_reference)}:[/red] "
@@ -255,13 +260,18 @@ def _fail_on_exit_code(
         lines.append(f"  ... and {len(offenders) - 10} more")
     if machine_readable:
         # stdout is the report contract. Diagnostics belong on stderr so a
-        # rejected gate still leaves one parseable JSON/SARIF document.
+        sys.stderr.write(_ci_issue("error", "\n".join(lines)) + "\n")
         sys.stderr.write("\n".join(lines) + "\n")
     else:
         console.print(f"\n[bold red]{lines[0]}[/bold red]")
         for line in lines[1:]:
             console.print(line)
     return EXIT_POLICY
+
+
+def _ci_issue(level: str, message: str) -> str:
+    """Format a redacted diagnostic for the detected pipeline boundary."""
+    return detect_connector(os.environ).emit_issue(level, message)
 
 
 def _emit_machine_readable(result: ImageAnalysis, fmt: str, output: str) -> None:
