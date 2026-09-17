@@ -260,8 +260,8 @@ def _fail_on_exit_code(
         lines.append(f"  ... and {len(offenders) - 10} more")
     if machine_readable:
         # stdout is the report contract. Diagnostics belong on stderr so a
-        # rejected gate still leaves one parseable JSON/SARIF document.
         sys.stderr.write(_ci_issue("error", "\n".join(lines)) + "\n")
+        sys.stderr.write("\n".join(lines) + "\n")
     else:
         console.print(f"\n[bold red]{lines[0]}[/bold red]")
         for line in lines[1:]:

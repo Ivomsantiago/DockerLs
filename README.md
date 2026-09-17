@@ -3,6 +3,7 @@
 [![CI](https://github.com/Ivomsantiago/DockerLs/actions/workflows/ci.yml/badge.svg)](https://github.com/Ivomsantiago/DockerLs/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Ivomsantiago/DockerLs/actions/workflows/codeql.yml/badge.svg)](https://github.com/Ivomsantiago/DockerLs/actions/workflows/codeql.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-1.0.16-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **DockerLs ajuda você a escolher a imagem Docker mais segura para produção —
@@ -48,7 +49,7 @@ sobre essas duas que o DockerLs foi pensado.
 |---|---|---|
 | Escopo | uma imagem que você já escolheu | **todas as tags candidatas**, ranqueadas |
 | Fontes | um registry | Docker Hub + Chainguard + Distroless + Docker Hardened Images, no mesmo pipeline |
-| Identidade | a tag que você digitou | **digest do manifesto**, resolvido antes do scan — uma tag se move, um digest não |
+| Identidade | a tag que você digitou | **registry + repository + digest + plataforma** — sem digest não há cache de confiança; uma tag se move, um digest não |
 | Configuração da imagem | fora do escopo | **Hardening Score** medido no config OCI publicado (root, portas, entrypoint) |
 | Superfície de ataque | confundida com tamanho | **Attack Surface Score** próprio: shell, gerenciador de pacotes, ferramentas de debug |
 | Exploração real | só a severidade da distro | CISA KEV + FIRST EPSS + Exploit-DB pesam no score e aparecem na tabela |
@@ -61,6 +62,11 @@ sobre essas duas que o DockerLs foi pensado.
 O princípio que organiza tudo isso: **uma imagem que não pôde ser medida
 nunca é apresentada como uma imagem segura.** Ela some da recomendação e vai
 para uma lista à parte, com o motivo.
+
+Na versão **1.0.16**, essa regra também vale para o cache: uma análise só pode
+ser reutilizada quando registry, repository, digest OCI e plataforma forem os
+mesmos. Se o registry não resolver o digest de uma tag, o DockerLs faz uma nova
+medição em vez de reutilizar evidência associada a um nome mutável.
 
 Quer o detalhe fino de cada um desses pontos — o algoritmo de pontuação, o
 modelo de confiança, a arquitetura interna? Está tudo na
