@@ -101,6 +101,48 @@ class TestStructuredOutput:
         assert result.exit_code == EXIT_ERROR
         assert "Could not write" in result.stdout
 
+    def test_ci_mode_defaults_to_stable_json_without_progress(self):
+        use_case = AsyncMock()
+        use_case.execute = AsyncMock(return_value=_analysis(high=1))
+        with (
+            patch(
+                "dockerls.cli.commands.analyze.build_analyze_use_case",
+                AsyncMock(return_value=use_case),
+            ),
+            patch("dockerls.cli.commands.analyze.scan_status") as progress,
+        ):
+            result = runner.invoke(app, ["analyze", "node:22-alpine", "--ci"])
+
+        assert result.exit_code == EXIT_OK
+        assert json.loads(result.stdout)["query"] == "node:22-alpine"
+        assert "\x1b[" not in result.stdout
+        progress.assert_not_called()
+
+    def test_ci_gate_failure_keeps_stdout_as_one_json_document(self):
+        result = _run(
+            _analysis(critical=1),
+            "--ci",
+            "--fail-on",
+            "critical",
+        )
+
+        payload = json.loads(result.stdout)
+        assert result.exit_code == EXIT_POLICY
+        assert payload["query"] == "node:22-alpine"
+        assert "Gate failed" not in result.stdout
+        assert "Gate failed" in result.stderr
+
+    def test_ci_scanner_failure_is_a_machine_readable_unverified_result(self):
+        result = _run(_analysis(verified=False), "--ci")
+
+        payload = json.loads(result.stdout)
+        assert result.exit_code == EXIT_ERROR
+        assert payload["recommendations"] == []
+        assert payload["total_tags_analyzed"] == 0
+        assert payload["unverified"][0]["status"] == "ERROR"
+        assert payload["unverified"][0]["kind"] == "DB_INIT_FAILED"
+        assert "Scan did not complete" not in result.stdout
+
 
 class TestFailOnGate:
     """Mesma semântica de `build --fail-on`: cada nível reprova também tudo

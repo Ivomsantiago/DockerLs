@@ -1,0 +1,11 @@
+pipeline {
+  agent any
+  stages {
+    stage('DockerLs security gate') {
+      steps {
+        sh 'dockerls analyze "$IMAGE" --ci --fail-on critical > dockerls-result.json'
+      }
+      post { always { archiveArtifacts artifacts: 'dockerls-result.json', allowEmptyArchive: true } }
+    }
+  }
+}

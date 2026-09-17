@@ -606,6 +606,56 @@ class TestDockerBuildInvocation:
 
         assert run.call_args.kwargs["env"]["DOCKER_BUILDKIT"] == "1"
 
+    def test_build_command_log_does_not_expose_build_arg_values(self, bare_use_case):
+        secret = "value-without-a-name-that-redaction-could-recognize"
+        options = BuildOptions(tag="app:1.0", build_args={"INTERNAL_VALUE": secret})
+
+        with patch("dockerls.application.use_cases.build_image.logger.debug") as debug:
+            self._run(bare_use_case, options)
+
+        rendered = " ".join(str(call) for call in debug.call_args_list)
+        assert secret not in rendered
+
+    def test_build_output_is_redacted_before_report_and_error(self, bare_use_case):
+        secret = "dckr_pat_AbCdEf123456789xyz"
+        with (
+            patch("dockerls.application.use_cases.build_image.resolve_executable") as resolve,
+            patch("dockerls.application.use_cases.build_image.subprocess.run") as run,
+        ):
+            resolve.return_value = "/usr/bin/docker"
+            run.return_value = _CompletedProcess(
+                returncode=1,
+                stdout=f"step output token={secret}",
+                stderr=f"registry password={secret}",
+            )
+            result = bare_use_case._build_image(
+                ".", "Dockerfile", "app:1", BuildOptions(tag="app:1")
+            )
+
+        combined = " ".join([*(result.logs or []), result.error_message or ""])
+        assert secret not in combined
+        assert "***MASKED***" in combined
+
+    def test_build_output_is_bounded(self, bare_use_case):
+        from dockerls.application.use_cases.build_image import MAX_BUILD_OUTPUT_CHARS
+
+        with (
+            patch("dockerls.application.use_cases.build_image.resolve_executable") as resolve,
+            patch("dockerls.application.use_cases.build_image.subprocess.run") as run,
+        ):
+            resolve.return_value = "/usr/bin/docker"
+            run.return_value = _CompletedProcess(
+                returncode=1,
+                stderr="x" * (MAX_BUILD_OUTPUT_CHARS + 100),
+            )
+            result = bare_use_case._build_image(
+                ".", "Dockerfile", "app:1", BuildOptions(tag="app:1")
+            )
+
+        assert result.logs
+        assert "truncated 100 characters" in result.logs[-1]
+        assert len(result.logs[-1]) < MAX_BUILD_OUTPUT_CHARS + 100
+
     def test_non_zero_exit_is_a_failure_carrying_stderr(self, bare_use_case):
         with (
             patch("dockerls.application.use_cases.build_image.resolve_executable") as resolve,

@@ -1,0 +1,7 @@
+dockerls-security:
+  stage: test
+  script:
+    - dockerls analyze "$IMAGE" --ci --fail-on critical > dockerls-result.json
+  artifacts:
+    when: always
+    paths: [dockerls-result.json]

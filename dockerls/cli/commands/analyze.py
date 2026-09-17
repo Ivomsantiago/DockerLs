@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -9,7 +12,7 @@ from rich.console import Console
 from rich.measure import Measurement
 from rich.table import Table
 
-from dockerls.application.dto.analysis import AnalysisResult
+from dockerls.application.dto.analysis import AnalysisResult, UnverifiedImage
 from dockerls.application.services.remediation import (
     build_remediation_plan,
     render_dockerfile_patch,
@@ -30,6 +33,7 @@ from dockerls.cli.vulnerability_view import (
 from dockerls.domain.entities.vulnerability import PackageOrigin, Vulnerability
 from dockerls.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_POLICY
 from dockerls.exporters.factory import ExporterFactory
+from dockerls.integrations.ci import detect_connector
 
 if TYPE_CHECKING:
     from dockerls.application.dto.analysis import ImageAnalysis
@@ -64,13 +68,20 @@ def analyze(
         help="Exit with the policy code when findings at/above this severity exist",
     ),
     no_color: bool = typer.Option(False, "--no-color", help="Disable colored output"),
+    ci_mode: bool = typer.Option(
+        False,
+        "--ci",
+        help="Stable JSON on stdout, no spinner or terminal escape sequences",
+    ),
     wide: bool = typer.Option(
         False, "--wide", help="Render the table without truncating any column"
     ),
 ) -> None:
     """Deep-analyze a specific Docker image tag."""
-    if no_color:
+    if no_color or ci_mode:
         console.no_color = True
+    if ci_mode and output_format == "table":
+        output_format = "json"
     if output_format not in _FORMATS:
         console.print(
             f"[red]Error:[/red] unsupported --format {output_format!r}. "
@@ -102,6 +113,7 @@ def analyze(
             output=output,
             fail_on=fail_on,
             fix=fix,
+            ci_mode=ci_mode,
         )
     )
 
@@ -124,6 +136,7 @@ async def _analyze(
     output: str = "",
     fail_on: str | None = None,
     fix: bool = False,
+    ci_mode: bool = False,
 ) -> None:
     use_case = await build_analyze_use_case()
     try:
@@ -131,7 +144,8 @@ async def _analyze(
             f"Scanning {image}... (first run may take a few minutes: the "
             "vulnerability database is downloaded once)"
         )
-        with scan_status(status_msg):
+        progress = contextlib.nullcontext() if ci_mode else scan_status(status_msg)
+        with progress:
             result = await use_case.execute(image)
     except ValueError as e:
         console.print(f"[red]Scan failed: {e}[/red]")
@@ -150,15 +164,21 @@ async def _analyze(
         # inexistente ocupa várias linhas e menciona o socket do Docker,
         # que este modo de scan nem usa. O texto completo continua no
         # arquivo de log e em `--format json`.
-        console.print(
-            f"[red]Scan did not complete for {safe(result.image.full_reference)}:[/red] "
-            f"{safe(describe_scan_failure(result.scan.error_kind, result.scan.error_message))}"
-        )
+        if ci_mode or output_format in ("json", "sarif"):
+            _emit_machine_readable(result, output_format, output)
+            if ci_mode:
+                reason = describe_scan_failure(result.scan.error_kind, result.scan.error_message)
+                sys.stderr.write(_ci_issue("error", f"Scan did not complete: {reason}") + "\n")
+        else:
+            console.print(
+                f"[red]Scan did not complete for {safe(result.image.full_reference)}:[/red] "
+                f"{safe(describe_scan_failure(result.scan.error_kind, result.scan.error_message))}"
+            )
         raise typer.Exit(EXIT_ERROR)
 
     if output_format in ("json", "sarif"):
         _emit_machine_readable(result, output_format, output)
-        raise typer.Exit(_fail_on_exit_code(result, fail_on))
+        raise typer.Exit(_fail_on_exit_code(result, fail_on, machine_readable=True))
 
     if fix:
         _emit_fix(result, output)
@@ -198,7 +218,9 @@ def _fix_summary(plan: RemediationPlan) -> str:
     return " | ".join(parts) + "[/dim]"
 
 
-def _fail_on_exit_code(result: ImageAnalysis, fail_on: str | None) -> int:
+def _fail_on_exit_code(
+    result: ImageAnalysis, fail_on: str | None, *, machine_readable: bool = False
+) -> int:
     """Honours the tool-wide exit contract: 2 means "measured, and it fails".
 
     Deliberadamente igual a `build --fail-on`: `1` continua sendo "não
@@ -225,37 +247,70 @@ def _fail_on_exit_code(result: ImageAnalysis, fail_on: str | None) -> int:
         for v in sort_by_severity(result.scan.vulnerabilities)
         if v.severity.value.lower() in triggering
     ]
-    console.print(
-        f"\n[bold red]Gate failed (--fail-on {fail_on}):[/bold red] "
+    lines = [
+        f"Gate failed (--fail-on {fail_on}): "
         f"{len(offenders)} finding(s) at or above {fail_on.upper()}"
+    ]
+    lines.extend(
+        f"  {v.cve_id}  {v.severity.value}  {v.package_name} {v.installed_version}"
+        + (f" -> {v.fixed_version}" if v.fixed_version else " (no fix)")
+        for v in offenders[:10]
     )
-    for v in offenders[:10]:
-        console.print(
-            f"  {v.cve_id}  {v.severity.value}  {v.package_name} {v.installed_version}"
-            + (f" -> {v.fixed_version}" if v.fixed_version else " (no fix)")
-        )
     if len(offenders) > 10:
-        console.print(f"  ... and {len(offenders) - 10} more")
+        lines.append(f"  ... and {len(offenders) - 10} more")
+    if machine_readable:
+        # stdout is the report contract. Diagnostics belong on stderr so a
+        # rejected gate still leaves one parseable JSON/SARIF document.
+        sys.stderr.write(_ci_issue("error", "\n".join(lines)) + "\n")
+    else:
+        console.print(f"\n[bold red]{lines[0]}[/bold red]")
+        for line in lines[1:]:
+            console.print(line)
     return EXIT_POLICY
+
+
+def _ci_issue(level: str, message: str) -> str:
+    """Format a redacted diagnostic for the detected pipeline boundary."""
+    return detect_connector(os.environ).emit_issue(level, message)
 
 
 def _emit_machine_readable(result: ImageAnalysis, fmt: str, output: str) -> None:
     """Reuse the existing exporters by wrapping the single analysis in the
     same `AnalysisResult` they already consume -- one report shape for the
     whole tool rather than a second one that can drift."""
-    wrapped = AnalysisResult(
-        query=result.image.full_reference,
-        total_tags_scanned=1,
-        total_tags_analyzed=1,
-        baseline_met=result.production_ready,
-        recommendations=[result],
-    )
+    if result.scan.is_verified:
+        wrapped = AnalysisResult(
+            query=result.image.full_reference,
+            total_tags_scanned=1,
+            total_tags_analyzed=1,
+            baseline_met=result.production_ready,
+            recommendations=[result],
+        )
+    else:
+        reason = describe_scan_failure(result.scan.error_kind, result.scan.error_message)
+        wrapped = AnalysisResult(
+            query=result.image.full_reference,
+            total_tags_scanned=1,
+            total_tags_analyzed=0,
+            baseline_met=False,
+            errors=[reason],
+            unverified=[
+                UnverifiedImage(
+                    image_reference=result.image.full_reference,
+                    status=result.scan.status.value,
+                    reason=reason,
+                    kind=result.scan.error_kind.value,
+                )
+            ],
+        )
     payload = ExporterFactory.create(fmt).export_string(wrapped)
 
     if not output:
-        # soft_wrap: o Rich quebraria a linha na largura do terminal, e uma
-        # quebra no meio de uma string do JSON produz documento inválido.
-        console.print(payload, soft_wrap=True)
+        # Structured stdout must contain only the document. Rich rendering
+        # may wrap/highlight and add terminal sequences, which breaks parsers.
+        sys.stdout.write(payload)
+        if not payload.endswith("\n"):
+            sys.stdout.write("\n")
         return
 
     path = Path(output)
